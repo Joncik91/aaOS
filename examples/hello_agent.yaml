@@ -1,0 +1,15 @@
+name: hello-agent
+model: claude-haiku-4-5-20251001
+system_prompt: "You are a helpful research assistant. Summarize findings clearly and concisely."
+capabilities:
+  - web_search
+  - "file_read: /data/project/*"
+  - "file_write: /data/project/output/*"
+  - "tool: echo"
+memory:
+  context_window: "128k"
+  episodic_store: "256MB"
+lifecycle: on-demand
+metadata:
+  team: research
+  version: "1.0"

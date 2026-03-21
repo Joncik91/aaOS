@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/aaos-core",
+    "crates/aaos-runtime",
+    "crates/aaos-ipc",
+    "crates/aaos-tools",
+    "crates/aaos-llm",
+    "crates/agentd",
+]
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+dashmap = "6"
+async-trait = "0.1"
+jsonschema = "0.28"
+
+reqwest = { version = "0.12", features = ["json"] }
+scopeguard = "1"
+
+# Internal crates
+aaos-core = { path = "crates/aaos-core" }
+aaos-llm = { path = "crates/aaos-llm" }
+aaos-runtime = { path = "crates/aaos-runtime" }
+aaos-ipc = { path = "crates/aaos-ipc" }
+aaos-tools = { path = "crates/aaos-tools" }

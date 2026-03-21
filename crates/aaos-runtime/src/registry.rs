@@ -1,0 +1,419 @@
+use std::sync::{Arc, OnceLock};
+
+use aaos_core::{
+    AgentId, AgentManifest, AuditEvent, AuditEventKind, AuditLog, Capability, CapabilityToken,
+    Constraints, CoreError, Result,
+};
+use aaos_ipc::MessageRouter;
+use dashmap::DashMap;
+
+use crate::process::{AgentInfo, AgentProcess, AgentState};
+
+/// Thread-safe registry of all running agent processes.
+///
+/// This is the aaOS equivalent of the process table. All agent
+/// lifecycle operations go through the registry.
+pub struct AgentRegistry {
+    agents: DashMap<AgentId, AgentProcess>,
+    audit_log: Arc<dyn AuditLog>,
+    router: OnceLock<Arc<MessageRouter>>,
+}
+
+impl AgentRegistry {
+    pub fn new(audit_log: Arc<dyn AuditLog>) -> Self {
+        Self {
+            agents: DashMap::new(),
+            audit_log,
+            router: OnceLock::new(),
+        }
+    }
+
+    /// Set the message router for agent registration.
+    /// Called once after construction to break the circular dependency
+    /// (router needs registry for capability checks, registry needs router for registration).
+    pub fn set_router(&self, router: Arc<MessageRouter>) {
+        let _ = self.router.set(router);
+    }
+
+    /// Spawn a new agent from a manifest. Returns the new agent's ID.
+    pub fn spawn(&self, manifest: AgentManifest) -> Result<AgentId> {
+        let id = AgentId::new();
+
+        // Issue capability tokens based on manifest declarations
+        let capabilities = self.issue_capabilities(id, &manifest);
+
+        let mut process = AgentProcess::new(id, manifest.clone(), capabilities);
+        process.transition_to(AgentState::Running)?;
+
+        self.audit_log.record(AuditEvent::new(
+            id,
+            AuditEventKind::AgentSpawned {
+                manifest_name: manifest.name.clone(),
+            },
+        ));
+
+        self.agents.insert(id, process);
+
+        if let Some(router) = self.router.get() {
+            let (msg_rx, resp_rx) = router.register(id);
+            if let Some(mut entry) = self.agents.get_mut(&id) {
+                entry.value_mut().message_rx = Some(msg_rx);
+                entry.value_mut().response_rx = Some(resp_rx);
+            }
+        }
+
+        tracing::info!(agent_id = %id, name = %manifest.name, "agent spawned");
+        Ok(id)
+    }
+
+    /// Stop an agent by ID.
+    pub fn stop(&self, id: AgentId) -> Result<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or(CoreError::AgentNotFound(id))?;
+
+        let process = entry.value_mut();
+        if process.state != AgentState::Stopped {
+            process.transition_to(AgentState::Stopping)?;
+            process.transition_to(AgentState::Stopped)?;
+        }
+
+        self.audit_log.record(AuditEvent::new(
+            id,
+            AuditEventKind::AgentStopped {
+                reason: aaos_core::StopReason::UserRequested,
+            },
+        ));
+
+        drop(entry);
+
+        if let Some(router) = self.router.get() {
+            router.unregister(&id);
+        }
+
+        self.agents.remove(&id);
+        tracing::info!(agent_id = %id, "agent stopped");
+        Ok(())
+    }
+
+    /// Get information about a specific agent.
+    pub fn get_info(&self, id: AgentId) -> Result<AgentInfo> {
+        self.agents
+            .get(&id)
+            .map(|entry| entry.value().info())
+            .ok_or(CoreError::AgentNotFound(id))
+    }
+
+    /// List all running agents.
+    pub fn list(&self) -> Vec<AgentInfo> {
+        self.agents
+            .iter()
+            .map(|entry| entry.value().info())
+            .collect()
+    }
+
+    /// Check if an agent has a specific capability.
+    pub fn check_capability(&self, id: AgentId, capability: &Capability) -> Result<bool> {
+        self.agents
+            .get(&id)
+            .map(|entry| entry.value().has_capability(capability))
+            .ok_or(CoreError::AgentNotFound(id))
+    }
+
+    /// Number of registered agents.
+    pub fn count(&self) -> usize {
+        self.agents.len()
+    }
+
+    /// Get a clone of the agent's capability tokens.
+    /// Acquires a DashMap read lock and clones the token vector.
+    pub fn get_tokens(&self, id: AgentId) -> Result<Vec<CapabilityToken>> {
+        self.agents
+            .get(&id)
+            .map(|entry| entry.value().capabilities.clone())
+            .ok_or(CoreError::AgentNotFound(id))
+    }
+
+    /// Get a clone of the agent's manifest.
+    pub fn get_manifest(&self, id: AgentId) -> Result<AgentManifest> {
+        self.agents
+            .get(&id)
+            .map(|entry| entry.value().manifest.clone())
+            .ok_or(CoreError::AgentNotFound(id))
+    }
+
+    /// Spawn an agent with a specific ID and pre-computed capability tokens.
+    /// Used by SpawnAgentTool to insert child agents with narrowed capabilities.
+    pub fn spawn_with_tokens(
+        &self,
+        id: AgentId,
+        manifest: AgentManifest,
+        capabilities: Vec<CapabilityToken>,
+    ) -> Result<()> {
+        let mut process = AgentProcess::new(id, manifest.clone(), capabilities);
+        process.transition_to(AgentState::Running)?;
+
+        self.audit_log.record(AuditEvent::new(
+            id,
+            AuditEventKind::AgentSpawned {
+                manifest_name: manifest.name.clone(),
+            },
+        ));
+
+        self.agents.insert(id, process);
+
+        if let Some(router) = self.router.get() {
+            let (msg_rx, resp_rx) = router.register(id);
+            if let Some(mut entry) = self.agents.get_mut(&id) {
+                entry.value_mut().message_rx = Some(msg_rx);
+                entry.value_mut().response_rx = Some(resp_rx);
+            }
+        }
+
+        tracing::info!(agent_id = %id, name = %manifest.name, "agent spawned with custom tokens");
+        Ok(())
+    }
+
+    /// Issue capability tokens for an agent based on its manifest declarations.
+    fn issue_capabilities(
+        &self,
+        agent_id: AgentId,
+        manifest: &AgentManifest,
+    ) -> Vec<CapabilityToken> {
+        manifest
+            .capabilities
+            .iter()
+            .filter_map(|decl| {
+                let capability = self.parse_capability_declaration(decl)?;
+                let token =
+                    CapabilityToken::issue(agent_id, capability.clone(), Constraints::default());
+                self.audit_log.record(AuditEvent::new(
+                    agent_id,
+                    AuditEventKind::CapabilityGranted { capability },
+                ));
+                Some(token)
+            })
+            .collect()
+    }
+
+    fn parse_capability_declaration(
+        &self,
+        decl: &aaos_core::CapabilityDeclaration,
+    ) -> Option<Capability> {
+        match decl {
+            aaos_core::CapabilityDeclaration::Simple(s) => {
+                let s = s.trim();
+                if s == "web_search" {
+                    Some(Capability::WebSearch)
+                } else if let Some(path) = s.strip_prefix("file_read:") {
+                    Some(Capability::FileRead {
+                        path_glob: path.trim().to_string(),
+                    })
+                } else if let Some(path) = s.strip_prefix("file_write:") {
+                    Some(Capability::FileWrite {
+                        path_glob: path.trim().to_string(),
+                    })
+                } else if let Some(tool) = s.strip_prefix("tool:") {
+                    Some(Capability::ToolInvoke {
+                        tool_name: tool.trim().to_string(),
+                    })
+                } else if let Some(agents) = s.strip_prefix("spawn_child:") {
+                    let agents = agents.trim().trim_matches(|c| c == '[' || c == ']');
+                    let list: Vec<String> = agents
+                        .split(',')
+                        .map(|a| a.trim().to_string())
+                        .filter(|a| !a.is_empty())
+                        .collect();
+                    Some(Capability::SpawnChild {
+                        allowed_agents: list,
+                    })
+                } else {
+                    Some(Capability::Custom {
+                        name: s.to_string(),
+                        params: serde_json::Value::Null,
+                    })
+                }
+            }
+            aaos_core::CapabilityDeclaration::WithParams { params } => {
+                // Complex capability declarations — parse from key-value map
+                params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(|name| Capability::Custom {
+                        name: name.to_string(),
+                        params: serde_json::Value::Object(
+                            params
+                                .iter()
+                                .filter(|(k, _)| k.as_str() != "name")
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        ),
+                    })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aaos_core::InMemoryAuditLog;
+
+    fn test_registry() -> (AgentRegistry, Arc<InMemoryAuditLog>) {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let registry = AgentRegistry::new(log.clone());
+        (registry, log)
+    }
+
+    fn test_manifest(name: &str) -> AgentManifest {
+        AgentManifest::from_yaml(&format!(
+            r#"
+name: {name}
+model: claude-haiku-4-5-20251001
+system_prompt: "test"
+capabilities:
+  - web_search
+  - "file_read: /data/*"
+"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn spawn_and_list() {
+        let (registry, _log) = test_registry();
+        let id = registry.spawn(test_manifest("agent-1")).unwrap();
+        assert_eq!(registry.count(), 1);
+
+        let info = registry.get_info(id).unwrap();
+        assert_eq!(info.name, "agent-1");
+        assert_eq!(info.state, AgentState::Running);
+    }
+
+    #[test]
+    fn spawn_and_stop() {
+        let (registry, log) = test_registry();
+        let id = registry.spawn(test_manifest("agent-1")).unwrap();
+        registry.stop(id).unwrap();
+        assert_eq!(registry.count(), 0);
+
+        // Should have spawn + capability grants + stop events
+        assert!(log.len() >= 2);
+    }
+
+    #[test]
+    fn stop_nonexistent_agent() {
+        let (registry, _log) = test_registry();
+        let result = registry.stop(AgentId::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn capability_enforcement() {
+        let (registry, _log) = test_registry();
+        let id = registry.spawn(test_manifest("agent-1")).unwrap();
+
+        assert!(registry
+            .check_capability(id, &Capability::WebSearch)
+            .unwrap());
+        assert!(registry
+            .check_capability(
+                id,
+                &Capability::FileRead {
+                    path_glob: "/data/foo.txt".into()
+                }
+            )
+            .unwrap());
+        assert!(!registry
+            .check_capability(
+                id,
+                &Capability::FileWrite {
+                    path_glob: "/data/foo.txt".into()
+                }
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn multiple_agents() {
+        let (registry, _log) = test_registry();
+        registry.spawn(test_manifest("agent-1")).unwrap();
+        registry.spawn(test_manifest("agent-2")).unwrap();
+        registry.spawn(test_manifest("agent-3")).unwrap();
+        assert_eq!(registry.count(), 3);
+        assert_eq!(registry.list().len(), 3);
+    }
+
+    #[test]
+    fn get_tokens_returns_agent_capabilities() {
+        let (registry, _log) = test_registry();
+        let id = registry.spawn(test_manifest("agent-1")).unwrap();
+        let tokens = registry.get_tokens(id).unwrap();
+        // test_manifest declares web_search and file_read
+        assert_eq!(tokens.len(), 2);
+    }
+
+    #[test]
+    fn get_tokens_nonexistent_agent() {
+        let (registry, _log) = test_registry();
+        let result = registry.get_tokens(AgentId::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn get_manifest_returns_agent_manifest() {
+        let (registry, _log) = test_registry();
+        let id = registry.spawn(test_manifest("agent-1")).unwrap();
+        let manifest = registry.get_manifest(id).unwrap();
+        assert_eq!(manifest.name, "agent-1");
+    }
+
+    #[test]
+    fn get_manifest_nonexistent_agent() {
+        let (registry, _log) = test_registry();
+        let result = registry.get_manifest(AgentId::new());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_registers_with_router() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let router = Arc::new(aaos_ipc::MessageRouter::new(log.clone(), |_, _| true));
+        let registry = AgentRegistry::new(log.clone());
+        registry.set_router(router.clone());
+
+        let id = registry.spawn(test_manifest("agent-1")).unwrap();
+        assert_eq!(router.agent_count(), 1);
+
+        registry.stop(id).unwrap();
+        assert_eq!(router.agent_count(), 0);
+    }
+
+    #[test]
+    fn spawn_child_capability_parsing() {
+        let (registry, _log) = test_registry();
+        let manifest = AgentManifest::from_yaml(
+            r#"
+name: orchestrator
+model: claude-haiku-4-5-20251001
+system_prompt: "test"
+capabilities:
+  - "spawn_child: [researcher, summarizer]"
+  - "tool: spawn_agent"
+"#,
+        )
+        .unwrap();
+        let id = registry.spawn(manifest).unwrap();
+
+        let has_spawn = registry
+            .check_capability(
+                id,
+                &Capability::SpawnChild {
+                    allowed_agents: vec!["researcher".into()],
+                },
+            )
+            .unwrap();
+        assert!(has_spawn);
+    }
+}

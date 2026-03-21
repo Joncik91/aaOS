@@ -1,0 +1,17 @@
+[package]
+name = "aaos-runtime"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Agent process runtime for aaOS"
+
+[dependencies]
+aaos-core = { workspace = true }
+aaos-ipc = { workspace = true }
+aaos-tools = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

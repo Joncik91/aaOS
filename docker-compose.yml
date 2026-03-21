@@ -1,0 +1,43 @@
+services:
+  dev:
+    build: .
+    volumes:
+      # Mount source for live editing — changes reflect immediately
+      - ./crates:/aaos/crates
+      - ./Cargo.toml:/aaos/Cargo.toml
+      - ./Cargo.lock:/aaos/Cargo.lock
+      # Persistent build cache — avoids recompiling from scratch
+      - aaos-target:/aaos/target
+      # Isolated data directory for agent file operations
+      - aaos-data:/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    # Keep container running for interactive use
+    command: sleep infinity
+
+  test:
+    build: .
+    volumes:
+      - ./crates:/aaos/crates
+      - ./Cargo.toml:/aaos/Cargo.toml
+      - ./Cargo.lock:/aaos/Cargo.lock
+      - aaos-target:/aaos/target
+    command: cargo test --workspace
+
+  daemon:
+    build: .
+    volumes:
+      - ./crates:/aaos/crates
+      - ./Cargo.toml:/aaos/Cargo.toml
+      - ./Cargo.lock:/aaos/Cargo.lock
+      - aaos-target:/aaos/target
+      - aaos-data:/data
+      - aaos-socket:/run/agentd
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    command: cargo run -p agentd -- run --socket /run/agentd/agentd.sock
+
+volumes:
+  aaos-target:
+  aaos-data:
+  aaos-socket:
