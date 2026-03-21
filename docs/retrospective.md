@@ -4,7 +4,7 @@ The original design estimated 3–5 people and 3 months to reach a working demo.
 
 ## What Was Built
 
-A working agent-first operating system prototype: 6 Rust crates, ~4000 lines, 111 tests. Agent kernel with capability-based security, tool registry with two-level enforcement, LLM execution loop, agent orchestration with capability narrowing, human-in-the-loop approval queue, and MCP-native message routing. End-to-end verified against the real Anthropic API.
+A working agent-first operating system prototype: 6 Rust crates, ~6000 lines, 111 tests. Agent kernel with capability-based security, tool registry with two-level enforcement, LLM execution loop, agent orchestration with capability narrowing, human-in-the-loop approval queue, and MCP-native message routing. End-to-end verified against the real Anthropic API.
 
 ## Why It Was Faster
 
