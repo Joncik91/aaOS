@@ -127,6 +127,7 @@ JSON-RPC 2.0 over Unix socket.
 
 - [Architecture](docs/architecture.md) — Layer details and design decisions
 - [Roadmap](docs/roadmap.md) — What comes after the prototype
+- [Build Retrospective](docs/retrospective.md) — How a working OS prototype was built in 48 hours
 
 ## License
 
