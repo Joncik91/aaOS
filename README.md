@@ -126,6 +126,7 @@ JSON-RPC 2.0 over Unix socket.
 ## Documentation
 
 - [Architecture](docs/architecture.md) — Layer details and design decisions
+- [Roadmap](docs/roadmap.md) — What comes after the prototype
 
 ## License
 
