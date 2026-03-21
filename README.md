@@ -125,10 +125,7 @@ JSON-RPC 2.0 over Unix socket.
 
 ## Documentation
 
-- [Architecture & Design](docs/product-brief.md) — Detailed architecture, design principles, OS comparison, build retrospective
-- [Execution Loop Spec](docs/superpowers/specs/2026-03-20-execution-loop-design.md) — How agents call LLMs and execute tools
-- [Tools & Orchestration Spec](docs/superpowers/specs/2026-03-21-tools-and-orchestration-design.md) — Tool design, capability narrowing
-- [Messaging & Approval Spec](docs/superpowers/specs/2026-03-21-messaging-and-approval-design.md) — IPC wiring, approval queue
+- [Architecture](docs/architecture.md) — Layer details and design decisions
 
 ## License
 

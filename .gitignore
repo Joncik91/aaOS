@@ -6,3 +6,5 @@
 .vscode/
 *.iml
 .DS_Store
+docs/superpowers/
+docs/product-brief.md

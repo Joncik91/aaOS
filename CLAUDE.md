@@ -58,12 +58,7 @@ aaos-core
 
 ## Design Docs
 
-| Document | What it covers |
-|----------|---------------|
-| [Architecture & Design](docs/product-brief.md) | Detailed architecture, design principles, OS comparison, build retrospective |
-| [Execution Loop Spec](docs/superpowers/specs/2026-03-20-execution-loop-design.md) | AgentServices trait, LlmClient, AgentExecutor, tool.invoke API |
-| [Tools & Orchestration Spec](docs/superpowers/specs/2026-03-21-tools-and-orchestration-design.md) | Real tools, InvocationContext, capability narrowing, spawn_agent |
-| [Messaging & Approval Spec](docs/superpowers/specs/2026-03-21-messaging-and-approval-design.md) | Router wiring, ApprovalService trait, ApprovalQueue, approval API |
+- [Architecture](docs/architecture.md) — Layer details and design decisions
 
 ## Workflow
 
