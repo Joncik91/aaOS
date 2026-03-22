@@ -2,7 +2,9 @@
 
 ## Overview
 
-aaOS is organized as a six-layer stack, each layer providing services to the one above it. The system runs as userspace abstractions on Linux — proving the model before pushing into a real microkernel.
+aaOS is organized as a six-layer stack, each layer providing services to the one above it.
+
+**Current state:** The system runs as a userspace prototype on Linux — proving the agent programming model before migrating to a real capability-based microkernel (see [Roadmap](roadmap.md), Phase F). The abstractions are designed to survive that migration: the `AgentServices` trait is the future syscall interface, and the `Tool` trait is the future driver model. Code written against these interfaces today will work unchanged on the real kernel.
 
 ## Layer Details
 

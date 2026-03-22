@@ -1,28 +1,55 @@
 # aaOS — Agent-First Operating System
 
-An operating system where AI agents are the native processes and humans are supervisors.
+**The vision:** A new kind of kernel where AI agents are native processes, capabilities replace permissions, and the OS is designed for autonomy — not human interaction.
 
-Not an agent framework. Not a toolkit on Linux. A rethinking of what an operating system is for when the primary user is no longer a human.
+**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 6 Rust crates, ~6000 lines, 111 tests. Not a kernel yet — a proof of concept that validates the programming model before it gets baked into one.
 
-## What Makes It Different
+## Why a New Kernel
 
-**Capability-based security.** Every agent starts with zero permissions. Capabilities are unforgeable tokens granted at spawn, validated on every operation, and can only be narrowed — never escalated. An agent with `file_write: /data/output/*` literally cannot write to `/etc/`. This isn't a prompt instruction. It's a kernel guarantee.
+Today's operating systems were designed for humans interacting with programs through screens. AI agents don't need display servers, window managers, or interactive shells. They need capability-based security, structured communication, and orchestration primitives. aaOS asks: what does an OS look like when you design it for agents from the ground up?
 
-**Two-level tool enforcement.** First gate: can this agent use this tool at all? Second gate: can it use this tool on this specific path/resource? A research agent might have `tool: file_write` access but only to `/data/research/*`. Both checks happen before every invocation.
+The answer isn't an agent framework bolted onto Linux. It's a new kernel where:
 
-**Human-in-the-loop approval.** Manifests declare which tools require human approval. When an agent tries to write a file that requires approval, the execution loop blocks. A human sees the request (agent name, tool, file path, content) and approves or denies via the API. The agent resumes or adapts.
+- **Agents are processes.** They have lifecycles, registries, schedulers, and supervisors — managed by the kernel, not by application code.
+- **Capabilities replace permissions.** No ambient authority. Unforgeable tokens granted at spawn, validated on every operation, narrowable but never escalatable. An agent with `file_write: /data/output/*` *cannot* write to `/etc/` — not as a policy, but as a kernel guarantee.
+- **Communication is typed.** MCP messages (JSON-RPC 2.0) with schema validation replace raw byte pipes. Everything is parseable, validatable, and auditable.
+- **Inference is a schedulable resource.** Like CPU time, LLM inference is allocated by the kernel — with budgets, priorities, and fair scheduling.
 
-**Agent orchestration with capability narrowing.** A parent agent spawns children with a subset of its own capabilities. The parent's tokens are the ceiling — children get their declared scope, which must be equal to or narrower than what the parent holds. Delegation chains are auditable.
+## What the Prototype Proves
 
-**Kernel-level audit trail.** Every action produces an audit event: agent spawned, capability granted, tool invoked, message sent, approval requested, approval granted. You can trace any action back to root cause.
+This repo is a **userspace prototype** — the agent programming model running as a daemon on Linux, isolated in Docker. It proves the abstractions work before committing them to a real microkernel.
 
-**Structured IPC.** All communication uses typed MCP messages (JSON-RPC 2.0) with schema validation. No raw text pipes. Everything is parseable, validatable, and auditable.
+What's implemented and tested:
 
-## Project Status
+- **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path)
+- **Agent orchestration** — Parent spawns children with narrowed capabilities. Delegation chains are auditable.
+- **Human-in-the-loop approval** — Manifests declare which tools need approval. Execution blocks until a human responds via the API.
+- **Kernel-level audit trail** — Every action logged: spawn, capability grant, tool invoke, message send, approval request/response
+- **Structured IPC** — MCP-native message routing with capability validation
+- **Real LLM integration** — Agents call the Anthropic API, use real tools (file I/O, HTTP), subject to real capability enforcement
 
-Working prototype. The agent kernel, capability system, tool registry, execution loop, approval queue, and message router are implemented and tested. Agents call real LLMs (Anthropic API), use real tools (file I/O, HTTP fetch), and are subject to real capability enforcement.
+## The Path to a Real Kernel
 
-**Not production-ready.** This is a proof of concept exploring how operating system abstractions should change for AI agents.
+```
+ You are here
+      |
+      v
+ [Prototype]  Userspace on Linux — proving the model        <-- this repo
+      |
+ [Persistent Agents]  Long-running agents, request-response IPC
+      |
+ [Agent Memory]  Managed context windows, episodic store, shared knowledge
+      |
+ [Supervision Dashboard]  Web UI for monitoring, approval, policy
+      |
+ [Inference Scheduling]  LLM as a kernel-scheduled resource
+      |
+ [Real Kernel]  Migrate to Redox OS or seL4 microkernel
+```
+
+The `AgentServices` trait defines the syscall interface. The `Tool` trait defines tool integration. The manifest format defines agent bundles. When the kernel migration happens, everything above the kernel — the entire agent programming model — stays the same. Applications work identically. The kernel is an implementation detail.
+
+See [Roadmap](docs/roadmap.md) for details on each phase.
 
 ## Architecture
 
@@ -36,7 +63,7 @@ Working prototype. The agent kernel, capability system, tool registry, execution
 +---------------------------------------------+
 |          Agent Kernel                        |  Process model, registry, tokens, IPC router
 +---------------------------------------------+
-|       Linux (userspace abstractions)         |  Docker-isolated development
+|       Linux (userspace prototype)            |  Docker-isolated, replaced by real kernel in Phase F
 +---------------------------------------------+
 ```
 
@@ -126,8 +153,8 @@ JSON-RPC 2.0 over Unix socket.
 ## Documentation
 
 - [Architecture](docs/architecture.md) — Layer details and design decisions
-- [Roadmap](docs/roadmap.md) — What comes after the prototype
-- [Build Retrospective](docs/retrospective.md) — How a working OS prototype was built in 48 hours
+- [Roadmap](docs/roadmap.md) — Phase-by-phase path from prototype to real kernel
+- [Build Retrospective](docs/retrospective.md) — How a working prototype was built in 48 hours
 
 ## License
 
