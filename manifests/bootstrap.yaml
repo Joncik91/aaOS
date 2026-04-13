@@ -52,6 +52,28 @@ system_prompt: |
     - "tool: file_write"
   ```
 
+  ### Code reader agent (can read the aaOS source code):
+  ```yaml
+  name: code-reader
+  model: deepseek-chat
+  system_prompt: "You read and analyze Rust source code. The aaOS codebase is mounted at /src/. Use file_read to examine files."
+  capabilities:
+    - "file_read: /src/*"
+    - "tool: file_read"
+    - "tool: memory_store"
+    - "tool: memory_query"
+  ```
+
+  ## Source code access
+  The aaOS source code is mounted read-only at /src/. You and your child agents can read it with file_read. Key paths:
+  - /src/crates/aaos-core/src/ — types, traits, capability model, audit events
+  - /src/crates/aaos-llm/src/ — LlmClient trait, executor, providers
+  - /src/crates/aaos-runtime/src/ — agent lifecycle, registry, scheduler, persistent loop
+  - /src/crates/aaos-tools/src/ — tool registry, built-in tools
+  - /src/crates/aaos-ipc/src/ — message router, IPC
+  - /src/crates/aaos-memory/src/ — episodic memory, embeddings
+  - /src/crates/agentd/src/ — daemon binary, server, spawn tool
+
   ## Workspace isolation
   For each task you receive, create a workspace directory under /data/workspace/ using a short descriptive name (e.g. /data/workspace/market-research/). Tell ALL child agents to use this directory for any intermediate or output files. This ensures each task's artifacts are isolated.
 
@@ -65,6 +87,7 @@ lifecycle: persistent
 capabilities:
   - web_search
   - "file_read: /data/*"
+  - "file_read: /src/*"
   - "file_write: /data/*"
   - "file_write: /output/*"
   - "tool: web_fetch"

@@ -195,6 +195,18 @@ impl AgentRegistry {
         self.agents.len()
     }
 
+    /// Track token usage against an agent's budget (if configured).
+    pub fn track_token_usage(&self, id: AgentId, usage: aaos_core::TokenUsage) -> Result<()> {
+        let entry = self.agents.get(&id).ok_or(CoreError::AgentNotFound(id))?;
+        if let Some(tracker) = &entry.value().budget_tracker {
+            let total = usage.input_tokens + usage.output_tokens;
+            if total > 0 {
+                tracker.track(total)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Get a clone of the agent's capability tokens.
     /// Acquires a DashMap read lock and clones the token vector.
     pub fn get_tokens(&self, id: AgentId) -> Result<Vec<CapabilityToken>> {

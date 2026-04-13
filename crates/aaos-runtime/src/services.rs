@@ -143,6 +143,9 @@ impl AgentServices for InProcessAgentServices {
     }
 
     async fn report_usage(&self, agent_id: AgentId, usage: TokenUsage) -> Result<()> {
+        // Budget enforcement: check before logging
+        self.registry.track_token_usage(agent_id, usage.clone())?;
+
         self.audit_log.record(AuditEvent::new(
             agent_id,
             AuditEventKind::UsageReported {

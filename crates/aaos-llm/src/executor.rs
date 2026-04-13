@@ -154,6 +154,18 @@ impl AgentExecutor {
 
             iterations += 1;
 
+            // Verbose logging: full LLM response
+            for block in &response.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        tracing::info!(agent_id = %agent_id, iter = iterations, "\n--- AGENT THINKS ---\n{}\n--- END ---", text);
+                    }
+                    ContentBlock::ToolUse { id: _, name, input } => {
+                        tracing::info!(agent_id = %agent_id, iter = iterations, tool = %name, "\n--- TOOL CALL: {} ---\n{}\n--- END ---", name, input);
+                    }
+                }
+            }
+
             // Report and accumulate usage
             let _ = self
                 .services
@@ -372,6 +384,18 @@ impl AgentExecutor {
 
             iterations += 1;
 
+            // Verbose logging: full LLM response
+            for block in &response.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        tracing::info!(agent_id = %agent_id, iter = iterations, "\n--- AGENT THINKS ---\n{}\n--- END ---", text);
+                    }
+                    ContentBlock::ToolUse { id: _, name, input } => {
+                        tracing::info!(agent_id = %agent_id, iter = iterations, tool = %name, "\n--- TOOL CALL: {} ---\n{}\n--- END ---", name, input);
+                    }
+                }
+            }
+
             // Report and accumulate usage
             let _ = self
                 .services
@@ -469,16 +493,22 @@ impl AgentExecutor {
                             .invoke_tool(agent_id, &tool_name, tool_input)
                             .await
                         {
-                            Ok(result) => Message::ToolResult {
-                                tool_use_id,
-                                content: result,
-                                is_error: false,
-                            },
-                            Err(e) => Message::ToolResult {
-                                tool_use_id,
-                                content: Value::String(e.to_string()),
-                                is_error: true,
-                            },
+                            Ok(result) => {
+                                tracing::info!(agent_id = %agent_id, tool = %tool_name, "\n--- TOOL RESULT: {} ---\n{}\n--- END ---", tool_name, result);
+                                Message::ToolResult {
+                                    tool_use_id,
+                                    content: result,
+                                    is_error: false,
+                                }
+                            }
+                            Err(e) => {
+                                tracing::info!(agent_id = %agent_id, tool = %tool_name, "\n--- TOOL ERROR: {} ---\n{}\n--- END ---", tool_name, e);
+                                Message::ToolResult {
+                                    tool_use_id,
+                                    content: Value::String(e.to_string()),
+                                    is_error: true,
+                                }
+                            }
                         };
                         messages.push(tool_result_msg.clone());
                         transcript_delta.push(tool_result_msg);

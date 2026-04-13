@@ -36,6 +36,9 @@ pub enum CoreError {
     #[error("request timed out after {0:?}")]
     Timeout(std::time::Duration),
 
+    #[error("token budget exceeded: {0}")]
+    BudgetExceeded(#[from] crate::budget::BudgetExceeded),
+
     #[error(transparent)]
     Yaml(#[from] serde_yaml::Error),
 

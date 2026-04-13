@@ -1,6 +1,7 @@
 use std::fmt;
+use std::sync::Arc;
 
-use aaos_core::{AgentId, AgentManifest, CapabilityToken};
+use aaos_core::{AgentId, AgentManifest, BudgetTracker, CapabilityToken};
 use tokio::sync::mpsc;
 
 /// The state of an agent process.
@@ -61,12 +62,16 @@ pub struct AgentProcess {
     pub message_rx: Option<tokio::sync::mpsc::Receiver<aaos_ipc::McpMessage>>,
     pub response_rx: Option<tokio::sync::mpsc::Receiver<aaos_ipc::McpResponse>>,
     pub task_handle: Option<tokio::task::JoinHandle<()>>,
+    pub budget_tracker: Option<Arc<BudgetTracker>>,
 }
 
 impl AgentProcess {
     /// Create a new agent process in the Starting state.
     pub fn new(id: AgentId, manifest: AgentManifest, capabilities: Vec<CapabilityToken>) -> Self {
         let (command_tx, command_rx) = mpsc::channel(32);
+        let budget_tracker = manifest
+            .budget_config
+            .map(|config| Arc::new(BudgetTracker::new(config)));
         Self {
             id,
             manifest,
@@ -78,6 +83,7 @@ impl AgentProcess {
             message_rx: None,
             response_rx: None,
             task_handle: None,
+            budget_tracker,
         }
     }
 

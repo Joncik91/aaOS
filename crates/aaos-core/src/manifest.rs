@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::budget::BudgetConfig;
 use crate::error::{CoreError, Result};
 
 /// How the system prompt is sourced.
@@ -128,6 +129,9 @@ pub struct AgentManifest {
     pub metadata: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub approval_required: Vec<String>,
+    /// Per-agent token budget. If None, no budget enforcement.
+    #[serde(default)]
+    pub budget_config: Option<BudgetConfig>,
 }
 
 impl AgentManifest {

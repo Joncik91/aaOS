@@ -1,5 +1,6 @@
 pub mod agent_id;
 pub mod audit;
+pub mod budget;
 pub mod capability;
 pub mod error;
 pub mod manifest;
@@ -9,6 +10,7 @@ pub mod tool_definition;
 pub use agent_id::AgentId;
 pub use audit::{AuditEvent, AuditEventKind, AuditLog, InMemoryAuditLog, StdoutAuditLog, StopReason};
 pub use capability::{Capability, CapabilityToken, Constraints, RateLimit};
+pub use budget::{BudgetConfig, BudgetExceeded, BudgetTracker};
 pub use error::{CoreError, Result};
 pub use manifest::{AgentManifest, CapabilityDeclaration, Lifecycle, MemoryConfig, PromptSource, TokenBudget};
 pub use services::{
