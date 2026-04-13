@@ -300,6 +300,24 @@ impl AgentExecutor {
             },
         };
 
+        self.run_with_history_and_prompt(agent_id, manifest, initial_message, prior_messages, &system).await
+    }
+
+    /// Run an agent with prior conversation history and an overridden system prompt.
+    ///
+    /// Like `run_with_history`, but uses the provided `system_prompt` instead of
+    /// extracting it from the manifest. This is used when the ContextManager has
+    /// folded conversation summaries into the system prompt.
+    pub async fn run_with_history_and_prompt(
+        &self,
+        agent_id: AgentId,
+        manifest: &AgentManifest,
+        initial_message: &str,
+        prior_messages: &[Message],
+        system_prompt: &str,
+    ) -> ExecutionResultWithHistory {
+        let system = system_prompt.to_string();
+
         // Get tools filtered by agent's capabilities
         let tools = match self.services.list_tools(agent_id).await {
             Ok(t) => t,

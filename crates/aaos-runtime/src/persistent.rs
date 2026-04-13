@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use aaos_core::{
-    AgentId, AgentManifest, AuditEvent, AuditEventKind, AuditLog,
+    AgentId, AgentManifest, AuditEvent, AuditEventKind, AuditLog, PromptSource,
 };
 use aaos_ipc::{McpMessage, MessageRouter};
-use aaos_llm::{AgentExecutor, ExecutionStopReason};
+use aaos_llm::{AgentExecutor, ExecutionStopReason, Message};
 use tokio::sync::mpsc;
 
+use crate::context::ContextManager;
 use crate::process::AgentCommand;
-use crate::session::SessionStore;
+use crate::session::{ArchiveSegment, SessionStore};
 
 /// Extract the user message string from an McpMessage's params.
 fn extract_user_message(msg: &McpMessage) -> String {
@@ -29,14 +30,23 @@ pub async fn persistent_agent_loop(
     session_store: Arc<dyn SessionStore>,
     router: Arc<MessageRouter>,
     audit_log: Arc<dyn AuditLog>,
+    context_manager: Option<Arc<ContextManager>>,
 ) {
-    let mut history = session_store
+    let mut history: Vec<Message> = session_store
         .load(&agent_id)
         .unwrap_or_default();
 
     let max_history = manifest.memory.max_history_messages.unwrap_or(100);
     let mut messages_processed: u64 = 0;
-    let mut turns_since_compact: u32 = 0;
+
+    // Pre-resolve system prompt once for the loop lifetime
+    let system_prompt_str = match &manifest.system_prompt {
+        PromptSource::Inline(s) => s.clone(),
+        PromptSource::File(path) => {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|_| format!("Failed to read prompt from {}", path.display()))
+        }
+    };
 
     audit_log.record(AuditEvent::new(
         agent_id,
@@ -62,8 +72,62 @@ pub async fn persistent_agent_loop(
 
                 let user_input = extract_user_message(&msg);
 
+                // Prepare context (summarize if needed) BEFORE calling executor
+                let (messages_for_llm, prompt_for_llm) = if let Some(ref cm) = context_manager {
+                    match cm.prepare_context(&history, &system_prompt_str).await {
+                        Ok(prepared) => {
+                            // Handle summarization: archive, then mutate history
+                            if let Some(ref summ) = prepared.summarization {
+                                // 1. Archive the old messages FIRST
+                                let segment = ArchiveSegment {
+                                    source_range: summ.source_range,
+                                    messages: summ.archived_messages.clone(),
+                                    archived_at: chrono::Utc::now(),
+                                };
+                                let _ = session_store.archive_segment(&agent_id, &segment);
+
+                                // 2. Drain old messages from history, insert summary
+                                let (_, end) = summ.source_range;
+                                history.drain(..=end);
+                                history.insert(0, summ.summary.clone());
+
+                                // 3. Clear and rewrite session store with new history
+                                let _ = session_store.clear(&agent_id);
+                                let _ = session_store.append(&agent_id, &history);
+
+                                // 4. Emit audit event
+                                audit_log.record(AuditEvent::new(
+                                    agent_id,
+                                    AuditEventKind::ContextSummarized {
+                                        messages_summarized: summ.archived_messages.len() as u32,
+                                        source_range: summ.source_range,
+                                        tokens_saved_estimate: summ.tokens_saved_estimate,
+                                    },
+                                ));
+                            }
+
+                            (prepared.messages, prepared.system_prompt)
+                        }
+                        Err(reason) => {
+                            audit_log.record(AuditEvent::new(
+                                agent_id,
+                                AuditEventKind::ContextSummarizationFailed {
+                                    reason: reason.clone(),
+                                    fallback: "original_history".into(),
+                                },
+                            ));
+                            (history.clone(), system_prompt_str.clone())
+                        }
+                    }
+                } else {
+                    (history.clone(), system_prompt_str.clone())
+                };
+
                 let result = executor
-                    .run_with_history(agent_id, &manifest, &user_input, &history)
+                    .run_with_history_and_prompt(
+                        agent_id, &manifest, &user_input,
+                        &messages_for_llm, &prompt_for_llm,
+                    )
                     .await;
 
                 match result.stop_reason {
@@ -89,13 +153,6 @@ pub async fn persistent_agent_loop(
                         }
 
                         let _ = session_store.append(&agent_id, &result.transcript_delta);
-
-                        turns_since_compact += 1;
-                        if turns_since_compact >= 10 {
-                            let _ = session_store.clear(&agent_id);
-                            let _ = session_store.append(&agent_id, &history);
-                            turns_since_compact = 0;
-                        }
 
                         audit_log.record(AuditEvent::new(
                             agent_id,
@@ -270,6 +327,7 @@ lifecycle: persistent
         let handle = tokio::spawn(persistent_agent_loop(
             agent_id, test_manifest(), msg_rx, cmd_rx,
             executor, session_store.clone(), router.clone(), audit_log.clone(),
+            None,
         ));
 
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -318,6 +376,7 @@ lifecycle: persistent
         let handle = tokio::spawn(persistent_agent_loop(
             agent_id, test_manifest(), msg_rx, cmd_rx,
             executor, session_store.clone(), router.clone(), audit_log.clone(),
+            None,
         ));
 
         // First message: will fail
@@ -365,6 +424,7 @@ lifecycle: persistent
         let handle = tokio::spawn(persistent_agent_loop(
             agent_id, test_manifest(), msg_rx, cmd_rx,
             executor, session_store, router, audit_log.clone(),
+            None,
         ));
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

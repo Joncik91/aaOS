@@ -52,12 +52,14 @@ dependencies = [
  "aaos-llm",
  "aaos-tools",
  "async-trait",
+ "chrono",
  "dashmap",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

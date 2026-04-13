@@ -156,7 +156,7 @@ impl Server {
 
         let is_persistent = manifest.lifecycle == aaos_core::Lifecycle::Persistent;
 
-        let agent_id = match self.registry.spawn(manifest) {
+        let agent_id = match self.registry.spawn(manifest.clone()) {
             Ok(id) => id,
             Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         };
@@ -177,11 +177,29 @@ impl Server {
                     services,
                     ExecutorConfig::default(),
                 );
+
+                // Construct ContextManager for summarization support
+                let model_for_summarization = manifest.memory.summarization_model.clone()
+                    .unwrap_or_else(|| "claude-haiku-4-5-20251001".to_string());
+                let threshold = manifest.memory.summarization_threshold.unwrap_or(0.7);
+                let model_max = llm.max_context_tokens(&manifest.model);
+                let budget = match aaos_core::TokenBudget::from_config(
+                    &manifest.memory.context_window, model_max,
+                ) {
+                    Ok(b) => b,
+                    Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR,
+                        format!("invalid context_window: {e}")),
+                };
+                let context_manager = Some(Arc::new(aaos_runtime::ContextManager::new(
+                    llm.clone(), budget, model_for_summarization, threshold,
+                )));
+
                 if let Err(e) = self.registry.start_persistent_loop(
                     agent_id,
                     executor,
                     self.session_store.clone(),
                     self.router.clone(),
+                    context_manager,
                 ) {
                     return JsonRpcResponse::error(id, INTERNAL_ERROR,
                         format!("failed to start persistent loop: {e}"));

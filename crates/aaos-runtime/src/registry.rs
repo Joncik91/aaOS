@@ -126,6 +126,7 @@ impl AgentRegistry {
         executor: aaos_llm::AgentExecutor,
         session_store: Arc<dyn crate::session::SessionStore>,
         router: Arc<MessageRouter>,
+        context_manager: Option<Arc<crate::context::ContextManager>>,
     ) -> Result<()> {
         let mut entry = self
             .agents
@@ -145,6 +146,7 @@ impl AgentRegistry {
         let handle = tokio::spawn(persistent_agent_loop(
             agent_id, manifest, msg_rx, cmd_rx,
             executor, session_store, router, audit_log,
+            context_manager,
         ));
 
         process.task_handle = Some(handle);
