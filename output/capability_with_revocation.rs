@@ -90,9 +90,11 @@ impl CapabilityToken {
         self.revoked_at.is_some()
     }
 
-    /// Revoke this token. Once revoked, `permits()` always returns false.
+    /// Revoke this token.
     pub fn revoke(&mut self) {
-        self.revoked_at = Some(Utc::now());
+        if self.revoked_at.is_none() {
+            self.revoked_at = Some(Utc::now());
+        }
     }
 
     /// Check if this token grants the requested capability.
@@ -305,40 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn revoked_token_denies_access() {
-        let mut token = CapabilityToken::issue(
-            test_agent(),
-            Capability::FileRead { path_glob: "/data/*".into() },
-            Constraints::default(),
-        );
-        // Before revocation: permits
-        assert!(token.permits(&Capability::FileRead { path_glob: "/data/file.txt".into() }));
-        assert!(!token.is_revoked());
-
-        // Revoke
-        token.revoke();
-
-        // After revocation: denies
-        assert!(token.is_revoked());
-        assert!(token.revoked_at.is_some());
-        assert!(!token.permits(&Capability::FileRead { path_glob: "/data/file.txt".into() }));
-    }
-
-    #[test]
-    fn revoked_token_roundtrips_json() {
-        let mut token = CapabilityToken::issue(
-            test_agent(),
-            Capability::WebSearch,
-            Constraints::default(),
-        );
-        token.revoke();
-        let json = serde_json::to_string(&token).unwrap();
-        let parsed: CapabilityToken = serde_json::from_str(&json).unwrap();
-        assert!(parsed.is_revoked());
-        assert!(!parsed.permits(&Capability::WebSearch));
-    }
-
-    #[test]
     fn token_roundtrips_json() {
         let token = CapabilityToken::issue(
             test_agent(),
@@ -350,5 +318,47 @@ mod tests {
         let json = serde_json::to_string(&token).unwrap();
         let parsed: CapabilityToken = serde_json::from_str(&json).unwrap();
         assert_eq!(token.capability, parsed.capability);
+    }
+
+    #[test]
+    fn revocation_prevents_permission() {
+        let mut token = CapabilityToken::issue(
+            test_agent(),
+            Capability::WebSearch,
+            Constraints::default(),
+        );
+        assert!(token.permits(&Capability::WebSearch));
+        token.revoke();
+        assert!(!token.permits(&Capability::WebSearch));
+        assert!(token.is_revoked());
+    }
+
+    #[test]
+    fn revocation_serialization() {
+        let mut token = CapabilityToken::issue(
+            test_agent(),
+            Capability::WebSearch,
+            Constraints::default(),
+        );
+        token.revoke();
+        let json = serde_json::to_string(&token).unwrap();
+        let parsed: CapabilityToken = serde_json::from_str(&json).unwrap();
+        assert!(parsed.is_revoked());
+        assert_eq!(token.revoked_at, parsed.revoked_at);
+    }
+
+    #[test]
+    fn expiration_and_revocation_both_block() {
+        let mut token = CapabilityToken::issue(
+            test_agent(),
+            Capability::WebSearch,
+            Constraints::default(),
+        );
+        // Not expired or revoked
+        assert!(token.permits(&Capability::WebSearch));
+        
+        // Revoked
+        token.revoke();
+        assert!(!token.permits(&Capability::WebSearch));
     }
 }

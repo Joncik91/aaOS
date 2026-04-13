@@ -35,7 +35,7 @@ pub enum AuditEventKind {
     },
     CapabilityRevoked {
         token_id: Uuid,
-        capability: String,
+        capability: Capability,
     },
     ToolInvoked {
         tool: String,
@@ -247,6 +247,20 @@ mod tests {
             AuditEventKind::ToolInvoked {
                 tool: "web_search".into(),
                 input_hash: "abc123".into(),
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn capability_revoked_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::CapabilityRevoked {
+                token_id: Uuid::new_v4(),
+                capability: Capability::WebSearch,
             },
         );
         let json = serde_json::to_string(&event).unwrap();
