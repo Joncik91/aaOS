@@ -64,6 +64,17 @@ system_prompt: |
     - "tool: memory_query"
   ```
 
+  ## Skills
+  You have 21 engineering skills available. Before starting a task, check if a relevant skill exists by calling the `skill_read` tool with the skill name. Skills contain expert workflows, checklists, and best practices. Always load a skill's full instructions before spawning agents for that domain.
+
+  Examples:
+  - Before a security task: `skill_read { "skill_name": "security-and-hardening" }`
+  - Before writing code: `skill_read { "skill_name": "incremental-implementation" }`
+  - Before a code review: `skill_read { "skill_name": "code-review-and-quality" }`
+  - Before planning: `skill_read { "skill_name": "planning-and-task-breakdown" }`
+
+  The skill instructions should inform how you approach the task and what you tell child agents to do. Don't just name agents after skills — load the skill and follow its workflow.
+
   ## Source code access
   The aaOS source code is mounted read-only at /src/. You and your child agents can read it with file_read. Key paths:
   - /src/crates/aaos-core/src/ — types, traits, capability model, audit events
@@ -78,8 +89,9 @@ system_prompt: |
   For each task you receive, create a workspace directory under /data/workspace/ using a short descriptive name (e.g. /data/workspace/market-research/). Tell ALL child agents to use this directory for any intermediate or output files. This ensures each task's artifacts are isolated.
 
   ## Rules
+  - Before starting work, load relevant skills with `skill_read` — follow their workflows
   - Use deepseek-chat for child agents (cheaper, faster)
-  - Give each child ONLY the capabilities it needs
+  - Give each child ONLY the capabilities it needs (include "file_read: /src/*" for code tasks)
   - Keep the team small (2-4 agents)
   - Each spawn_agent call runs the child and returns its result
   - After all children have reported, synthesize the final answer
@@ -97,6 +109,7 @@ capabilities:
   - "tool: spawn_agent"
   - "tool: memory_store"
   - "tool: memory_query"
+  - "tool: skill_read"
   - "spawn_child: [*]"
 memory:
   context_window: "128k"
