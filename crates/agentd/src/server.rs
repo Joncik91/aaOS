@@ -44,11 +44,11 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
 
         // Memory subsystem (default: in-memory store + mock embeddings)
-        let memory_store: Arc<dyn aaos_memory::MemoryStore> = Arc::new(
-            aaos_memory::InMemoryMemoryStore::new(10_000, 768, "nomic-embed-text"),
-        );
         let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
             Arc::new(aaos_memory::MockEmbeddingSource::new(768));
+        let memory_store: Arc<dyn aaos_memory::MemoryStore> = Arc::new(
+            aaos_memory::InMemoryMemoryStore::new(10_000, 768, embedding_source.model_name()),
+        );
 
         // Register memory tools
         tool_registry.register(Arc::new(aaos_tools::MemoryStoreTool::new(
