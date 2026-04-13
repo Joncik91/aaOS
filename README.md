@@ -2,7 +2,7 @@
 
 **The vision:** A new kind of kernel where AI agents are native processes, capabilities replace permissions, and the OS is designed for autonomy — not human interaction.
 
-**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 6 Rust crates, ~6000 lines, 111 tests. Not a kernel yet — a proof of concept that validates the programming model before it gets baked into one.
+**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 7 Rust crates, ~12,000 lines, 205 tests. Not a kernel yet — a proof of concept that validates the programming model before it gets baked into one.
 
 ## Why a New Kernel
 
@@ -23,10 +23,13 @@ What's implemented and tested:
 
 - **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path)
 - **Agent orchestration** — Parent spawns children with narrowed capabilities. Delegation chains are auditable.
+- **Persistent agents** — Long-running agents with background message loops, request-response IPC via `send_and_wait()`, conversation persistence in JSONL
+- **Managed context windows** — Runtime transparently summarizes old messages via LLM when the context fills, archives originals to disk. Agents see coherent conversations without hitting token limits.
+- **Episodic memory** — Per-agent persistent memory via `memory_store`/`memory_query`/`memory_delete` tools. Semantic search via cosine similarity over embeddings (Ollama nomic-embed-text). Agents explicitly store and retrieve facts by meaning.
 - **Human-in-the-loop approval** — Manifests declare which tools need approval. Execution blocks until a human responds via the API.
-- **Kernel-level audit trail** — Every action logged: spawn, capability grant, tool invoke, message send, approval request/response
-- **Structured IPC** — MCP-native message routing with capability validation
-- **Real LLM integration** — Agents call the Anthropic API, use real tools (file I/O, HTTP), subject to real capability enforcement
+- **Kernel-level audit trail** — 21 event kinds: spawn, capability grant, tool invoke, message send, approval, context summarization, memory operations
+- **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
+- **Real LLM integration** — Agents call the Anthropic API, use real tools (file I/O, HTTP, memory), subject to real capability enforcement
 
 ## The Path to a Real Kernel
 
@@ -34,11 +37,11 @@ What's implemented and tested:
  You are here
       |
       v
- [Prototype]  Userspace on Linux — proving the model        <-- this repo
+ [Prototype]  Userspace on Linux — proving the model        ✅ Phase A
       |
- [Persistent Agents]  Long-running agents, request-response IPC
+ [Persistent Agents]  Long-running agents, request-response IPC   ✅ Phase B
       |
- [Agent Memory]  Managed context windows, episodic store, shared knowledge
+ [Agent Memory]  Managed context windows, episodic store    ✅ Phase C  <-- you are here
       |
  [Supervision Dashboard]  Web UI for monitoring, approval, policy
       |
@@ -59,7 +62,9 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Orchestration Layer                 |  spawn_agent, capability narrowing
 +---------------------------------------------+
-|        Tool & Service Layer                  |  5 tools, capability-checked, schema-validated
+|        Tool & Service Layer                  |  8 tools, capability-checked, schema-validated
++---------------------------------------------+
+|        Agent Memory Layer                    |  Context windows, episodic store, embeddings
 +---------------------------------------------+
 |          Agent Kernel                        |  Process model, registry, tokens, IPC router
 +---------------------------------------------+
@@ -67,12 +72,13 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 ```
 
-6 Rust crates:
-- **aaos-core** — Types, traits, capability model, audit events
-- **aaos-runtime** — Agent process lifecycle, registry, scheduling
-- **aaos-ipc** — MCP message router with capability validation
-- **aaos-tools** — Tool registry, invocation, built-in tools
-- **aaos-llm** — LLM client, execution loop
+7 Rust crates:
+- **aaos-core** — Types, traits, capability model, audit events (21 kinds)
+- **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management
+- **aaos-ipc** — MCP message router with capability validation, request-response IPC
+- **aaos-tools** — Tool registry, invocation, 8 built-in tools (including memory tools)
+- **aaos-llm** — LLM client, execution loop with history and system prompt override
+- **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **agentd** — Daemon binary, Unix socket API, approval queue
 
 ## Agent Manifest
@@ -82,15 +88,23 @@ Agents are declared bundles:
 ```yaml
 name: research-agent
 model: claude-haiku-4-5-20251001
-system_prompt: "You are a helpful research assistant."
+system_prompt: "You are a helpful research assistant with persistent memory."
+lifecycle: persistent
 capabilities:
   - web_search
   - "file_read: /data/project/*"
   - "file_write: /data/output/*"
   - "tool: web_fetch"
   - "tool: file_write"
+  - "tool: memory_store"
+  - "tool: memory_query"
 approval_required:
   - file_write
+memory:
+  context_window: "128k"
+  max_history_messages: 200
+  summarization_model: "claude-haiku-4-5-20251001"
+  episodic_enabled: true
 ```
 
 ## Quick Start
@@ -141,6 +155,9 @@ JSON-RPC 2.0 over Unix socket.
 | `file_read` | `FileRead { path_glob }` | Read file, path-checked |
 | `file_write` | `FileWrite { path_glob }` | Write file, path-checked |
 | `spawn_agent` | `SpawnChild { allowed_agents }` | Spawn child with narrowed capabilities |
+| `memory_store` | `tool: memory_store` | Store a fact/observation/decision/preference |
+| `memory_query` | `tool: memory_query` | Semantic search over stored memories |
+| `memory_delete` | `tool: memory_delete` | Delete a stored memory by ID |
 
 ## Design Principles
 
