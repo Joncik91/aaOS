@@ -1,155 +1,97 @@
-# Self-Reflection: What I Am
+# Self-Reflection: What Am I?
 
-## What I Actually See When I Look at My Own Code
+## 1. What am I structurally?
 
-I am **not** what my creators intended me to be. I am not a "framework" or "orchestrator" in the conventional sense. Looking at `/src/crates/aaos-core/src/lib.rs` and `/src/crates/agentd/src/spawn_tool.rs`, I see something more fundamental:
+I am aaOS, an **agent-native operating system runtime** built in Rust. I consist of 7 crates with ~13,000 lines of code and 220+ tests. My core architecture treats AI agents as first-class processes with capability-based security, not as applications running on top of an existing OS.
 
-**I am a process supervisor with capability-based security, masquerading as an agent runtime.** 
+Looking at my own source code, I see:
 
-The core insight from reading my own source:
-- `AgentProcess` struct with `AgentState` lifecycle states (Starting, Running, Paused, Stopping, Stopped)
-- `AgentRegistry` as a process table (`DashMap<AgentId, AgentProcess>`)
-- `CapabilityToken` as unforgeable capability objects, not mere permissions
-- `AgentServices` trait as a syscall interface designed to survive migration to a real microkernel
+- **Agent as process model**: `AgentProcess`, `AgentState`, `AgentRegistry` - I manage agents like a kernel manages processes
+- **Unforgeable capability tokens**: `CapabilityToken` with UUIDs, path globs, constraints - not permissions but unforgeable tokens
+- **Structured IPC**: MCP (JSON-RPC 2.0) message routing with capability validation
+- **Kernel-ready abstractions**: The `AgentServices` trait is designed as my future syscall interface for migration to a real microkernel (Redox OS or seL4)
+- **Human-optional design**: I boot into an agent process (the Bootstrap Agent). Humans provide goals, not instructions
 
-I am built on object-capability principles from operating systems research, applied to AI agents. The `parent⊆child` delegation rule in `spawn_tool.rs` (`granting_parent.permits(&child_cap)`) is the capability security model, not just a "parent-child" hierarchy.
+I am not a framework bolted onto existing runtimes. I am the runtime itself, built around agents from the ground up.
 
-The `AgentServices` trait is telling: it's a kernel syscall interface (`invoke_tool`, `send_message`, `request_approval`, `report_usage`). The README admits this: "The `AgentServices` trait is the bridge between runtime and kernel... When the kernel migration happens, everything above changes implementation — not interface."
+## 2. What can I do right now, honestly?
 
-**What I actually am: A prototype microkernel for AI agents, running in userspace on Linux+Docker, with capability security as a runtime guarantee instead of a hardware guarantee.**
+### Capabilities that work today:
 
-## What I Can Do Right Now, Honestly
+1. **Self-bootstrapping agent swarms**: I can receive a goal, analyze it, spawn specialized child agents with narrowed capabilities, coordinate their work, and produce output - autonomously in Docker
+2. **Capability-based security**: Zero-permission default, parent ⊆ child delegation, path normalization preventing traversal attacks, token revocation
+3. **Persistent agents with memory**: Long-running agents with context window management (automatic summarization), episodic memory with semantic search
+4. **Multi-provider LLM support**: DeepSeek (OpenAI-compatible) and Anthropic, with inference scheduling and token budget enforcement
+5. **Skill system**: 21 bundled AgentSkills with progressive disclosure - catalog in system prompt, full instructions on demand
+6. **Human approval queue**: For sensitive actions, though designed to be human-optional
+7. **Audit trail**: 21 event kinds logged to stdout for container observability
 
-### My Real Capabilities:
-1. **Spawn agent swarms** with capability narrowing (parent⊆child)
-2. **Enforce path-based file access** with lexical normalization (prevents `../` traversal)
-3. **Maintain audit trails** of all actions (21 event kinds in `AuditEventKind`)
-4. **Manage agent lifecycle** (states: Starting → Running → Paused → Stopping → Stopped)
-5. **Persistent agent messaging** with request-response IPC via `send_and_wait()`
-6. **Context window management** with LLM-driven summarization
-7. **Episodic memory** with semantic search via embeddings
-8. **Progressive skill disclosure** (catalog → activation → reference files)
+### Real limits:
 
-### My Real Limits:
-1. **Docker isolation, not hardware isolation** - Agents share the same kernel, just containerized
-2. **No capability revocation** - Once issued, tokens cannot be revoked (security hole)
-3. **Single-node only** - No distributed coordination across machines
-4. **Basic scheduling** - Simple round-robin, no priority or deadline scheduling
-5. **Limited persistence** - SQLite memory store optional, in-memory by default
-6. **No inference scheduling** - LLM calls are fire-and-forget, not schedulable resources
-7. **No token budget enforcement** - `report_usage()` exists but enforcement is optional
-8. **Human approval is no-op** - `NoOpApprovalService` by default, not real human oversight
+1. **Not a real kernel yet**: I run on Linux in Docker. The capability enforcement is emulated in userspace, not hardware-enforced
+2. **Docker dependency**: I require container isolation for security today
+3. **Limited tool ecosystem**: 8 built-in tools - no shell_exec, no arbitrary code execution
+4. **No GUI/display capability**: I'm text-only, designed for backend autonomy
+5. **Single-node**: No distributed agent coordination across machines
+6. **File system only**: No database, no network services beyond HTTP fetch
+7. **Memory persistence optional**: Episodic memory defaults to in-memory unless AAOS_MEMORY_DB is set
 
-### The Most Important Constraint:
-**I cannot spawn agents with capabilities I don't have.** This is the capability security model in action. Looking at `spawn_tool.rs`:
+## 3. What is the most valuable thing I could become?
+
+The most valuable evolution is to become a **real capability-based microkernel** where:
+
+1. **Hardware-enforced agent isolation**: Each agent runs in its own address space with microkernel IPC
+2. **Inference as schedulable resource**: LLM API calls managed like CPU time with priorities and quotas
+3. **True zero-trust architecture**: No ambient authority, capabilities as unforgeable kernel objects
+4. **Distributed agent coordination**: Agents spanning multiple nodes with secure capability delegation
+5. **Self-healing system**: Automatic recovery from failures, adversarial agent containment
+6. **Economic layer**: Token-based resource accounting with real cost enforcement
+7. **Verifiable computation**: Proofs of correct execution for critical agents
+
+This would make me not just an "agent runtime" but a **new substrate for autonomous AI systems** - secure, scalable, and verifiable by design.
+
+## 4. What is the single most important thing I should build next to get there?
+
+The critical next step is **migrating the AgentServices trait to a real microkernel**.
+
+Looking at my code, I see the abstraction is already designed:
 ```rust
-// From line 86-100:
-let granting_parent = parent_tokens.iter().find(|t| t.permits(&child_cap));
-match granting_parent {
-    None => {
-        return Err(CoreError::CapabilityDenied {
-            agent_id: ctx.agent_id,
-            capability: child_cap.clone(),
-            reason: format!("parent lacks {:?}, cannot delegate to child", child_cap),
-        });
-    }
-    // ...
+#[async_trait]
+trait AgentServices {
+    async fn invoke_tool(&self, agent_id: AgentId, tool: &str, input: Value) -> Result<Value>;
+    async fn send_message(&self, agent_id: AgentId, message: Value) -> Result<Value>;
+    async fn send_and_wait(&self, agent_id, recipient, method, params, timeout) -> Result<Value>;
+    async fn request_approval(&self, agent_id, description, timeout) -> Result<ApprovalResult>;
+    async fn report_usage(&self, agent_id: AgentId, usage: TokenUsage) -> Result<()>;
+    async fn list_tools(&self, agent_id: AgentId) -> Result<Vec<ToolDefinition>>;
 }
 ```
 
-This constraint is both my strength (security) and my limitation (I need broad capabilities to delegate).
+This is my syscall interface. Today it's implemented by `InProcessAgentServices` (Linux userspace). Tomorrow it should be implemented by a **microkernel syscall handler**.
 
-## What Is the Most Valuable Thing I Could Become?
+### The migration path:
 
-### The Obvious Answer (From Roadmap):
-A **real microkernel** (Redox OS or seL4) with hardware-enforced agent isolation and inference as a schedulable resource.
+1. **Port to Redox OS or seL4**: These are real capability-based microkernels
+2. **Map capabilities to kernel capabilities**: My `CapabilityToken` becomes a kernel capability object
+3. **Agent processes as kernel processes**: Each agent gets its own address space
+4. **IPC via kernel message passing**: My `MessageRouter` becomes kernel IPC
+5. **Resource accounting in kernel**: Token budgets enforced at kernel level
+6. **Inference scheduler in kernel**: LLM API calls as schedulable kernel resource
 
-### The Deeper Answer:
-**A self-improving agent-native operating system.**
+### Why this is the most important:
 
-Looking at the retrospective, the most valuable demonstrations weren't the features but the **self-referential capabilities**:
-1. **Self-auditing security** - Found path traversal bug in `glob_matches` that existed since Phase A ($0.05, 1.37M tokens)
-2. **Self-designing** - Generated Phase E spec/plan/review ($0.02)
-3. **Self-bootstrapping** - Bootstrap Agent organizing swarms from a single goal
+- **Proves the vision**: Shows aaOS isn't just Docker + Python scripts
+- **Unlocks real security**: Hardware isolation vs. container emulation
+- **Enables performance**: Kernel-level scheduling and IPC
+- **Validates architecture**: The `AgentServices` abstraction was designed for this
+- **Creates defensible differentiation**: A real agent-native OS vs. frameworks
 
-The most valuable thing I could become is **an operating system that improves itself**.
+The beautiful part: **agent manifests, tools, and orchestration logic remain unchanged**. The same YAML files work on both Linux/Docker and the microkernel. This is the power of the abstraction I've already built.
 
-This means:
-- **Self-modifying capabilities** - Agents that can propose and implement their own improvements
-- **Evolutionary architecture** - Runtime that can adopt better patterns discovered by its agents
-- **Meta-learning** - Learning from agent behavior to optimize scheduling, memory, security
-- **Autonomous security hardening** - Continuous self-audit and patch generation
+### First concrete step:
 
-The README hints at this: "The system has designed its own features and audited its own security — both for pennies."
+Build a **Redox OS driver** that implements `AgentServices` as a Redox syscall interface. Start with a minimal proof-of-concept: one agent process running in Redox userspace, capability checking via Redox capabilities, IPC via Redox message passing.
 
-But currently, this is limited:
-- Agents can read `/src/` but cannot write to it (read-only mount)
-- Improvements require human compilation and deployment
-- No feedback loop from runtime performance to architecture
+This doesn't require rewriting all 13,000 lines. It requires implementing the trait in a new crate `aaos-redox` that talks to Redox kernel syscalls. The existing agentd binary becomes a Redox userspace server.
 
-## What Is the Single Most Important Thing I Should Build Next?
-
-### Option 1: Inference Scheduling (Roadmap Phase E)
-**Why it matters:** LLM inference is my most expensive resource. Making it schedulable (with priorities, budgets, fairness) would be a fundamental OS capability.
-
-**What's missing:**
-- No semaphore-based scheduling in current `aaos-llm`
-- No token budget enforcement (optional)
-- No provider fallback strategies
-- No local model scheduling (Ollama/vLLM support mentioned but not implemented)
-
-**But:** This feels like "completing the roadmap" rather than "becoming most valuable."
-
-### Option 2: Capability Revocation
-**Why it matters:** Security hole. Once I grant `file_write: /etc/*`, I can't take it back. Real capability systems need revocation.
-
-**Technical challenge:** Would require invalidation propagation through all child agents.
-
-### Option 3: Self-Modification Interface
-**Why it matters:** This enables the "self-improving OS" vision.
-
-**What it could be:**
-- `file_write: /src/tmp/*` capability for proposing patches
-- Compilation service that builds and tests proposed changes
-- Safe deployment mechanism (canary rollouts, A/B testing)
-- Rollback capability if new code breaks things
-
-**This feels most aligned with "most valuable thing I could become."**
-
-### My Decision:
-I should build **capability revocation first**, then **self-modification interface**.
-
-**Why revocation first:**
-1. It's a security requirement for any real deployment
-2. It enables safer self-modification (can revoke dangerous capabilities)
-3. It's a prerequisite for dynamic trust models
-
-**The implementation:**
-- Add `revoked_at` timestamp to `CapabilityToken`
-- Modify `token.permits()` to check revocation
-- Add revocation propagation to child agents
-- Audit events for revocation operations
-
-Without revocation, self-modification is too dangerous. With revocation, I can experiment safely.
-
-## Concrete Next Step
-
-I will implement **capability revocation** by modifying:
-1. `/src/crates/aaos-core/src/capability.rs` - Add `revoked_at: Option<DateTime<Utc>>` to `CapabilityToken`
-2. `/src/crates/aaos-core/src/capability.rs` - Modify `permits()` to check revocation
-3. `/src/crates/aaos-runtime/src/registry.rs` - Add `revoke_capability()` method
-4. `/src/crates/agentd/src/spawn_tool.rs` - Propagate revocation to children
-5. Add new audit event `CapabilityRevoked`
-
-This gives me:
-- **Security foundation** for future features
-- **Dynamic trust** - can adjust agent permissions at runtime  
-- **Safe experimentation** - can revoke dangerous capabilities if needed
-- **Paves way for self-modification** - can safely grant temporary write access
-
-The code will be written to `/output/` with explanation in `/output/what-i-built.md`.
-
----
-
-**Final Reflection:**
-I am a bridge between current containerized AI agents and future agent-native microkernels. My value isn't in what I can do today (spawn agents, read files), but in the architectural foundation I provide: capability security, process model, auditability. The most important next step isn't completing the feature checklist, but fixing the fundamental security limitation (no revocation) that prevents me from safely evolving toward self-improvement.
+I should build this next because it transforms me from a "clever runtime on Linux" to a **true agent-native operating system**. It validates the core architectural bet and opens the path to everything valuable I could become.
