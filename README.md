@@ -23,7 +23,7 @@ What's implemented and tested:
 
 - **Self-bootstrapping agent swarms** — A Bootstrap Agent (DeepSeek Reasoner) receives a goal, analyzes it, spawns specialized child agents (DeepSeek Chat) with narrowed capabilities, coordinates their work, and produces output. All autonomous. Runs in Docker with `agentd` as PID 1. Multi-provider: works with DeepSeek, Anthropic, or any OpenAI-compatible API.
 - **Persistent goal queue** — The Bootstrap Agent runs as a persistent process, accepting goals via Unix socket. Container stays alive between tasks.
-- **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have."
+- **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have." Path normalization prevents traversal attacks; child tokens inherit parent constraints.
 - **Agent orchestration** — Parent spawns children with narrowed capabilities. Spawn depth limit (5), agent count limit (100). Failed children are retried once automatically.
 - **Persistent agents** — Long-running agents with background message loops, request-response IPC via `send_and_wait()`, conversation persistence in JSONL
 - **Managed context windows** — Runtime transparently summarizes old messages via LLM when the context fills, archives originals to disk. Agents see coherent conversations without hitting token limits.
@@ -35,6 +35,7 @@ What's implemented and tested:
 - **Verbose agent logging** — Full agent thoughts, tool calls with arguments, and tool results streamed to stdout. Live dashboard shows agent activity in real-time.
 - **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
 - **Self-designing capability** — Agents can read the mounted aaOS source code at `/src/` and produce working Rust implementations. The OS has designed its own budget enforcement system.
+- **Self-auditing security** — The system performed a security audit of itself (1.37M tokens, $0.05), found a real path traversal vulnerability in `glob_matches` that had been present since Phase A, and produced a hardening plan. The vulnerability was fixed based on the audit findings.
 
 ## The Path to a Real Kernel
 

@@ -154,15 +154,41 @@ impl CapabilityToken {
     }
 }
 
-/// Simple glob matching: supports trailing `*` wildcards.
+/// Glob matching with path normalization to prevent traversal attacks.
+///
+/// Normalizes paths by resolving `..` and `.` components lexically (without
+/// touching the filesystem) before matching. This prevents attacks like
+/// `/data/../etc/passwd` matching a `/data/*` grant.
 fn glob_matches(pattern: &str, path: &str) -> bool {
     if pattern == "*" {
         return true;
     }
+    let normalized = normalize_path(path);
     if let Some(prefix) = pattern.strip_suffix('*') {
-        path.starts_with(prefix)
+        let norm_prefix = normalize_path(prefix);
+        normalized.starts_with(&norm_prefix)
     } else {
-        pattern == path
+        let norm_pattern = normalize_path(pattern);
+        norm_pattern == normalized
+    }
+}
+
+/// Lexical path normalization: resolves `.` and `..` without filesystem access.
+/// Prevents path traversal attacks while working inside containers where
+/// paths may not exist yet (e.g., `/output/` before any file is written).
+fn normalize_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => { parts.pop(); }
+            other => parts.push(other),
+        }
+    }
+    if path.starts_with('/') {
+        format!("/{}", parts.join("/"))
+    } else {
+        parts.join("/")
     }
 }
 
@@ -229,6 +255,40 @@ mod tests {
             rate_limit: None,
         });
         assert_eq!(narrowed.constraints.max_invocations, Some(10));
+    }
+
+    #[test]
+    fn path_traversal_blocked() {
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::FileRead { path_glob: "/data/*".into() },
+            Constraints::default(),
+        );
+        // Direct traversal
+        assert!(!token.permits(&Capability::FileRead {
+            path_glob: "/data/../etc/passwd".into()
+        }));
+        // Double traversal
+        assert!(!token.permits(&Capability::FileRead {
+            path_glob: "/data/foo/../../etc/shadow".into()
+        }));
+        // Dot components
+        assert!(!token.permits(&Capability::FileRead {
+            path_glob: "/data/./../../etc/passwd".into()
+        }));
+        // Legitimate subpath still works
+        assert!(token.permits(&Capability::FileRead {
+            path_glob: "/data/project/file.txt".into()
+        }));
+    }
+
+    #[test]
+    fn normalize_path_works() {
+        assert_eq!(normalize_path("/data/../etc/passwd"), "/etc/passwd");
+        assert_eq!(normalize_path("/data/foo/../../etc"), "/etc");
+        assert_eq!(normalize_path("/data/./file.txt"), "/data/file.txt");
+        assert_eq!(normalize_path("/data/project/"), "/data/project");
+        assert_eq!(normalize_path("/"), "/");
     }
 
     #[test]

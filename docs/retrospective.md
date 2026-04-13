@@ -209,3 +209,39 @@ Phase E demonstrated something new: **the system designing itself**. Previous ph
 The cost model proved out: $0.02 for a complete spec/plan/review cycle. DeepSeek Reasoner for orchestration + DeepSeek Chat for workers is ~15x cheaper than Anthropic, with no rate limits. The `OpenAiCompatibleClient` makes this provider-agnostic — any OpenAI-compatible API works.
 
 Key insight: **AI-generated specs need the same review rigor as AI-generated code.** The agent's self-review caught conceptual risks but missed compile errors. External peer review (GPT-5.4) caught the compile errors but needed access to the actual codebase to do so. The combination — self-review + peer review with codebase access — caught everything.
+
+---
+
+## Security Self-Audit
+
+The system audited its own security. Bootstrap spawned a code-reader (464K tokens of source) and a security-auditor (474K tokens). Total: 1.37M tokens, ~$0.05.
+
+### What the Agents Found
+
+13 findings across 6 components. Of these, 4 were confirmed real and fixed:
+
+1. **Path traversal in `glob_matches`** (CRITICAL) — `"/data/../etc/passwd".starts_with("/data/")` returns true. An agent with `file_read: /data/*` could read any file via `..` sequences. Fixed by adding lexical path normalization before matching.
+
+2. **Unknown tools receive all capability tokens** (MEDIUM) — `matches_tool_capability` returned `true` for unknown tools, leaking `FileRead`/`FileWrite`/`SpawnChild` tokens. Fixed to only pass `ToolInvoke` tokens to unknown tools.
+
+3. **Child tokens ignore parent constraints** (HIGH) — `CapabilityToken::issue()` used `Constraints::default()` for child tokens. A parent with rate limits could spawn children without those limits. Fixed to inherit the granting parent's constraints.
+
+4. **No path canonicalization in file tools** (CRITICAL) — Same root cause as #1, at the tool level. Fixed by the same `normalize_path()` function.
+
+### What the Agents Got Wrong
+
+- **V6.1 "Capability checker injection"** — Described the router accepting a closure as a vulnerability. The closure is constructed by the server, not by agents. Not exploitable.
+- **CVSS scores inflated** — Assigned network attack vectors (AV:N) to a system running in Docker with no network listener. The actual attack surface is agent-to-kernel, not network.
+- **V2.1 overstated** — The parent-subset enforcement was correct; the real risk was path traversal in the glob matcher it delegates to, which was V1.1.
+
+### What Required Human Judgment
+
+- **Verifying findings against actual code.** The agents reported 13 findings. A human (Claude) read the actual source for each, confirmed 4, identified 4 as overstated or incorrect, and deferred 5 as low-risk in Docker. The agents couldn't distinguish "architecturally concerning" from "actually exploitable."
+
+- **Prioritization.** The agents assigned equal urgency to everything. The human recognized that path traversal (#1) was the only finding that could escape the capability sandbox entirely — the rest were defense-in-depth issues.
+
+### The Pattern
+
+The OS found real bugs in itself. The path traversal vulnerability was present since Phase A and would have allowed any agent to read any file on the system by using `..` sequences. No human had caught it in 4 phases of development. A $0.05 security audit by the system's own agents found it.
+
+The self-audit pattern: **code-reader (deep source analysis) → security-auditor (adversarial review) → Bootstrap (consolidation) → human verification → fix**. The agents do the exhaustive reading; the human does the judgment.

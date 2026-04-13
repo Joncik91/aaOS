@@ -112,24 +112,27 @@ impl Tool for SpawnAgentTool {
             })?;
 
             // Find a parent token that permits this child capability
-            let parent_permits = parent_tokens.iter().any(|t| t.permits(&child_cap));
-            if !parent_permits {
-                return Err(CoreError::CapabilityDenied {
-                    agent_id: ctx.agent_id,
-                    capability: child_cap.clone(),
-                    reason: format!(
-                        "parent lacks {:?}, cannot delegate to child '{}'",
-                        child_cap, child_manifest.name
-                    ),
-                });
+            let granting_parent = parent_tokens.iter().find(|t| t.permits(&child_cap));
+            match granting_parent {
+                None => {
+                    return Err(CoreError::CapabilityDenied {
+                        agent_id: ctx.agent_id,
+                        capability: child_cap.clone(),
+                        reason: format!(
+                            "parent lacks {:?}, cannot delegate to child '{}'",
+                            child_cap, child_manifest.name
+                        ),
+                    });
+                }
+                Some(parent_token) => {
+                    // Inherit parent's constraints — child can never have looser limits
+                    child_tokens.push(CapabilityToken::issue(
+                        child_id,
+                        child_cap,
+                        parent_token.constraints.clone(),
+                    ));
+                }
             }
-
-            // Issue token with the child's declared (tighter) scope
-            child_tokens.push(CapabilityToken::issue(
-                child_id,
-                child_cap,
-                Constraints::default(),
-            ));
         }
 
         // Spawn child in registry with the narrowed tokens (clone tokens for potential retry)

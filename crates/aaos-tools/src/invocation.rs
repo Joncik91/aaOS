@@ -101,13 +101,14 @@ impl ToolInvocation {
 }
 
 /// Maps tool names to the capability types their tokens should contain.
+/// Unknown tools only receive ToolInvoke tokens — never file/network/spawn tokens.
 fn matches_tool_capability(capability: &Capability, tool_name: &str) -> bool {
     match tool_name {
         "file_read" => matches!(capability, Capability::FileRead { .. }),
         "file_write" => matches!(capability, Capability::FileWrite { .. }),
         "web_fetch" => matches!(capability, Capability::WebSearch),
         "spawn_agent" => matches!(capability, Capability::SpawnChild { .. }),
-        _ => true, // unknown tools get all tokens
+        _ => matches!(capability, Capability::ToolInvoke { .. }),
     }
 }
 
