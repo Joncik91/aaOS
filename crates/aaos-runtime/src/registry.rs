@@ -236,7 +236,7 @@ impl AgentRegistry {
         agent_id: AgentId,
         manifest: &AgentManifest,
     ) -> Vec<CapabilityToken> {
-        manifest
+        let mut tokens: Vec<CapabilityToken> = manifest
             .capabilities
             .iter()
             .filter_map(|decl| {
@@ -249,7 +249,23 @@ impl AgentRegistry {
                 ));
                 Some(token)
             })
-            .collect()
+            .collect();
+
+        // Persistent agents automatically receive self-send capability so the
+        // server can deliver API-initiated messages through the router.
+        if manifest.lifecycle == aaos_core::Lifecycle::Persistent {
+            let self_send = Capability::MessageSend {
+                target_agents: vec![agent_id.to_string()],
+            };
+            let token = CapabilityToken::issue(agent_id, self_send.clone(), Constraints::default());
+            self.audit_log.record(AuditEvent::new(
+                agent_id,
+                AuditEventKind::CapabilityGranted { capability: self_send },
+            ));
+            tokens.push(token);
+        }
+
+        tokens
     }
 
     fn parse_capability_declaration(

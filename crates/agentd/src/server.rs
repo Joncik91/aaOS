@@ -23,6 +23,7 @@ pub struct Server {
     pub audit_log: Arc<dyn AuditLog>,
     pub approval_queue: Arc<crate::approval::ApprovalQueue>,
     pub llm_client: Option<Arc<dyn LlmClient>>,
+    pub session_store: Arc<dyn aaos_runtime::SessionStore>,
 }
 
 impl Server {
@@ -59,6 +60,9 @@ impl Server {
         // Set router on registry for spawn/stop registration
         registry.set_router(router.clone());
 
+        let session_store: Arc<dyn aaos_runtime::SessionStore> =
+            Arc::new(aaos_runtime::InMemorySessionStore::new());
+
         Self {
             registry,
             tool_registry,
@@ -68,6 +72,7 @@ impl Server {
             audit_log,
             approval_queue,
             llm_client: None,
+            session_store,
         }
     }
 
@@ -97,7 +102,7 @@ impl Server {
                 self.handle_agent_spawn(&request.params, request.id.clone())
                     .await
             }
-            "agent.stop" => self.handle_agent_stop(&request.params, request.id.clone()),
+            "agent.stop" => self.handle_agent_stop(&request.params, request.id.clone()).await,
             "agent.list" => self.handle_agent_list(request.id.clone()),
             "agent.status" => self.handle_agent_status(&request.params, request.id.clone()),
             "tool.list" => self.handle_tool_list(request.id.clone()),
@@ -153,7 +158,7 @@ impl Server {
         }
     }
 
-    fn handle_agent_stop(
+    async fn handle_agent_stop(
         &self,
         params: &serde_json::Value,
         id: serde_json::Value,
@@ -168,7 +173,7 @@ impl Server {
             Ok(id) => id,
             Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         };
-        match self.registry.stop_sync(agent_id) {
+        match self.registry.stop(agent_id).await {
             Ok(()) => JsonRpcResponse::success(id, json!({"ok": true})),
             Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         }
@@ -319,7 +324,23 @@ impl Server {
             Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         };
 
-        self.execute_agent(agent_id, &manifest, message, id).await
+        if manifest.lifecycle == aaos_core::Lifecycle::Persistent {
+            let msg = aaos_ipc::McpMessage::new(
+                agent_id, agent_id, "agent.run",
+                json!({"message": message}),
+            );
+            let trace_id = msg.metadata.trace_id;
+
+            match self.router.route(msg).await {
+                Ok(()) => JsonRpcResponse::success(id, json!({
+                    "trace_id": trace_id.to_string(),
+                    "status": "delivered",
+                })),
+                Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+            }
+        } else {
+            self.execute_agent(agent_id, &manifest, message, id).await
+        }
     }
 
     async fn handle_agent_spawn_and_run(
@@ -731,5 +752,33 @@ system_prompt: "You are helpful."
             .await;
         let result = resp.result.unwrap();
         assert_eq!(result["pending"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn persistent_agent_run_returns_trace_id() {
+        let server = Server::with_llm_client(MockLlm::text("Persistent response"));
+        let manifest = r#"
+name: persistent-test
+model: claude-haiku-4-5-20251001
+system_prompt: "You are persistent."
+lifecycle: persistent
+"#;
+        let resp = server
+            .handle_request(&make_request("agent.spawn", json!({"manifest": manifest})))
+            .await;
+        let agent_id = resp.result.unwrap()["agent_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let resp = server
+            .handle_request(&make_request(
+                "agent.run",
+                json!({"agent_id": agent_id, "message": "Hello persistent"}),
+            ))
+            .await;
+        let result = resp.result.unwrap();
+        assert!(result.get("trace_id").is_some());
+        assert_eq!(result["status"], "delivered");
     }
 }

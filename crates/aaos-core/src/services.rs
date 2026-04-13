@@ -55,6 +55,16 @@ pub trait AgentServices: Send + Sync {
     /// establish the interface for Phase B external agents.
     async fn send_message(&self, agent_id: AgentId, message: Value) -> Result<Value>;
 
+    /// Send a message to a persistent agent and wait for its response.
+    async fn send_and_wait(
+        &self,
+        agent_id: AgentId,
+        recipient: AgentId,
+        method: String,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value>;
+
     /// Request human approval. Blocks until approved, denied, or timeout.
     /// Semantically distinct from send_message — approval has blocking semantics
     /// with explicit timeout behavior.

@@ -583,6 +583,17 @@ mod tests {
         ) -> aaos_core::Result<Vec<aaos_core::ToolDefinition>> {
             Ok(self.tools.clone())
         }
+
+        async fn send_and_wait(
+            &self,
+            _agent_id: AgentId,
+            _recipient: AgentId,
+            _method: String,
+            _params: serde_json::Value,
+            _timeout: std::time::Duration,
+        ) -> aaos_core::Result<serde_json::Value> {
+            Err(aaos_core::CoreError::Ipc("not implemented in mock".into()))
+        }
     }
 
     fn test_manifest() -> AgentManifest {

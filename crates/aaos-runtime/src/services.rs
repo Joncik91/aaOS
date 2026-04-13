@@ -169,6 +169,55 @@ impl AgentServices for InProcessAgentServices {
 
         Ok(filtered)
     }
+
+    async fn send_and_wait(
+        &self,
+        agent_id: AgentId,
+        recipient: AgentId,
+        method: String,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let tokens = self.registry.get_tokens(agent_id)?;
+        let required = Capability::MessageSend {
+            target_agents: vec![recipient.to_string()],
+        };
+        if !tokens.iter().any(|t| t.permits(&required)) {
+            return Err(CoreError::CapabilityDenied {
+                agent_id,
+                capability: required,
+                reason: "send_and_wait not permitted".into(),
+            });
+        }
+
+        let msg = McpMessage::new(agent_id, recipient, method, params);
+        let trace_id = msg.metadata.trace_id;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.router.register_pending(trace_id, tx);
+
+        if let Err(e) = self.router.route(msg).await {
+            return Err(e);
+        }
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(response)) => {
+                if let Some(result) = response.result {
+                    Ok(result)
+                } else if let Some(error) = response.error {
+                    Err(CoreError::Ipc(error.message))
+                } else {
+                    Ok(serde_json::json!({}))
+                }
+            }
+            Ok(Err(_)) => {
+                Err(CoreError::Ipc("responder dropped".into()))
+            }
+            Err(_) => {
+                Err(CoreError::Timeout(timeout))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
