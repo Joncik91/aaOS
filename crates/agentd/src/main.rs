@@ -3,8 +3,10 @@ use std::sync::Arc;
 
 use aaos_llm::{AnthropicClient, AnthropicConfig};
 use clap::Parser;
+use serde_json::json;
 use tracing_subscriber::EnvFilter;
 
+use agentd::api::JsonRpcRequest;
 use agentd::config::{Cli, Command};
 use agentd::server::Server;
 
@@ -70,10 +72,21 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Bootstrap mode: load a manifest, spawn the bootstrap agent, send it the goal,
-/// and wait for its response. Uses StdoutAuditLog for container observability.
+/// Build a JSON-RPC request helper.
+fn rpc(method: &str, params: serde_json::Value) -> JsonRpcRequest {
+    JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id: json!(1),
+        method: method.to_string(),
+        params,
+    }
+}
+
+/// Bootstrap mode: spawn the Bootstrap Agent as a persistent agent, send the initial
+/// goal, then start the Unix socket listener so additional goals can arrive via
+/// `agent.run`. The container stays alive until explicitly stopped.
 async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<()> {
-    tracing::info!("aaOS bootstrap mode");
+    tracing::info!("aaOS bootstrap mode (persistent)");
     tracing::info!(manifest = %manifest_path.display(), "loading bootstrap manifest");
     tracing::info!(goal = %goal, "bootstrap goal");
 
@@ -90,50 +103,62 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
     let manifest = aaos_core::AgentManifest::from_file(&manifest_path)?;
     tracing::info!(name = %manifest.name, model = %manifest.model, "bootstrap agent loaded");
 
-    // Spawn the bootstrap agent
-    let agent_id = server.registry.spawn(manifest.clone())?;
-    tracing::info!(agent_id = %agent_id, "bootstrap agent spawned");
+    // Read manifest as YAML string for the spawn RPC
+    let manifest_yaml = std::fs::read_to_string(&manifest_path)?;
 
-    // Build services and executor for the agent
-    let services: Arc<dyn aaos_core::AgentServices> =
-        Arc::new(aaos_runtime::InProcessAgentServices::new(
-            server.registry.clone(),
-            server.tool_invocation.clone(),
-            server.tool_registry.clone(),
-            server.audit_log.clone(),
-            server.router.clone(),
-            server.approval_queue.clone() as Arc<dyn aaos_core::ApprovalService>,
-        ));
+    // Step 1: Spawn the bootstrap agent as persistent via the server's agent.spawn handler.
+    // This sets up the persistent loop with context manager, session store, etc.
+    let spawn_resp = server
+        .handle_request(&rpc("agent.spawn", json!({ "manifest": manifest_yaml })))
+        .await;
 
-    let executor = aaos_llm::AgentExecutor::new(
-        llm_client.clone(),
-        services,
-        aaos_llm::ExecutorConfig::default(),
+    let agent_id_str = spawn_resp
+        .result
+        .as_ref()
+        .and_then(|v| v.get("agent_id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            let err_msg = spawn_resp
+                .error
+                .as_ref()
+                .map(|e| e.message.clone())
+                .unwrap_or_else(|| "unknown spawn error".into());
+            anyhow::anyhow!("failed to spawn bootstrap agent: {err_msg}")
+        })?
+        .to_string();
+
+    tracing::info!(agent_id = %agent_id_str, "bootstrap agent spawned as persistent");
+
+    // Step 2: Send the initial goal via agent.run (routed through the persistent loop).
+    // Create a workspace directory for the initial goal.
+    let workspace_id = uuid::Uuid::new_v4();
+    let workspace_path = format!("/data/workspace/{workspace_id}");
+    let _ = std::fs::create_dir_all(&workspace_path);
+    let augmented_goal = format!(
+        "[Workspace for this task: {workspace_path}. Tell all child agents to use this directory for intermediate files.]\n\n{goal}"
     );
 
-    // Run the agent with the goal
-    tracing::info!("sending goal to bootstrap agent");
-    let result = executor.run(agent_id, &manifest, &goal).await;
+    tracing::info!("sending initial goal to bootstrap agent");
+    let run_resp = server
+        .handle_request(&rpc(
+            "agent.run",
+            json!({
+                "agent_id": agent_id_str,
+                "message": augmented_goal,
+            }),
+        ))
+        .await;
 
-    // Log the result
-    audit_log.record(aaos_core::AuditEvent::new(
-        agent_id,
-        aaos_core::AuditEventKind::AgentExecutionCompleted {
-            stop_reason: result.stop_reason.to_string(),
-            total_iterations: result.iterations,
-        },
-    ));
+    if let Some(err) = &run_resp.error {
+        tracing::error!(error = %err.message, "failed to send initial goal");
+        return Err(anyhow::anyhow!("failed to send initial goal: {}", err.message));
+    }
+    tracing::info!("initial goal delivered to persistent bootstrap agent");
 
-    tracing::info!(
-        iterations = result.iterations,
-        stop_reason = %result.stop_reason,
-        input_tokens = result.usage.input_tokens,
-        output_tokens = result.usage.output_tokens,
-        "bootstrap agent completed"
-    );
-
-    println!("\n=== Bootstrap Agent Response ===\n");
-    println!("{}", result.response);
+    // Step 3: Start the Unix socket listener so additional goals can be sent via agent.run.
+    let socket_path = PathBuf::from("/var/run/agentd.sock");
+    tracing::info!(socket = %socket_path.display(), "starting Unix socket listener for additional goals");
+    server.listen(&socket_path).await?;
 
     Ok(())
 }
