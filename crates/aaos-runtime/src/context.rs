@@ -586,6 +586,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn full_flow_summarize_archive_continue() {
+        // Setup: mock LLM that returns a summary, small budget
+        let llm = Arc::new(MockSummarizationLlm::with_summary(
+            "Summary: User sent 20 pairs of messages about topics 0-19. Each was acknowledged.",
+        ));
+        let budget = TokenBudget { max_tokens: 3000 };
+        let cm = ContextManager::new(llm, budget, "test-model".into(), 0.7);
+
+        // Build a long history
+        let history = make_long_history(20); // 40 messages
+
+        // First call: should trigger summarization
+        let result1 = cm.prepare_context(&history, "You are helpful.").await.unwrap();
+        assert!(result1.summarization.is_some(), "Expected summarization to trigger");
+
+        let summ = result1.summarization.unwrap();
+        assert!(!summ.archived_messages.is_empty());
+
+        // Simulate what the persistent loop would do:
+        let mut new_history = vec![summ.summary];
+        let end = summ.source_range.1 + 1;
+        new_history.extend_from_slice(&history[end..]);
+
+        // Verify the new history is shorter
+        assert!(new_history.len() < history.len());
+        assert!(matches!(&new_history[0], Message::Summary { .. }));
+
+        // Second call with new history and large budget: Summary should fold into system prompt
+        let llm2 = Arc::new(MockSummarizationLlm::with_summary("unused"));
+        let budget2 = TokenBudget { max_tokens: 1_000_000 };
+        let cm2 = ContextManager::new(llm2, budget2, "test-model".into(), 0.7);
+
+        let result2 = cm2.prepare_context(&new_history, "You are helpful.").await.unwrap();
+        assert!(result2.summarization.is_none());
+        assert!(result2.system_prompt.contains("[Previous conversation summary]"));
+        assert!(result2.system_prompt.contains("Summary: User sent 20 pairs"));
+        // Messages should not contain Summary variant
+        for msg in &result2.messages {
+            assert!(!matches!(msg, Message::Summary { .. }));
+        }
+    }
+
+    #[tokio::test]
     async fn tool_call_result_pairs_not_split() {
         let llm = Arc::new(MockSummarizationLlm::with_summary(
             "Summary of tool interactions.",
