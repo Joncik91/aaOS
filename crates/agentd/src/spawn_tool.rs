@@ -132,7 +132,8 @@ impl Tool for SpawnAgentTool {
             ));
         }
 
-        // Spawn child in registry with the narrowed tokens
+        // Spawn child in registry with the narrowed tokens (clone tokens for potential retry)
+        let child_tokens_for_retry = child_tokens.clone();
         self.registry
             .spawn_with_tokens(child_id, child_manifest.clone(), child_tokens, child_depth)?;
 
@@ -156,6 +157,54 @@ impl Tool for SpawnAgentTool {
 
         let result = executor.run(child_id, &child_manifest, message).await;
 
+        // If the child errored, retry once with a fresh child agent
+        if let aaos_llm::ExecutionStopReason::Error(ref err_msg) = result.stop_reason {
+            tracing::warn!(
+                child = %child_manifest.name,
+                error = %err_msg,
+                "child agent failed, retrying once"
+            );
+
+            // The original child is cleaned up by scopeguard when _cleanup drops.
+            // We need to drop it explicitly so the old child is removed first.
+            drop(_cleanup);
+
+            let child_id_2 = AgentId::new();
+            self.registry.spawn_with_tokens(
+                child_id_2,
+                child_manifest.clone(),
+                child_tokens_for_retry,
+                child_depth,
+            )?;
+
+            let registry_cleanup_2 = self.registry.clone();
+            let _cleanup_2 = scopeguard::guard(child_id_2, move |id| {
+                let _ = registry_cleanup_2.stop_sync(id);
+            });
+
+            let result_2 = executor.run(child_id_2, &child_manifest, message).await;
+
+            let error_field = if let aaos_llm::ExecutionStopReason::Error(ref e) = result_2.stop_reason {
+                Some(e.clone())
+            } else {
+                None
+            };
+
+            return Ok(json!({
+                "agent_id": child_id_2.to_string(),
+                "response": result_2.response,
+                "usage": {
+                    "input_tokens": result_2.usage.input_tokens,
+                    "output_tokens": result_2.usage.output_tokens,
+                },
+                "iterations": result_2.iterations,
+                "stop_reason": result_2.stop_reason.to_string(),
+                "retried": true,
+                "original_error": err_msg.clone(),
+                "error": error_field,
+            }));
+        }
+
         Ok(json!({
             "agent_id": child_id.to_string(),
             "response": result.response,
@@ -165,6 +214,8 @@ impl Tool for SpawnAgentTool {
             },
             "iterations": result.iterations,
             "stop_reason": result.stop_reason.to_string(),
+            "retried": false,
+            "error": null,
         }))
     }
 }
