@@ -176,9 +176,18 @@ impl OpenAiCompatibleClient {
             })
             .collect();
 
+        // Cap max_tokens to model's limit — deepseek-chat allows max 8192,
+        // deepseek-reasoner allows 32768
+        let model_max = match request.model.as_str() {
+            "deepseek-reasoner" => 32_768,
+            "deepseek-chat" => 8_192,
+            _ => 8_192,
+        };
+        let max_tokens = request.max_tokens.min(model_max);
+
         let mut body = json!({
             "model": request.model,
-            "max_tokens": request.max_tokens,
+            "max_tokens": max_tokens,
             "messages": messages,
         });
 
