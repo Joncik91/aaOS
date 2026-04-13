@@ -2,17 +2,13 @@
 
 The prototype demonstrates that agent-first OS abstractions work: capability-based security, structured IPC, tool execution with two-level enforcement, agent orchestration with capability narrowing, and human-in-the-loop approval. Everything below builds on this foundation.
 
-## Phase B: Persistent Agents & Request-Response IPC
+## Phase B: Persistent Agents & Request-Response IPC *(complete)*
 
-The current model is ephemeral: agents spawn, execute a task, and die. This limits agents to single-shot work. Persistent agents change the model fundamentally.
+Persistent agents run continuously in a tokio background task, processing messages sequentially from a channel. Request-response IPC uses a `DashMap<Uuid, oneshot::Sender>` pending-response map on the router. Conversation history persists in JSONL files via a `SessionStore` trait, loaded once at startup and appended after each turn.
 
-**Persistent agent lifecycle.** Agents that run continuously, maintaining state across interactions. The `Lifecycle::Persistent` manifest field already exists but isn't implemented. A persistent agent has a message processing loop: it waits for incoming messages, processes them, and responds. The `AgentProcess` already stores message receivers (`message_rx`, `response_rx`) — they're allocated at spawn but never consumed.
+**What was built:** `persistent_agent_loop()`, `start_persistent_loop()` on registry, `send_and_wait()` on `AgentServices`, `SessionStore` trait + `JsonlSessionStore`, `run_with_history()` on `AgentExecutor` with transcript delta, `max_history_messages` config, Pause/Resume/Stop commands, 3 new audit events, `MailboxFull`/`Timeout` error variants. 141 tests (30 new), verified end-to-end with real Haiku 4.5 API.
 
-**Request-response messaging.** The current router delivers messages fire-and-forget. Request-response requires the sender to block until the recipient responds. Implementation: attach a `oneshot::Sender` to each message (same pattern as the approval queue). The recipient's message loop processes the message and sends a response. The sender awaits it with a timeout.
-
-**Conversation persistence.** Each `agent.run` call currently starts with an empty message history. Persistent agents need their conversation stored and resumed. This means a session store (SQLite or filesystem-backed) keyed by agent ID, with message history that survives daemon restarts.
-
-**What this enables:** Agents that remember context across interactions. An architect agent that maintains its understanding of the system design. A monitoring agent that tracks patterns over time. Multi-agent workflows where peers communicate directly instead of through the orchestrator.
+**What this enables:** Agents that remember context across interactions. Multi-agent workflows where peers communicate directly via `send_and_wait`. The foundation for the NarrativeEngine orchestration layer.
 
 ## Phase C: Agent Memory System
 
