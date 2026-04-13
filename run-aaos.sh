@@ -42,16 +42,32 @@ docker run -d --name aaos-run \
     -v "$SCRIPT_DIR/output:/output" \
     aaos-bootstrap >/dev/null
 
-# Give it a moment to start logging
-sleep 0.5
+# Launch dashboard in a separate terminal window
+# The dashboard auto-exits when the container stops (docker logs -f ends)
+DASH_CMD="docker logs -f aaos-run 2>&1 | python3 $DASHBOARD; echo ''; echo 'aaOS container stopped. Press Enter to close.'; read"
 
-# Stream logs through the dashboard until container stops
-# trap ensures cleanup on Ctrl+C
-trap 'echo ""; echo "Stopping aaOS..."; docker stop aaos-run >/dev/null 2>&1; exit 0' INT TERM
+if command -v xfce4-terminal >/dev/null 2>&1; then
+    xfce4-terminal --title "aaOS Dashboard" --geometry 120x40 -e "bash -c '$DASH_CMD'" &
+elif command -v gnome-terminal >/dev/null 2>&1; then
+    gnome-terminal --title "aaOS Dashboard" --geometry 120x40 -- bash -c "$DASH_CMD" &
+elif command -v xterm >/dev/null 2>&1; then
+    xterm -title "aaOS Dashboard" -geometry 120x40 -e "bash -c '$DASH_CMD'" &
+else
+    echo "No terminal emulator found. Run manually in another terminal:"
+    echo "  docker logs -f aaos-run 2>&1 | python3 $DASHBOARD"
+fi
 
-docker logs -f aaos-run 2>&1 | python3 "$DASHBOARD"
-
-# Container exited on its own — show output
+DASH_PID=$!
+echo "Dashboard launched (PID $DASH_PID)"
+echo "Container running. Ctrl+C here to stop."
 echo ""
-echo "Container exited. Output files:"
+
+# Wait for container to finish, clean up on Ctrl+C
+trap 'echo ""; echo "Stopping aaOS..."; docker stop aaos-run >/dev/null 2>&1; kill $DASH_PID 2>/dev/null; exit 0' INT TERM
+
+# Wait for container to exit
+docker wait aaos-run >/dev/null 2>&1
+
+echo ""
+echo "aaOS finished. Output files:"
 ls -la "$SCRIPT_DIR/output/" 2>/dev/null
