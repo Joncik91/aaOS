@@ -149,13 +149,50 @@ impl Server {
     }
 
     async fn spawn_from_yaml(&self, yaml: &str, id: serde_json::Value) -> JsonRpcResponse {
-        match AgentManifest::from_yaml(yaml) {
-            Ok(manifest) => match self.registry.spawn(manifest) {
-                Ok(agent_id) => JsonRpcResponse::success(id, json!({"agent_id": agent_id})),
-                Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
-            },
-            Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+        let manifest = match AgentManifest::from_yaml(yaml) {
+            Ok(m) => m,
+            Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+        };
+
+        let is_persistent = manifest.lifecycle == aaos_core::Lifecycle::Persistent;
+
+        let agent_id = match self.registry.spawn(manifest) {
+            Ok(id) => id,
+            Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+        };
+
+        // For persistent agents: start the background message loop
+        if is_persistent {
+            if let Some(llm) = &self.llm_client {
+                let services: Arc<dyn AgentServices> = Arc::new(InProcessAgentServices::new(
+                    self.registry.clone(),
+                    self.tool_invocation.clone(),
+                    self.tool_registry.clone(),
+                    self.audit_log.clone(),
+                    self.router.clone(),
+                    self.approval_queue.clone() as Arc<dyn ApprovalService>,
+                ));
+                let executor = AgentExecutor::new(
+                    llm.clone(),
+                    services,
+                    ExecutorConfig::default(),
+                );
+                if let Err(e) = self.registry.start_persistent_loop(
+                    agent_id,
+                    executor,
+                    self.session_store.clone(),
+                    self.router.clone(),
+                ) {
+                    return JsonRpcResponse::error(id, INTERNAL_ERROR,
+                        format!("failed to start persistent loop: {e}"));
+                }
+            } else {
+                return JsonRpcResponse::error(id, INTERNAL_ERROR,
+                    "persistent agents require an LLM client");
+            }
         }
+
+        JsonRpcResponse::success(id, json!({"agent_id": agent_id}))
     }
 
     async fn handle_agent_stop(
