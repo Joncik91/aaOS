@@ -36,6 +36,7 @@ What's implemented and tested:
 - **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
 - **Self-designing capability** — Agents can read the mounted aaOS source code at `/src/` and produce working Rust implementations. The OS has designed its own budget enforcement system.
 - **Self-auditing security** — The system performed a security audit of itself (1.37M tokens, $0.05), found a real path traversal vulnerability in `glob_matches` that had been present since Phase A, and produced a hardening plan. The vulnerability was fixed based on the audit findings.
+- **Iterative self-improvement** — Three consecutive self-reflection runs, each with a fresh container and zero memory. Each run found the next deepest bug: path traversal → missing revocation → unenforced constraints. Total cost: $0.11 for three real bugs found and fixed.
 
 ## Roadmap
 

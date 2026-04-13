@@ -245,3 +245,34 @@ The system audited its own security. Bootstrap spawned a code-reader (464K token
 The OS found real bugs in itself. The path traversal vulnerability was present since Phase A and would have allowed any agent to read any file on the system by using `..` sequences. No human had caught it in 4 phases of development. A $0.05 security audit by the system's own agents found it.
 
 The self-audit pattern: **code-reader (deep source analysis) → security-auditor (adversarial review) → Bootstrap (consolidation) → human verification → fix**. The agents do the exhaustive reading; the human does the judgment.
+
+---
+
+## Iterative Self-Reflection Loop
+
+Three consecutive runs with the same philosophical goal ("What am I? What should I become? Build it.") — each time with a fresh container, zero memory, but updated code from the previous fix.
+
+### The Pattern: Autonomous Bug Discovery
+
+| Run | Bug Found | How | Cost |
+|-----|-----------|-----|------|
+| 1 (security audit) | Path traversal in `glob_matches` | Code-reader + security-auditor swarm | ~$0.05 |
+| 2 (self-reflection) | No capability revocation | Bootstrap read capability.rs, reasoned about safety | ~$0.03 |
+| 3 (self-reflection) | `max_invocations` declared but never enforced | Code-reader analyzed constraints, capability-analyzer confirmed | ~$0.03 |
+
+Each run, with the previous fix integrated, the system found the next deepest issue. The bugs were real — all confirmed by reading the actual source code. Total cost for three cycles: ~$0.11.
+
+### What the System Chose to Build
+
+- **Run 2:** Proposed capability revocation. Reasoned: "Without revocation, self-modification is too dangerous. With revocation, I can experiment safely." Produced 49KB of Rust code.
+- **Run 3:** Found constraint enforcement gap. Spawned a `microkernel-designer` (chose Redox OS) and a `capability-analyzer`. Produced the fix + a Redox integration spec.
+
+### What It Got Wrong
+
+- **Skills not used as skills.** The system saw the skill catalog in its system prompt but spawned agents named after skills (e.g. `security-and-hardening`) instead of calling `skill_read` to load the actual skill instructions. It used skills as naming inspiration, not as executable knowledge.
+- **Microkernel focus.** Every run converges on "become a real microkernel" — which is the roadmap vision, but not the immediate next step for a useful product. The system reads its own aspirational docs and treats them as instructions.
+- **Stale doc dependency.** Run 2 concluded that inference scheduling and budget enforcement didn't exist — because the architecture doc hadn't been updated. The system's self-knowledge is only as good as its documentation.
+
+### The Insight
+
+**A system that reads its own code, finds bugs, and proposes fixes is a useful feedback loop — even if it can't compile or test the fixes.** The human provides compilation, judgment, and integration. The system provides exhaustive reading and adversarial analysis. At $0.03 per cycle, this is cheaper than any human code review.
