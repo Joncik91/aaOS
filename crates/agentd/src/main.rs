@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aaos_llm::{AnthropicClient, AnthropicConfig, OpenAiCompatConfig, OpenAiCompatibleClient};
+use aaos_llm::{
+    AnthropicClient, AnthropicConfig, InferenceSchedulingConfig, OpenAiCompatConfig,
+    OpenAiCompatibleClient, ScheduledLlmClient,
+};
 use clap::Parser;
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -33,16 +36,23 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("starting agentd");
 
             // Try to configure LLM client from environment
-            let server = match AnthropicConfig::from_env() {
-                Ok(config) => {
-                    tracing::info!(base_url = %config.base_url, "Anthropic LLM client configured");
-                    let client = Arc::new(AnthropicClient::new(config));
-                    Arc::new(Server::with_llm_client(client))
-                }
-                Err(e) => {
-                    tracing::warn!("No LLM client configured: {e}. agent.run will be unavailable.");
-                    Arc::new(Server::new())
-                }
+            let server = if let Ok(config) = OpenAiCompatConfig::deepseek_from_env() {
+                tracing::info!(base_url = %config.base_url, "DeepSeek LLM client configured");
+                let raw: Arc<dyn aaos_llm::LlmClient> = Arc::new(OpenAiCompatibleClient::new(config));
+                let sched_config = InferenceSchedulingConfig::from_env();
+                let client: Arc<dyn aaos_llm::LlmClient> =
+                    Arc::new(ScheduledLlmClient::new(raw, sched_config));
+                Arc::new(Server::with_llm_client(client))
+            } else if let Ok(config) = AnthropicConfig::from_env() {
+                tracing::info!(base_url = %config.base_url, "Anthropic LLM client configured");
+                let raw: Arc<dyn aaos_llm::LlmClient> = Arc::new(AnthropicClient::new(config));
+                let sched_config = InferenceSchedulingConfig::from_env();
+                let client: Arc<dyn aaos_llm::LlmClient> =
+                    Arc::new(ScheduledLlmClient::new(raw, sched_config));
+                Arc::new(Server::with_llm_client(client))
+            } else {
+                tracing::warn!("No LLM client configured. agent.run will be unavailable.");
+                Arc::new(Server::new())
             };
 
             server.listen(&socket).await?;
@@ -91,7 +101,7 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
     tracing::info!(goal = %goal, "bootstrap goal");
 
     // Prefer DeepSeek if DEEPSEEK_API_KEY is set, fall back to Anthropic.
-    let llm_client: Arc<dyn aaos_llm::LlmClient> =
+    let raw_client: Arc<dyn aaos_llm::LlmClient> =
         if let Ok(config) = OpenAiCompatConfig::deepseek_from_env() {
             tracing::info!(base_url = %config.base_url, "using DeepSeek LLM client");
             Arc::new(OpenAiCompatibleClient::new(config))
@@ -103,6 +113,16 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
                 "bootstrap mode requires DEEPSEEK_API_KEY or ANTHROPIC_API_KEY"
             ));
         };
+
+    // Wrap in inference scheduler for concurrency control
+    let sched_config = InferenceSchedulingConfig::from_env();
+    tracing::info!(
+        max_concurrent = sched_config.max_concurrent,
+        min_delay_ms = sched_config.min_delay_ms,
+        "inference scheduling configured"
+    );
+    let llm_client: Arc<dyn aaos_llm::LlmClient> =
+        Arc::new(ScheduledLlmClient::new(raw_client, sched_config));
 
     // Use StdoutAuditLog for container observability (logs to stdout as JSON)
     let audit_log: Arc<dyn aaos_core::AuditLog> = Arc::new(aaos_core::StdoutAuditLog);
