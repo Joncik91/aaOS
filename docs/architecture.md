@@ -93,7 +93,8 @@ Key properties:
 - **No ambient authority** — Agents start with zero permissions
 - **Unforgeable** — Tokens are UUID-identified, kernel-issued
 - **Narrowable only** — Tokens can be constrained further, never escalated
-- **Audited** — Every grant and denial is logged
+- **Revocable** — Tokens can be revoked at runtime; `permits()` checks revocation on every call. `revoke_capability()` and `revoke_all_capabilities()` on the registry. `CapabilityRevoked` audit event.
+- **Audited** — Every grant, denial, and revocation is logged
 
 ## Audit Trail
 

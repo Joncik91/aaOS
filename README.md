@@ -23,7 +23,7 @@ What's implemented and tested:
 
 - **Self-bootstrapping agent swarms** — A Bootstrap Agent (DeepSeek Reasoner) receives a goal, analyzes it, spawns specialized child agents (DeepSeek Chat) with narrowed capabilities, coordinates their work, and produces output. All autonomous. Runs in Docker with `agentd` as PID 1. Multi-provider: works with DeepSeek, Anthropic, or any OpenAI-compatible API.
 - **Persistent goal queue** — The Bootstrap Agent runs as a persistent process, accepting goals via Unix socket. Container stays alive between tasks.
-- **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have." Path normalization prevents traversal attacks; child tokens inherit parent constraints.
+- **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have." Path normalization prevents traversal attacks; child tokens inherit parent constraints. Tokens are revocable at runtime.
 - **Agent orchestration** — Parent spawns children with narrowed capabilities. Spawn depth limit (5), agent count limit (100). Failed children are retried once automatically.
 - **Persistent agents** — Long-running agents with background message loops, request-response IPC via `send_and_wait()`, conversation persistence in JSONL
 - **Managed context windows** — Runtime transparently summarizes old messages via LLM when the context fills, archives originals to disk. Agents see coherent conversations without hitting token limits.
@@ -48,9 +48,13 @@ What's implemented and tested:
       |
  [Self-Bootstrapping]  Autonomous agent swarms in Docker          ✅ Phase D
       |
- [Multi-Provider LLM]  DeepSeek, inference scheduling, budgets   ✅ Phase E  <-- you are here
+ [Multi-Provider LLM]  DeepSeek, inference scheduling, budgets   ✅ Phase E
       |
- [Security Hardening]  Self-audit, path traversal fix, hardening  ✅ Done
+ [Security]  Self-audit, path traversal fix, revocation           ✅ Done
+      |
+ [AgentSkills]  Open standard, 21 skills, progressive disclosure  ✅ Done
+      |
+ [Self-Reflection]  System reads own code, proposes features      ✅ Done  <-- you are here
       |
  [Real Kernel]  Migrate to Redox OS or seL4 microkernel          Future
 ```
