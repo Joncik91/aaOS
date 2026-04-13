@@ -1,23 +1,23 @@
-# aaOS — Agent-First Operating System
+# aaOS — Agent Runtime
 
-**The vision:** A new kind of kernel where AI agents are native processes, capabilities replace permissions, and the OS is designed for autonomy — not human interaction.
+**An agent-first runtime where AI agents are native processes, capabilities replace permissions, and the system is designed for autonomy — not human interaction.**
 
-**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 7 Rust crates, ~13,000 lines, 220+ tests. Runs autonomously in Docker — a Bootstrap Agent receives a goal, spawns specialized child agents, and produces output with zero human intervention. The system has designed its own features: given its own source code, it produced working Rust implementations for $0.03.
+**The long-term vision:** Migrate these abstractions to a real capability-based microkernel (Redox OS or seL4) where agent isolation is hardware-enforced and inference is a schedulable resource like CPU time.
 
-## Why a New Kernel
+**What exists today:** A working agent runtime on Linux. 7 Rust crates, ~13,000 lines, 220+ tests. Runs autonomously in Docker — a Bootstrap Agent receives a goal, spawns specialized child agents, and produces output with zero human intervention. The system has designed its own features and audited its own security — both for pennies.
 
-Today's operating systems were designed for humans interacting with programs through screens. AI agents don't need display servers, window managers, or interactive shells. They need capability-based security, structured communication, and orchestration primitives. aaOS asks: what does an OS look like when you design it for agents from the ground up?
+## Why an Agent Runtime
 
-The answer isn't an agent framework bolted onto Linux. It's a new kernel where:
+Agent frameworks bolt orchestration onto existing runtimes. aaOS takes the opposite approach: build the runtime around agents from the ground up.
 
-- **Agents are processes.** They have lifecycles, registries, schedulers, and supervisors — managed by the kernel, not by application code.
-- **Capabilities replace permissions.** No ambient authority. Unforgeable tokens granted at spawn, validated on every operation, narrowable but never escalatable. An agent with `file_write: /data/output/*` *cannot* write to `/etc/` — not as a policy, but as a kernel guarantee.
+- **Agents are processes.** They have lifecycles, registries, schedulers, and supervisors — managed by the runtime, not by application code.
+- **Capabilities replace permissions.** No ambient authority. Unforgeable tokens granted at spawn, validated on every operation, narrowable but never escalatable. An agent with `file_write: /data/output/*` *cannot* write to `/etc/` — not as a policy, but as a runtime guarantee.
 - **Communication is typed.** MCP messages (JSON-RPC 2.0) with schema validation replace raw byte pipes. Everything is parseable, validatable, and auditable.
-- **Inference is a schedulable resource.** Like CPU time, LLM inference is allocated by the kernel — with budgets, priorities, and fair scheduling.
+- **Inference is a schedulable resource.** LLM API calls are managed by the runtime — with concurrency limits, budgets, and provider abstraction.
 
-## What the Prototype Proves
+## What the Runtime Provides
 
-This repo is a **userspace prototype** — the agent programming model running as a daemon on Linux, isolated in Docker. It proves the abstractions work before committing them to a real microkernel.
+aaOS runs as a daemon (`agentd`) on Linux, isolated in Docker. The `AgentServices` trait defines the syscall interface — designed to survive a future migration to a real microkernel.
 
 What's implemented and tested:
 
@@ -31,34 +31,31 @@ What's implemented and tested:
 - **Workspace isolation** — Each goal gets its own workspace directory. Child agents write intermediate files there.
 - **Inference scheduling** — Semaphore-based concurrency limiter prevents API stampedes when multiple agents run simultaneously. Configurable max concurrent calls per provider.
 - **Per-agent token budgets** — Agents declare token limits in their manifest. The runtime enforces budgets via atomic tracking in `report_usage()`. Exceeded agents get stopped. Optional — no budget means no enforcement.
-- **Kernel-level audit trail** — 21 event kinds, streamed as JSON-lines to stdout for container observability
+- **Audit trail** — 21 event kinds, streamed as JSON-lines to stdout for container observability
 - **Verbose agent logging** — Full agent thoughts, tool calls with arguments, and tool results streamed to stdout. Live dashboard shows agent activity in real-time.
 - **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
 - **Self-designing capability** — Agents can read the mounted aaOS source code at `/src/` and produce working Rust implementations. The OS has designed its own budget enforcement system.
 - **Self-auditing security** — The system performed a security audit of itself (1.37M tokens, $0.05), found a real path traversal vulnerability in `glob_matches` that had been present since Phase A, and produced a hardening plan. The vulnerability was fixed based on the audit findings.
 
-## The Path to a Real Kernel
+## Roadmap
 
 ```
- You are here
-      |
-      v
- [Prototype]  Userspace on Linux — proving the model           ✅ Phase A
+ [Runtime Prototype]  Agent lifecycle, capabilities, tools       ✅ Phase A
       |
  [Persistent Agents]  Long-running agents, request-response IPC  ✅ Phase B
       |
  [Agent Memory]  Managed context windows, episodic store         ✅ Phase C
       |
- [Self-Bootstrapping VM]  Autonomous agent swarms in Docker      ✅ Phase D
+ [Self-Bootstrapping]  Autonomous agent swarms in Docker          ✅ Phase D
       |
- [Multi-Provider LLM]  DeepSeek, OpenAI-compat, inference sched  ✅ Phase E1
+ [Multi-Provider LLM]  DeepSeek, inference scheduling, budgets   ✅ Phase E  <-- you are here
       |
- [Inference Scheduling]  Concurrency limiter, budget enforcement  ✅ Phase E2+E3  <-- you are here
+ [Security Hardening]  Self-audit, path traversal fix, hardening  ✅ Done
       |
- [Real Kernel]  Migrate to Redox OS or seL4 microkernel
+ [Real Kernel]  Migrate to Redox OS or seL4 microkernel          Future
 ```
 
-The `AgentServices` trait defines the syscall interface. The `Tool` trait defines tool integration. The manifest format defines agent bundles. When the kernel migration happens, everything above the kernel — the entire agent programming model — stays the same. Applications work identically. The kernel is an implementation detail.
+The `AgentServices` trait is the bridge between runtime and kernel. The `Tool` trait defines tool integration. The manifest format defines agent bundles. When the kernel migration happens, everything above changes implementation — not interface. Agent manifests, tools, and orchestration logic work identically.
 
 See [Roadmap](docs/roadmap.md) for details on each phase.
 
@@ -74,9 +71,9 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |        Agent Memory Layer                    |  Context windows, episodic store, embeddings
 +---------------------------------------------+
-|          Agent Kernel                        |  Process model, registry, tokens, IPC router
+|          Agent Runtime Core                  |  Process model, registry, tokens, IPC router
 +---------------------------------------------+
-|       Linux (userspace prototype)            |  Docker-isolated, replaced by real kernel in Phase F
+|       Linux + Docker                         |  Host OS, replaced by microkernel in future
 +---------------------------------------------+
 ```
 
@@ -180,17 +177,17 @@ JSON-RPC 2.0 over Unix socket.
 
 ## Design Principles
 
-1. **Agent-Native, Human-Optional** — The OS boots into an agent runtime. No display server.
-2. **Capability-Based Security** — No ambient authority. Unforgeable tokens replace Unix permissions.
+1. **Agent-Native, Human-Optional** — The runtime boots into an agent process. Humans provide goals, not instructions.
+2. **Capability-Based Security** — No ambient authority. Unforgeable tokens replace permissions.
 3. **Structured Communication** — Typed MCP messages, not raw byte pipes.
-4. **Observable by Default** — Every action logged as a kernel guarantee.
-5. **Reversibility as a Primitive** — Side effects captured transactionally where possible.
+4. **Observable by Default** — Every action logged as a runtime guarantee.
+5. **Kernel-Ready Abstractions** — `AgentServices` is the future syscall interface. Code written today works on a real microkernel tomorrow.
 
 ## Documentation
 
 - [Architecture](docs/architecture.md) — Layer details and design decisions
-- [Roadmap](docs/roadmap.md) — Phase-by-phase path from prototype to real kernel
-- [Build Retrospective](docs/retrospective.md) — How a working prototype was built in 48 hours
+- [Roadmap](docs/roadmap.md) — Phase-by-phase path from runtime to real kernel
+- [Build Retrospective](docs/retrospective.md) — How the runtime was built and evolved
 
 ## License
 

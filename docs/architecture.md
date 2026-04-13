@@ -2,9 +2,9 @@
 
 ## Overview
 
-aaOS is organized as a six-layer stack, each layer providing services to the one above it.
+aaOS is an agent runtime organized as a six-layer stack, each layer providing services to the one above it.
 
-**Current state:** The system runs as a userspace prototype on Linux — proving the agent programming model before migrating to a real capability-based microkernel (see [Roadmap](roadmap.md), Phase F). The abstractions are designed to survive that migration: the `AgentServices` trait is the future syscall interface, and the `Tool` trait is the future driver model. Code written against these interfaces today will work unchanged on the real kernel.
+**Current state:** The runtime runs as a daemon on Linux, isolated in Docker. The abstractions are designed to survive a future migration to a real capability-based microkernel (see [Roadmap](roadmap.md)): the `AgentServices` trait is the future syscall interface, and the `Tool` trait is the future driver model. Code written against these interfaces today will work unchanged on a real kernel.
 
 ## Layer Details
 
