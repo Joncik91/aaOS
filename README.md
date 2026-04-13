@@ -2,7 +2,7 @@
 
 **The vision:** A new kind of kernel where AI agents are native processes, capabilities replace permissions, and the OS is designed for autonomy — not human interaction.
 
-**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 7 Rust crates, ~12,000 lines, 209 tests. Runs autonomously in Docker — a Bootstrap Agent receives a goal, spawns specialized child agents, and produces output with zero human intervention.
+**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 7 Rust crates, ~13,000 lines, 220+ tests. Runs autonomously in Docker — a Bootstrap Agent receives a goal, spawns specialized child agents, and produces output with zero human intervention. The system has designed its own features: given its own source code, it produced working Rust implementations for $0.03.
 
 ## Why a New Kernel
 
@@ -21,7 +21,7 @@ This repo is a **userspace prototype** — the agent programming model running a
 
 What's implemented and tested:
 
-- **Self-bootstrapping agent swarms** — A Bootstrap Agent (Sonnet) receives a goal, analyzes it, spawns specialized child agents (Haiku) with narrowed capabilities, coordinates their work, and produces output. All autonomous. Runs in Docker with `agentd` as PID 1.
+- **Self-bootstrapping agent swarms** — A Bootstrap Agent (DeepSeek Reasoner) receives a goal, analyzes it, spawns specialized child agents (DeepSeek Chat) with narrowed capabilities, coordinates their work, and produces output. All autonomous. Runs in Docker with `agentd` as PID 1. Multi-provider: works with DeepSeek, Anthropic, or any OpenAI-compatible API.
 - **Persistent goal queue** — The Bootstrap Agent runs as a persistent process, accepting goals via Unix socket. Container stays alive between tasks.
 - **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have."
 - **Agent orchestration** — Parent spawns children with narrowed capabilities. Spawn depth limit (5), agent count limit (100). Failed children are retried once automatically.
@@ -29,8 +29,12 @@ What's implemented and tested:
 - **Managed context windows** — Runtime transparently summarizes old messages via LLM when the context fills, archives originals to disk. Agents see coherent conversations without hitting token limits.
 - **Episodic memory** — Per-agent persistent memory via `memory_store`/`memory_query`/`memory_delete` tools. Semantic search via cosine similarity over embeddings (Ollama nomic-embed-text).
 - **Workspace isolation** — Each goal gets its own workspace directory. Child agents write intermediate files there.
+- **Inference scheduling** — Semaphore-based concurrency limiter prevents API stampedes when multiple agents run simultaneously. Configurable max concurrent calls per provider.
+- **Per-agent token budgets** — Agents declare token limits in their manifest. The runtime enforces budgets via atomic tracking in `report_usage()`. Exceeded agents get stopped. Optional — no budget means no enforcement.
 - **Kernel-level audit trail** — 21 event kinds, streamed as JSON-lines to stdout for container observability
+- **Verbose agent logging** — Full agent thoughts, tool calls with arguments, and tool results streamed to stdout. Live dashboard shows agent activity in real-time.
 - **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
+- **Self-designing capability** — Agents can read the mounted aaOS source code at `/src/` and produce working Rust implementations. The OS has designed its own budget enforcement system.
 
 ## The Path to a Real Kernel
 
@@ -46,7 +50,9 @@ What's implemented and tested:
       |
  [Self-Bootstrapping VM]  Autonomous agent swarms in Docker      ✅ Phase D
       |
- [Multi-Provider LLM]  DeepSeek, OpenAI-compat, inference sched  ✅ Phase E1  <-- you are here
+ [Multi-Provider LLM]  DeepSeek, OpenAI-compat, inference sched  ✅ Phase E1
+      |
+ [Inference Scheduling]  Concurrency limiter, budget enforcement  ✅ Phase E2+E3  <-- you are here
       |
  [Real Kernel]  Migrate to Redox OS or seL4 microkernel
 ```
@@ -74,11 +80,11 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 ```
 
 7 Rust crates:
-- **aaos-core** — Types, traits, capability model, audit events (21 kinds)
+- **aaos-core** — Types, traits, capability model, audit events (21 kinds), budget tracking
 - **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management
 - **aaos-ipc** — MCP message router with capability validation, request-response IPC
 - **aaos-tools** — Tool registry, invocation, 8 built-in tools (including memory tools)
-- **aaos-llm** — LLM client, execution loop with history and system prompt override
+- **aaos-llm** — LLM clients (Anthropic + OpenAI-compat), execution loop, inference scheduler
 - **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **agentd** — Daemon binary, Unix socket API, approval queue
 
@@ -88,7 +94,7 @@ Agents are declared bundles:
 
 ```yaml
 name: research-agent
-model: claude-haiku-4-5-20251001
+model: deepseek-chat
 system_prompt: "You are a helpful research assistant with persistent memory."
 lifecycle: persistent
 capabilities:
@@ -104,8 +110,10 @@ approval_required:
 memory:
   context_window: "128k"
   max_history_messages: 200
-  summarization_model: "claude-haiku-4-5-20251001"
   episodic_enabled: true
+budget_config:
+  max_tokens: 1000000       # 1M tokens
+  reset_period_seconds: 86400  # daily reset
 ```
 
 ## Quick Start
@@ -117,22 +125,18 @@ Requires Docker and a DeepSeek API key (or Anthropic API key as fallback).
 git clone https://github.com/Joncik91/aaOS.git
 cd aaOS
 
-# Build the container
-docker build -t aaos-bootstrap -f Dockerfile.bootstrap .
-
-# Run the autonomous bootstrap demo (DeepSeek — ~$0.02 per goal)
-docker run --rm --name aaos-run \
-  -e DEEPSEEK_API_KEY="sk-..." \
-  -e AAOS_BOOTSTRAP_MANIFEST=/etc/aaos/manifests/bootstrap.yaml \
-  -e AAOS_BOOTSTRAP_GOAL="Fetch https://news.ycombinator.com and write a summary of the top 5 stories to /output/summary.txt" \
-  -v ./output:/output \
-  aaos-bootstrap
+# Run with live dashboard (builds image automatically on first run)
+DEEPSEEK_API_KEY="sk-..." ./run-aaos.sh "Fetch https://news.ycombinator.com and write a summary of the top 5 stories to /output/summary.txt"
 
 # Check the output
 cat output/summary.txt
 ```
 
-The Bootstrap Agent (DeepSeek Reasoner) analyzes the goal, spawns Fetcher and Writer agents (DeepSeek Chat), coordinates their work, and writes the output. Total cost: ~$0.02. Falls back to Anthropic if `ANTHROPIC_API_KEY` is set instead.
+The launcher starts the container and opens a live dashboard in a separate terminal showing agent activity in real-time. Ctrl+C stops everything.
+
+The Bootstrap Agent (DeepSeek Reasoner) analyzes the goal, spawns specialized child agents (DeepSeek Chat), coordinates their work, and writes the output. Total cost: ~$0.02. Falls back to Anthropic if `ANTHROPIC_API_KEY` is set instead.
+
+The source code is mounted read-only at `/src/` inside the container, so agents can read and understand the codebase when given code-related goals.
 
 To send additional goals to the running container:
 ```bash
