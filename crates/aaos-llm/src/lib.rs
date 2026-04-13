@@ -7,5 +7,5 @@ pub mod types;
 pub use anthropic::{AnthropicClient, AnthropicConfig};
 pub use client::LlmClient;
 pub use error::{LlmError, LlmResult};
-pub use executor::{AgentExecutor, ExecutionResult, ExecutionStopReason, ExecutorConfig};
+pub use executor::{AgentExecutor, ExecutionResult, ExecutionResultWithHistory, ExecutionStopReason, ExecutorConfig};
 pub use types::{CompletionRequest, CompletionResponse, ContentBlock, LlmStopReason, Message};

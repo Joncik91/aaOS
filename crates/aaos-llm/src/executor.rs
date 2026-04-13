@@ -55,6 +55,16 @@ impl std::fmt::Display for ExecutionStopReason {
     }
 }
 
+/// Result of an agent execution that includes transcript delta for persistence.
+#[derive(Debug, Clone)]
+pub struct ExecutionResultWithHistory {
+    pub response: String,
+    pub usage: TokenUsage,
+    pub iterations: u32,
+    pub stop_reason: ExecutionStopReason,
+    pub transcript_delta: Vec<Message>,
+}
+
 /// Drives an agent through the LLM inference loop.
 pub struct AgentExecutor {
     llm: Arc<dyn LlmClient>,
@@ -253,6 +263,217 @@ impl AgentExecutor {
                             usage: cumulative_usage,
                             iterations,
                             stop_reason: ExecutionStopReason::MaxIterations,
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    /// Run an agent with prior conversation history.
+    ///
+    /// Prepends `prior_messages` to the message vec before adding the new user message.
+    /// Returns `ExecutionResultWithHistory` with a `transcript_delta` containing only
+    /// the NEW messages produced during this execution (not the prior ones).
+    pub async fn run_with_history(
+        &self,
+        agent_id: AgentId,
+        manifest: &AgentManifest,
+        initial_message: &str,
+        prior_messages: &[Message],
+    ) -> ExecutionResultWithHistory {
+        let system = match &manifest.system_prompt {
+            PromptSource::Inline(s) => s.clone(),
+            PromptSource::File(path) => match tokio::fs::read_to_string(path).await {
+                Ok(content) => content,
+                Err(e) => {
+                    return ExecutionResultWithHistory {
+                        response: String::new(),
+                        usage: TokenUsage::default(),
+                        iterations: 0,
+                        stop_reason: ExecutionStopReason::Error(format!(
+                            "failed to read system prompt: {e}"
+                        )),
+                        transcript_delta: vec![],
+                    };
+                }
+            },
+        };
+
+        // Get tools filtered by agent's capabilities
+        let tools = match self.services.list_tools(agent_id).await {
+            Ok(t) => t,
+            Err(e) => {
+                return ExecutionResultWithHistory {
+                    response: String::new(),
+                    usage: TokenUsage::default(),
+                    iterations: 0,
+                    stop_reason: ExecutionStopReason::Error(format!("failed to list tools: {e}")),
+                    transcript_delta: vec![],
+                };
+            }
+        };
+
+        // Start with prior messages, then add the new user message
+        let mut messages: Vec<Message> = prior_messages.to_vec();
+        let new_user_message = Message::User {
+            content: initial_message.to_string(),
+        };
+        messages.push(new_user_message.clone());
+
+        // Track only new messages added during this execution
+        let mut transcript_delta: Vec<Message> = vec![new_user_message];
+
+        let mut cumulative_usage = TokenUsage::default();
+        let mut iterations: u32 = 0;
+        let mut last_text = String::new();
+
+        loop {
+            // Call LLM
+            let request = CompletionRequest {
+                agent_id,
+                model: manifest.model.clone(),
+                system: system.clone(),
+                messages: messages.clone(),
+                tools: tools.clone(),
+                max_tokens: 4096,
+            };
+
+            let response = match self.llm.complete(request).await {
+                Ok(r) => r,
+                Err(e) => {
+                    return ExecutionResultWithHistory {
+                        response: last_text,
+                        usage: cumulative_usage,
+                        iterations,
+                        stop_reason: ExecutionStopReason::Error(e.to_string()),
+                        transcript_delta,
+                    };
+                }
+            };
+
+            iterations += 1;
+
+            // Report and accumulate usage
+            let _ = self
+                .services
+                .report_usage(agent_id, response.usage.clone())
+                .await;
+            cumulative_usage.input_tokens += response.usage.input_tokens;
+            cumulative_usage.output_tokens += response.usage.output_tokens;
+
+            // Check token budget
+            if cumulative_usage.total() > self.config.max_total_tokens {
+                for block in &response.content {
+                    if let ContentBlock::Text { text } = block {
+                        last_text = text.clone();
+                    }
+                }
+                return ExecutionResultWithHistory {
+                    response: last_text,
+                    usage: cumulative_usage,
+                    iterations,
+                    stop_reason: ExecutionStopReason::MaxTokens,
+                    transcript_delta,
+                };
+            }
+
+            // Handle stop reason
+            match response.stop_reason {
+                LlmStopReason::EndTurn | LlmStopReason::StopSequence => {
+                    // Extract text from response and record assistant message in delta
+                    let assistant_msg = Message::Assistant {
+                        content: response.content.clone(),
+                    };
+                    for block in &response.content {
+                        if let ContentBlock::Text { text } = block {
+                            last_text = text.clone();
+                        }
+                    }
+                    transcript_delta.push(assistant_msg);
+                    return ExecutionResultWithHistory {
+                        response: last_text,
+                        usage: cumulative_usage,
+                        iterations,
+                        stop_reason: ExecutionStopReason::Complete,
+                        transcript_delta,
+                    };
+                }
+                LlmStopReason::MaxTokens => {
+                    let assistant_msg = Message::Assistant {
+                        content: response.content.clone(),
+                    };
+                    for block in &response.content {
+                        if let ContentBlock::Text { text } = block {
+                            last_text = text.clone();
+                        }
+                    }
+                    transcript_delta.push(assistant_msg);
+                    return ExecutionResultWithHistory {
+                        response: last_text,
+                        usage: cumulative_usage,
+                        iterations,
+                        stop_reason: ExecutionStopReason::Truncated,
+                        transcript_delta,
+                    };
+                }
+                LlmStopReason::ToolUse => {
+                    // Collect tool_use blocks
+                    let tool_uses: Vec<_> = response
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            ContentBlock::ToolUse { id, name, input } => {
+                                Some((id.clone(), name.clone(), input.clone()))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+
+                    // Also collect any text
+                    for block in &response.content {
+                        if let ContentBlock::Text { text } = block {
+                            last_text = text.clone();
+                        }
+                    }
+
+                    // Append assistant message (to both messages and delta)
+                    let assistant_msg = Message::Assistant {
+                        content: response.content.clone(),
+                    };
+                    messages.push(assistant_msg.clone());
+                    transcript_delta.push(assistant_msg);
+
+                    // Execute each tool call sequentially
+                    for (tool_use_id, tool_name, tool_input) in tool_uses {
+                        let tool_result_msg = match self
+                            .services
+                            .invoke_tool(agent_id, &tool_name, tool_input)
+                            .await
+                        {
+                            Ok(result) => Message::ToolResult {
+                                tool_use_id,
+                                content: result,
+                                is_error: false,
+                            },
+                            Err(e) => Message::ToolResult {
+                                tool_use_id,
+                                content: Value::String(e.to_string()),
+                                is_error: true,
+                            },
+                        };
+                        messages.push(tool_result_msg.clone());
+                        transcript_delta.push(tool_result_msg);
+                    }
+
+                    // Check iteration limit
+                    if iterations >= self.config.max_iterations {
+                        return ExecutionResultWithHistory {
+                            response: last_text,
+                            usage: cumulative_usage,
+                            iterations,
+                            stop_reason: ExecutionStopReason::MaxIterations,
+                            transcript_delta,
                         };
                     }
                 }
@@ -588,6 +809,92 @@ capabilities:
             .await;
         assert_eq!(result.stop_reason, ExecutionStopReason::Truncated);
         assert_eq!(result.response, "Partial resp...");
+    }
+
+    #[tokio::test]
+    async fn run_with_history_passes_prior_messages() {
+        let llm = Arc::new(MockLlmClient::new(vec![Ok(CompletionResponse {
+            content: vec![ContentBlock::Text {
+                text: "I remember!".into(),
+            }],
+            stop_reason: LlmStopReason::EndTurn,
+            usage: TokenUsage {
+                input_tokens: 20,
+                output_tokens: 5,
+            },
+        })]));
+        let services = Arc::new(MockAgentServices::new(vec![], vec![]));
+        let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
+
+        let prior = vec![
+            Message::User { content: "My name is Alice.".into() },
+            Message::Assistant {
+                content: vec![ContentBlock::Text { text: "Hello Alice!".into() }],
+            },
+        ];
+
+        let result = executor
+            .run_with_history(AgentId::new(), &test_manifest(), "What's my name?", &prior)
+            .await;
+
+        assert_eq!(result.response, "I remember!");
+        assert_eq!(result.stop_reason, ExecutionStopReason::Complete);
+        assert_eq!(result.transcript_delta.len(), 2);
+        match &result.transcript_delta[0] {
+            Message::User { content } => assert_eq!(content, "What's my name?"),
+            _ => panic!("expected User message"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_with_history_tool_use_transcript() {
+        let llm = Arc::new(MockLlmClient::new(vec![
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::ToolUse {
+                    id: "c1".into(),
+                    name: "echo".into(),
+                    input: serde_json::json!({"msg": "test"}),
+                }],
+                stop_reason: LlmStopReason::ToolUse,
+                usage: TokenUsage { input_tokens: 10, output_tokens: 5 },
+            }),
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text { text: "Done".into() }],
+                stop_reason: LlmStopReason::EndTurn,
+                usage: TokenUsage { input_tokens: 15, output_tokens: 3 },
+            }),
+        ]));
+        let services = Arc::new(MockAgentServices::new(
+            vec![Ok(serde_json::json!({"ok": true}))],
+            vec![],
+        ));
+        let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
+
+        let result = executor
+            .run_with_history(AgentId::new(), &test_manifest(), "Do it", &[])
+            .await;
+
+        assert_eq!(result.response, "Done");
+        assert_eq!(result.transcript_delta.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn run_with_empty_history_same_as_run() {
+        let llm = Arc::new(MockLlmClient::new(vec![Ok(CompletionResponse {
+            content: vec![ContentBlock::Text { text: "Hi!".into() }],
+            stop_reason: LlmStopReason::EndTurn,
+            usage: TokenUsage { input_tokens: 10, output_tokens: 5 },
+        })]));
+        let services = Arc::new(MockAgentServices::new(vec![], vec![]));
+        let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
+
+        let result = executor
+            .run_with_history(AgentId::new(), &test_manifest(), "Hello", &[])
+            .await;
+
+        assert_eq!(result.response, "Hi!");
+        assert_eq!(result.iterations, 1);
+        assert_eq!(result.transcript_delta.len(), 2);
     }
 
     #[tokio::test]
