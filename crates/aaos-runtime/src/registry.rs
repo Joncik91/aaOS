@@ -7,7 +7,9 @@ use aaos_core::{
 use aaos_ipc::MessageRouter;
 use dashmap::DashMap;
 
-use crate::process::{AgentInfo, AgentProcess, AgentState};
+use crate::persistent::persistent_agent_loop;
+use crate::process::{AgentCommand, AgentInfo, AgentProcess, AgentState};
+use crate::session::SessionStore;
 
 /// Thread-safe registry of all running agent processes.
 ///
@@ -66,8 +68,8 @@ impl AgentRegistry {
         Ok(id)
     }
 
-    /// Stop an agent by ID.
-    pub fn stop(&self, id: AgentId) -> Result<()> {
+    /// Stop an agent by ID (sync version, does not await the task handle).
+    pub fn stop_sync(&self, id: AgentId) -> Result<()> {
         let mut entry = self
             .agents
             .get_mut(&id)
@@ -94,6 +96,59 @@ impl AgentRegistry {
 
         self.agents.remove(&id);
         tracing::info!(agent_id = %id, "agent stopped");
+        Ok(())
+    }
+
+    /// Stop an agent (async version for persistent agents).
+    pub async fn stop(&self, id: AgentId) -> Result<()> {
+        // Send stop command
+        if let Some(entry) = self.agents.get(&id) {
+            let _ = entry.value().command_tx.send(AgentCommand::Stop).await;
+        }
+
+        // Await task handle
+        let task_handle = self.agents.get_mut(&id)
+            .and_then(|mut e| e.value_mut().task_handle.take());
+        if let Some(handle) = task_handle {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                handle,
+            ).await;
+        }
+
+        self.stop_sync(id)
+    }
+
+    /// Start the persistent agent loop for a persistent agent.
+    /// Called by the server after spawn, passing all needed Arc references.
+    pub fn start_persistent_loop(
+        &self,
+        agent_id: AgentId,
+        executor: aaos_llm::AgentExecutor,
+        session_store: Arc<dyn crate::session::SessionStore>,
+        router: Arc<MessageRouter>,
+    ) -> Result<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&agent_id)
+            .ok_or(CoreError::AgentNotFound(agent_id))?;
+
+        let process = entry.value_mut();
+
+        let msg_rx = process.message_rx.take()
+            .ok_or_else(|| CoreError::Ipc("message_rx already taken".into()))?;
+        let cmd_rx = process.take_command_rx()
+            .ok_or_else(|| CoreError::Ipc("command_rx already taken".into()))?;
+
+        let manifest = process.manifest.clone();
+        let audit_log = self.audit_log.clone();
+
+        let handle = tokio::spawn(persistent_agent_loop(
+            agent_id, manifest, msg_rx, cmd_rx,
+            executor, session_store, router, audit_log,
+        ));
+
+        process.task_handle = Some(handle);
         Ok(())
     }
 
@@ -295,7 +350,7 @@ capabilities:
     fn spawn_and_stop() {
         let (registry, log) = test_registry();
         let id = registry.spawn(test_manifest("agent-1")).unwrap();
-        registry.stop(id).unwrap();
+        registry.stop_sync(id).unwrap();
         assert_eq!(registry.count(), 0);
 
         // Should have spawn + capability grants + stop events
@@ -305,7 +360,7 @@ capabilities:
     #[test]
     fn stop_nonexistent_agent() {
         let (registry, _log) = test_registry();
-        let result = registry.stop(AgentId::new());
+        let result = registry.stop_sync(AgentId::new());
         assert!(result.is_err());
     }
 
@@ -386,8 +441,46 @@ capabilities:
         let id = registry.spawn(test_manifest("agent-1")).unwrap();
         assert_eq!(router.agent_count(), 1);
 
-        registry.stop(id).unwrap();
+        registry.stop_sync(id).unwrap();
         assert_eq!(router.agent_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn spawn_persistent_agent_starts_loop() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let router = Arc::new(aaos_ipc::MessageRouter::new(log.clone(), |_, _| true));
+        let registry = Arc::new(AgentRegistry::new(log.clone()));
+        registry.set_router(router.clone());
+
+        let manifest = AgentManifest::from_yaml(r#"
+name: persistent-agent
+model: claude-haiku-4-5-20251001
+system_prompt: "You are persistent."
+lifecycle: persistent
+"#).unwrap();
+
+        let agent_id = registry.spawn(manifest).unwrap();
+        let info = registry.get_info(agent_id).unwrap();
+        assert_eq!(info.state, AgentState::Running);
+        assert_eq!(info.name, "persistent-agent");
+
+        registry.stop_sync(agent_id).unwrap();
+    }
+
+    #[test]
+    fn ephemeral_spawn_unchanged() {
+        let (registry, _log) = test_registry();
+        let manifest = AgentManifest::from_yaml(r#"
+name: ephemeral-agent
+model: claude-haiku-4-5-20251001
+system_prompt: "You are ephemeral."
+lifecycle: on-demand
+"#).unwrap();
+
+        let id = registry.spawn(manifest).unwrap();
+        let info = registry.get_info(id).unwrap();
+        assert_eq!(info.state, AgentState::Running);
+        assert_eq!(info.name, "ephemeral-agent");
     }
 
     #[test]

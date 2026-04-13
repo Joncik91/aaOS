@@ -59,6 +59,7 @@ pub struct AgentProcess {
     command_rx: Option<mpsc::Receiver<AgentCommand>>,
     pub message_rx: Option<tokio::sync::mpsc::Receiver<aaos_ipc::McpMessage>>,
     pub response_rx: Option<tokio::sync::mpsc::Receiver<aaos_ipc::McpResponse>>,
+    pub task_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl AgentProcess {
@@ -74,6 +75,7 @@ impl AgentProcess {
             command_rx: Some(command_rx),
             message_rx: None,
             response_rx: None,
+            task_handle: None,
         }
     }
 

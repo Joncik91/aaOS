@@ -168,7 +168,7 @@ impl Server {
             Ok(id) => id,
             Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         };
-        match self.registry.stop(agent_id) {
+        match self.registry.stop_sync(agent_id) {
             Ok(()) => JsonRpcResponse::success(id, json!({"ok": true})),
             Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         }

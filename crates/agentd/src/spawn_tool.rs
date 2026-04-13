@@ -135,7 +135,7 @@ impl Tool for SpawnAgentTool {
         // Cleanup guard: ensure child is removed even on error/panic
         let registry_cleanup = self.registry.clone();
         let _cleanup = scopeguard::guard(child_id, move |id| {
-            let _ = registry_cleanup.stop(id);
+            let _ = registry_cleanup.stop_sync(id);
         });
 
         // Build child services and executor
