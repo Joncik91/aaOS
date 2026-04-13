@@ -81,7 +81,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 - **aaos-core** — Types, traits, capability model, audit events (21 kinds), budget tracking
 - **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management
 - **aaos-ipc** — MCP message router with capability validation, request-response IPC
-- **aaos-tools** — Tool registry, invocation, 8 built-in tools (including memory tools)
+- **aaos-tools** — Tool registry, invocation, 9 built-in tools (including memory + skill_read)
 - **aaos-llm** — LLM clients (Anthropic + OpenAI-compat), execution loop, inference scheduler
 - **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **agentd** — Daemon binary, Unix socket API, approval queue
@@ -174,6 +174,19 @@ JSON-RPC 2.0 over Unix socket.
 | `memory_store` | `tool: memory_store` | Store a fact/observation/decision/preference |
 | `memory_query` | `tool: memory_query` | Semantic search over stored memories |
 | `memory_delete` | `tool: memory_delete` | Delete a stored memory by ID |
+| `skill_read` | `tool: skill_read` | Load skill instructions or reference files |
+
+## Skills
+
+aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthropic. Skills are folders with a `SKILL.md` file that teach agents specialized workflows. The same skills that work in Claude Code, Copilot CLI, Gemini CLI, and OpenCode work in aaOS — but under capability-based security enforcement.
+
+**21 bundled skills** from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills):
+
+`spec-driven-development` · `test-driven-development` · `incremental-implementation` · `planning-and-task-breakdown` · `code-review-and-quality` · `security-and-hardening` · `debugging-and-error-recovery` · `api-and-interface-design` · `frontend-ui-engineering` · `performance-optimization` · `git-workflow-and-versioning` · `ci-cd-and-automation` · `shipping-and-launch` · `documentation-and-adrs` · `code-simplification` · `context-engineering` · `deprecation-and-migration` · `idea-refine` · `source-driven-development` · `browser-testing-with-devtools` · `using-agent-skills`
+
+**Progressive disclosure:** Agents see the skill catalog (~100 tokens each) in their system prompt at startup. When a task matches a skill, the agent calls `skill_read` to load full instructions on demand. Reference files load only when needed.
+
+**Add your own:** Drop a folder with a `SKILL.md` into `.agents/skills/` or set `AAOS_SKILLS_DIR`.
 
 ## Design Principles
 
