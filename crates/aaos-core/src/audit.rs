@@ -67,6 +67,17 @@ pub enum AuditEventKind {
         stop_reason: String,
         total_iterations: u32,
     },
+    AgentLoopStarted {
+        lifecycle: String,
+    },
+    AgentLoopStopped {
+        reason: String,
+        messages_processed: u64,
+    },
+    AgentMessageReceived {
+        trace_id: Uuid,
+        method: String,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
@@ -231,6 +242,47 @@ mod tests {
             AuditEventKind::AgentExecutionCompleted {
                 stop_reason: "complete".into(),
                 total_iterations: 3,
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn agent_loop_started_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::AgentLoopStarted {
+                lifecycle: "persistent".into(),
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn agent_loop_stopped_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::AgentLoopStopped {
+                reason: "user_requested".into(),
+                messages_processed: 42,
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn agent_message_received_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::AgentMessageReceived {
+                trace_id: Uuid::new_v4(),
+                method: "agent.run".into(),
             },
         );
         let json = serde_json::to_string(&event).unwrap();

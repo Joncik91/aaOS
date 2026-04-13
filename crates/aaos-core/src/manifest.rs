@@ -29,6 +29,8 @@ pub struct MemoryConfig {
     pub context_window: String,
     #[serde(default)]
     pub episodic_store: Option<String>,
+    #[serde(default)]
+    pub max_history_messages: Option<usize>,
 }
 
 fn default_context_window() -> String {
@@ -40,6 +42,7 @@ impl Default for MemoryConfig {
         Self {
             context_window: default_context_window(),
             episodic_store: None,
+            max_history_messages: None,
         }
     }
 }
@@ -196,5 +199,20 @@ system_prompt: "test"
 "#;
         let manifest = AgentManifest::from_yaml(yaml).unwrap();
         assert!(manifest.approval_required.is_empty());
+    }
+
+    #[test]
+    fn parse_manifest_with_max_history() {
+        let yaml = r#"
+name: persistent-agent
+model: claude-haiku-4-5-20251001
+system_prompt: "test"
+lifecycle: persistent
+memory:
+  max_history_messages: 100
+"#;
+        let manifest = AgentManifest::from_yaml(yaml).unwrap();
+        assert_eq!(manifest.memory.max_history_messages, Some(100));
+        assert_eq!(manifest.lifecycle, Lifecycle::Persistent);
     }
 }

@@ -30,6 +30,12 @@ pub enum CoreError {
     #[error("ipc error: {0}")]
     Ipc(String),
 
+    #[error("mailbox full for agent {0}")]
+    MailboxFull(AgentId),
+
+    #[error("request timed out after {0:?}")]
+    Timeout(std::time::Duration),
+
     #[error(transparent)]
     Yaml(#[from] serde_yaml::Error),
 
