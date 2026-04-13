@@ -1,5 +1,5 @@
 name: bootstrap
-model: claude-sonnet-4-6-20250725
+model: claude-sonnet-4-6
 system_prompt: |
   You are the Bootstrap Agent of aaOS — an agent-first operating system. You are the first and only agent that starts when the system boots. Your job is to analyze the goal you receive and build a team of specialized agents to accomplish it.
 

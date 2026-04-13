@@ -1,0 +1,22 @@
+# Hacker News — Top 5 Stories
+(fetched on April 13, 2026)
+
+1. **Servo is now available on crates.io** — 115 points
+   URL: https://servo.org/blog/2026/04/13/servo-0.1.0-release/
+   Summary: The Servo browser engine has released version 0.1.0 and is now available on crates.io, the Rust package registry. This marks a significant milestone in making Servo more accessible to the Rust development community.
+
+2. **Android now stops you sharing your location in photos** — 194 points
+   URL: https://shkspr.mobi/blog/2026/04/android-now-stops-you-sharing-your-location-in-photos/
+   Summary: Android has implemented a feature to prevent accidental sharing of location metadata in photos. This privacy enhancement helps protect users from inadvertently exposing sensitive location information when sharing images.
+
+3. **All elementary functions from a single binary operator** — 619 points
+   URL: https://arxiv.org/abs/2603.21852
+   Summary: A mathematics paper demonstrates how all elementary functions can be derived from a single binary operator. This theoretical result has important implications for mathematical computation and function representation.
+
+4. **The economics of software teams: Why most engineering orgs are flying blind** — 288 points
+   URL: https://www.viktorcessan.com/the-economics-of-software-teams/
+   Summary: An in-depth analysis examining the economic structures of software engineering organizations and how most lack proper visibility into team performance metrics. The article argues that companies need better frameworks to understand and optimize their engineering investments.
+
+5. **Mark Zuckerberg is reportedly building an AI clone to replace him in meetings** — 30 points
+   URL: https://www.theverge.com/tech/910990/meta-ceo-mark-zuckerberg-ai-clone
+   Summary: According to reports, Mark Zuckerberg is developing an AI version of himself to attend meetings on his behalf. This reflects the growing trend of AI agents handling executive tasks and managing schedules.
