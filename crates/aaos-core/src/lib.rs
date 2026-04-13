@@ -10,7 +10,7 @@ pub use agent_id::AgentId;
 pub use audit::{AuditEvent, AuditEventKind, AuditLog, InMemoryAuditLog, StopReason};
 pub use capability::{Capability, CapabilityToken, Constraints, RateLimit};
 pub use error::{CoreError, Result};
-pub use manifest::{AgentManifest, CapabilityDeclaration, Lifecycle, MemoryConfig, PromptSource};
+pub use manifest::{AgentManifest, CapabilityDeclaration, Lifecycle, MemoryConfig, PromptSource, TokenBudget};
 pub use services::{
     AgentServices, ApprovalResult, ApprovalService, NoOpApprovalService, TokenUsage,
 };

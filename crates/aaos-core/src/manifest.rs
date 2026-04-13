@@ -23,14 +23,20 @@ pub enum Lifecycle {
 }
 
 /// Memory configuration for an agent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default = "default_context_window")]
     pub context_window: String,
     #[serde(default)]
-    pub episodic_store: Option<String>,
-    #[serde(default)]
     pub max_history_messages: Option<usize>,
+    #[serde(default)]
+    pub summarization_model: Option<String>,
+    #[serde(default)]
+    pub summarization_threshold: Option<f32>,
+    #[serde(default)]
+    pub archive_ttl_days: Option<u32>,
+    #[serde(default)]
+    pub episodic_store: Option<String>,
 }
 
 fn default_context_window() -> String {
@@ -41,9 +47,45 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             context_window: default_context_window(),
-            episodic_store: None,
             max_history_messages: None,
+            summarization_model: None,
+            summarization_threshold: None,
+            archive_ttl_days: None,
+            episodic_store: None,
         }
+    }
+}
+
+/// Token budget for context window management.
+/// Parses human-readable sizes like "128k" and caps at model max.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenBudget {
+    pub max_tokens: u32,
+}
+
+impl TokenBudget {
+    /// Parse "128k" -> 131_072, "200k" -> 204_800, plain number "50000" -> 50_000.
+    /// Caps at min(parsed, model_max).
+    pub fn from_config(config_str: &str, model_max: u32) -> Result<Self> {
+        let config_str = config_str.trim();
+        let parsed = if let Some(prefix) = config_str.strip_suffix('k') {
+            let n: u32 = prefix.parse().map_err(|_| {
+                CoreError::InvalidManifest(format!("invalid context_window format: '{config_str}'"))
+            })?;
+            n * 1024
+        } else if let Some(prefix) = config_str.strip_suffix('K') {
+            let n: u32 = prefix.parse().map_err(|_| {
+                CoreError::InvalidManifest(format!("invalid context_window format: '{config_str}'"))
+            })?;
+            n * 1024
+        } else {
+            config_str.parse::<u32>().map_err(|_| {
+                CoreError::InvalidManifest(format!("invalid context_window format: '{config_str}'"))
+            })?
+        };
+        Ok(Self {
+            max_tokens: parsed.min(model_max),
+        })
     }
 }
 
@@ -214,5 +256,64 @@ memory:
         let manifest = AgentManifest::from_yaml(yaml).unwrap();
         assert_eq!(manifest.memory.max_history_messages, Some(100));
         assert_eq!(manifest.lifecycle, Lifecycle::Persistent);
+    }
+
+    #[test]
+    fn token_budget_parse_128k() {
+        let budget = TokenBudget::from_config("128k", 200_000).unwrap();
+        assert_eq!(budget.max_tokens, 131_072);
+    }
+
+    #[test]
+    fn token_budget_parse_200k() {
+        let budget = TokenBudget::from_config("200k", 300_000).unwrap();
+        assert_eq!(budget.max_tokens, 204_800);
+    }
+
+    #[test]
+    fn token_budget_parse_plain_number() {
+        let budget = TokenBudget::from_config("50000", 200_000).unwrap();
+        assert_eq!(budget.max_tokens, 50_000);
+    }
+
+    #[test]
+    fn token_budget_caps_at_model_max() {
+        let budget = TokenBudget::from_config("200k", 100_000).unwrap();
+        assert_eq!(budget.max_tokens, 100_000);
+    }
+
+    #[test]
+    fn token_budget_invalid_format() {
+        let err = TokenBudget::from_config("abc", 200_000).unwrap_err();
+        assert!(err.to_string().contains("invalid context_window"));
+    }
+
+    #[test]
+    fn parse_manifest_with_summarization_config() {
+        let yaml = r#"
+name: context-agent
+model: claude-haiku-4-5-20251001
+system_prompt: "test"
+lifecycle: persistent
+memory:
+  context_window: "128k"
+  max_history_messages: 200
+  summarization_model: "claude-haiku-4-5-20251001"
+  summarization_threshold: 0.8
+  archive_ttl_days: 14
+"#;
+        let manifest = AgentManifest::from_yaml(yaml).unwrap();
+        assert_eq!(manifest.memory.summarization_model, Some("claude-haiku-4-5-20251001".into()));
+        assert_eq!(manifest.memory.summarization_threshold, Some(0.8));
+        assert_eq!(manifest.memory.archive_ttl_days, Some(14));
+    }
+
+    #[test]
+    fn memory_config_defaults() {
+        let config = MemoryConfig::default();
+        assert_eq!(config.context_window, "128k");
+        assert_eq!(config.summarization_model, None);
+        assert_eq!(config.summarization_threshold, None);
+        assert_eq!(config.archive_ttl_days, None);
     }
 }
