@@ -5,6 +5,7 @@ members = [
     "crates/aaos-ipc",
     "crates/aaos-tools",
     "crates/aaos-llm",
+    "crates/aaos-memory",
     "crates/agentd",
 ]
 resolver = "2"
@@ -30,6 +31,7 @@ scopeguard = "1"
 
 # Internal crates
 aaos-core = { path = "crates/aaos-core" }
+aaos-memory = { path = "crates/aaos-memory" }
 aaos-llm = { path = "crates/aaos-llm" }
 aaos-runtime = { path = "crates/aaos-runtime" }
 aaos-ipc = { path = "crates/aaos-ipc" }

@@ -1,0 +1,21 @@
+[package]
+name = "aaos-memory"
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Episodic memory store for aaOS agents"
+
+[dependencies]
+aaos-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+dashmap = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
