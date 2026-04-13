@@ -19,6 +19,7 @@ aaos-llm = { workspace = true }
 aaos-runtime = { workspace = true }
 aaos-ipc = { workspace = true }
 aaos-tools = { workspace = true }
+aaos-memory = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

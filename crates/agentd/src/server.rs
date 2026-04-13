@@ -24,6 +24,8 @@ pub struct Server {
     pub approval_queue: Arc<crate::approval::ApprovalQueue>,
     pub llm_client: Option<Arc<dyn LlmClient>>,
     pub session_store: Arc<dyn aaos_runtime::SessionStore>,
+    pub memory_store: Arc<dyn aaos_memory::MemoryStore>,
+    pub embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
 }
 
 impl Server {
@@ -40,6 +42,30 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::WebFetchTool::new()));
         tool_registry.register(Arc::new(aaos_tools::FileReadTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
+
+        // Memory subsystem (default: in-memory store + mock embeddings)
+        let memory_store: Arc<dyn aaos_memory::MemoryStore> = Arc::new(
+            aaos_memory::InMemoryMemoryStore::new(10_000, 768, "nomic-embed-text"),
+        );
+        let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
+            Arc::new(aaos_memory::MockEmbeddingSource::new(768));
+
+        // Register memory tools
+        tool_registry.register(Arc::new(aaos_tools::MemoryStoreTool::new(
+            memory_store.clone(),
+            embedding_source.clone(),
+            audit_log.clone(),
+            4096,
+        )));
+        tool_registry.register(Arc::new(aaos_tools::MemoryQueryTool::new(
+            memory_store.clone(),
+            embedding_source.clone(),
+            audit_log.clone(),
+        )));
+        tool_registry.register(Arc::new(aaos_tools::MemoryDeleteTool::new(
+            memory_store.clone(),
+            audit_log.clone(),
+        )));
 
         let tool_invocation = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
@@ -73,6 +99,8 @@ impl Server {
             approval_queue,
             llm_client: None,
             session_store,
+            memory_store,
+            embedding_source,
         }
     }
 
@@ -93,6 +121,88 @@ impl Server {
         server.tool_registry.register(spawn_tool);
         server.llm_client = Some(llm_client);
         server
+    }
+
+    /// Create a server with a specific LLM client and custom memory/embedding sources.
+    #[allow(dead_code)]
+    pub fn with_memory(
+        llm_client: Arc<dyn LlmClient>,
+        memory_store: Arc<dyn aaos_memory::MemoryStore>,
+        embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
+    ) -> Self {
+        let audit_log: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let approval_queue = Arc::new(crate::approval::ApprovalQueue::new());
+        let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let validator = Arc::new(SchemaValidator::new());
+
+        // Register built-in tools
+        tool_registry.register(Arc::new(EchoTool));
+        tool_registry.register(Arc::new(aaos_tools::WebFetchTool::new()));
+        tool_registry.register(Arc::new(aaos_tools::FileReadTool));
+        tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
+
+        // Register memory tools with the provided sources
+        tool_registry.register(Arc::new(aaos_tools::MemoryStoreTool::new(
+            memory_store.clone(),
+            embedding_source.clone(),
+            audit_log.clone(),
+            4096,
+        )));
+        tool_registry.register(Arc::new(aaos_tools::MemoryQueryTool::new(
+            memory_store.clone(),
+            embedding_source.clone(),
+            audit_log.clone(),
+        )));
+        tool_registry.register(Arc::new(aaos_tools::MemoryDeleteTool::new(
+            memory_store.clone(),
+            audit_log.clone(),
+        )));
+
+        let tool_invocation = Arc::new(ToolInvocation::new(
+            tool_registry.clone(),
+            audit_log.clone(),
+        ));
+
+        let registry_clone = registry.clone();
+        let router = Arc::new(MessageRouter::new(
+            audit_log.clone(),
+            move |agent_id, cap| {
+                registry_clone
+                    .check_capability(agent_id, cap)
+                    .unwrap_or(false)
+            },
+        ));
+        registry.set_router(router.clone());
+
+        let session_store: Arc<dyn aaos_runtime::SessionStore> =
+            Arc::new(aaos_runtime::InMemorySessionStore::new());
+
+        // Register SpawnAgentTool with the LLM client
+        let spawn_tool = Arc::new(crate::spawn_tool::SpawnAgentTool::new(
+            llm_client.clone(),
+            registry.clone(),
+            tool_registry.clone(),
+            tool_invocation.clone(),
+            audit_log.clone(),
+            router.clone(),
+            approval_queue.clone() as Arc<dyn ApprovalService>,
+        ));
+        tool_registry.register(spawn_tool);
+
+        Self {
+            registry,
+            tool_registry,
+            tool_invocation,
+            router,
+            validator,
+            audit_log,
+            approval_queue,
+            llm_client: Some(llm_client),
+            session_store,
+            memory_store,
+            embedding_source,
+        }
     }
 
     /// Handle a JSON-RPC request and return a response.
