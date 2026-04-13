@@ -146,6 +146,17 @@ pub trait AuditLog: Send + Sync {
     fn record(&self, event: AuditEvent);
 }
 
+/// Audit log that writes JSON-lines to stdout.
+pub struct StdoutAuditLog;
+
+impl AuditLog for StdoutAuditLog {
+    fn record(&self, event: AuditEvent) {
+        if let Ok(json) = serde_json::to_string(&event) {
+            println!("{json}");
+        }
+    }
+}
+
 /// In-memory audit log for testing.
 #[derive(Debug, Default)]
 pub struct InMemoryAuditLog {
@@ -179,6 +190,19 @@ impl AuditLog for InMemoryAuditLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdout_audit_log_does_not_panic() {
+        let log = StdoutAuditLog;
+        let agent = AgentId::new();
+        // Should not panic even if stdout is captured
+        log.record(AuditEvent::new(
+            agent,
+            AuditEventKind::AgentSpawned {
+                manifest_name: "stdout-test".into(),
+            },
+        ));
+    }
 
     #[test]
     fn audit_event_creation() {

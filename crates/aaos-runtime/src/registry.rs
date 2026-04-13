@@ -18,14 +18,21 @@ pub struct AgentRegistry {
     agents: DashMap<AgentId, AgentProcess>,
     audit_log: Arc<dyn AuditLog>,
     router: OnceLock<Arc<MessageRouter>>,
+    max_agents: usize,
 }
 
 impl AgentRegistry {
     pub fn new(audit_log: Arc<dyn AuditLog>) -> Self {
+        Self::new_with_limit(audit_log, 100)
+    }
+
+    /// Create a registry with a custom maximum agent count.
+    pub fn new_with_limit(audit_log: Arc<dyn AuditLog>, max_agents: usize) -> Self {
         Self {
             agents: DashMap::new(),
             audit_log,
             router: OnceLock::new(),
+            max_agents,
         }
     }
 
@@ -38,6 +45,12 @@ impl AgentRegistry {
 
     /// Spawn a new agent from a manifest. Returns the new agent's ID.
     pub fn spawn(&self, manifest: AgentManifest) -> Result<AgentId> {
+        if self.agents.len() >= self.max_agents {
+            return Err(CoreError::InvalidManifest(
+                format!("agent limit exceeded: max {} agents", self.max_agents).into(),
+            ));
+        }
+
         let id = AgentId::new();
 
         // Issue capability tokens based on manifest declarations
@@ -199,15 +212,39 @@ impl AgentRegistry {
             .ok_or(CoreError::AgentNotFound(id))
     }
 
+    /// Get the spawn depth of an agent.
+    pub fn get_depth(&self, id: AgentId) -> Result<u32> {
+        self.agents
+            .get(&id)
+            .map(|entry| entry.value().depth)
+            .ok_or(CoreError::AgentNotFound(id))
+    }
+
     /// Spawn an agent with a specific ID and pre-computed capability tokens.
     /// Used by SpawnAgentTool to insert child agents with narrowed capabilities.
+    /// `depth` is the spawn depth of the child (parent_depth + 1 for child agents).
     pub fn spawn_with_tokens(
         &self,
         id: AgentId,
         manifest: AgentManifest,
         capabilities: Vec<CapabilityToken>,
+        depth: u32,
     ) -> Result<()> {
+        const MAX_SPAWN_DEPTH: u32 = 5;
+        if depth > MAX_SPAWN_DEPTH {
+            return Err(CoreError::InvalidManifest(
+                format!("spawn depth exceeded: max depth is {MAX_SPAWN_DEPTH}").into(),
+            ));
+        }
+
+        if self.agents.len() >= self.max_agents {
+            return Err(CoreError::InvalidManifest(
+                format!("agent limit exceeded: max {} agents", self.max_agents).into(),
+            ));
+        }
+
         let mut process = AgentProcess::new(id, manifest.clone(), capabilities);
+        process.depth = depth;
         process.transition_to(AgentState::Running)?;
 
         self.audit_log.record(AuditEvent::new(
@@ -498,6 +535,45 @@ lifecycle: on-demand
         let info = registry.get_info(id).unwrap();
         assert_eq!(info.state, AgentState::Running);
         assert_eq!(info.name, "ephemeral-agent");
+    }
+
+    #[test]
+    fn spawn_refused_when_agent_limit_hit() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let registry = AgentRegistry::new_with_limit(log, 2);
+
+        registry.spawn(test_manifest("agent-1")).unwrap();
+        registry.spawn(test_manifest("agent-2")).unwrap();
+
+        let result = registry.spawn(test_manifest("agent-3"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("agent limit exceeded"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn spawn_with_tokens_refused_when_depth_exceeded() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let registry = AgentRegistry::new(log);
+
+        let id = AgentId::new();
+        let manifest = test_manifest("deep-agent");
+        // depth 6 exceeds MAX_SPAWN_DEPTH (5)
+        let result = registry.spawn_with_tokens(id, manifest, vec![], 6);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("spawn depth exceeded"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn get_depth_reflects_assigned_depth() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let registry = AgentRegistry::new(log);
+
+        let id = AgentId::new();
+        let manifest = test_manifest("child-agent");
+        registry.spawn_with_tokens(id, manifest, vec![], 3).unwrap();
+        assert_eq!(registry.get_depth(id).unwrap(), 3);
     }
 
     #[test]

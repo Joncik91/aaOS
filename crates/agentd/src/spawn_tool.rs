@@ -97,6 +97,10 @@ impl Tool for SpawnAgentTool {
         // Get parent's full tokens for capability narrowing
         let parent_tokens = self.registry.get_tokens(ctx.agent_id)?;
 
+        // Compute child depth and enforce max spawn depth
+        let parent_depth = self.registry.get_depth(ctx.agent_id).unwrap_or(0);
+        let child_depth = parent_depth + 1;
+
         // Issue narrowed tokens for the child
         let child_id = AgentId::new();
         let mut child_tokens = Vec::new();
@@ -130,7 +134,7 @@ impl Tool for SpawnAgentTool {
 
         // Spawn child in registry with the narrowed tokens
         self.registry
-            .spawn_with_tokens(child_id, child_manifest.clone(), child_tokens)?;
+            .spawn_with_tokens(child_id, child_manifest.clone(), child_tokens, child_depth)?;
 
         // Cleanup guard: ensure child is removed even on error/panic
         let registry_cleanup = self.registry.clone();

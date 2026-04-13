@@ -7,7 +7,7 @@ pub mod services;
 pub mod tool_definition;
 
 pub use agent_id::AgentId;
-pub use audit::{AuditEvent, AuditEventKind, AuditLog, InMemoryAuditLog, StopReason};
+pub use audit::{AuditEvent, AuditEventKind, AuditLog, InMemoryAuditLog, StdoutAuditLog, StopReason};
 pub use capability::{Capability, CapabilityToken, Constraints, RateLimit};
 pub use error::{CoreError, Result};
 pub use manifest::{AgentManifest, CapabilityDeclaration, Lifecycle, MemoryConfig, PromptSource, TokenBudget};
