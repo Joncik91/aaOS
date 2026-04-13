@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use aaos_core::{AgentId, AuditEvent, AuditEventKind, AuditLog, Capability, CoreError, Result};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+use uuid::Uuid;
 
 use crate::message::{McpMessage, McpResponse};
 
@@ -26,6 +27,7 @@ pub struct MessageRouter {
     channels: dashmap::DashMap<AgentId, AgentChannels>,
     audit_log: Arc<dyn AuditLog>,
     capability_checker: CapabilityChecker,
+    pending_responses: dashmap::DashMap<Uuid, oneshot::Sender<McpResponse>>,
 }
 
 impl MessageRouter {
@@ -37,6 +39,7 @@ impl MessageRouter {
             channels: dashmap::DashMap::new(),
             audit_log,
             capability_checker: Arc::new(capability_checker),
+            pending_responses: dashmap::DashMap::new(),
         }
     }
 
@@ -126,6 +129,22 @@ impl MessageRouter {
     pub fn agent_count(&self) -> usize {
         self.channels.len()
     }
+
+    pub fn register_pending(&self, trace_id: Uuid, tx: oneshot::Sender<McpResponse>) {
+        self.pending_responses.insert(trace_id, tx);
+    }
+
+    pub fn respond(&self, trace_id: Uuid, response: McpResponse) -> bool {
+        if let Some((_, tx)) = self.pending_responses.remove(&trace_id) {
+            tx.send(response).is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub fn pending_count(&self) -> usize {
+        self.pending_responses.len()
+    }
 }
 
 #[cfg(test)]
@@ -187,5 +206,80 @@ mod tests {
         let msg = McpMessage::new(sender, recipient, "hello", serde_json::json!({}));
         let result = router.route(msg).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn register_pending_and_respond() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let router = MessageRouter::new(log, always_allow);
+
+        let trace_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        router.register_pending(trace_id, tx);
+
+        let responder = AgentId::new();
+        let response = McpResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Uuid::new_v4(),
+            result: Some(serde_json::json!({"answer": 42})),
+            error: None,
+            metadata: crate::message::ResponseMetadata {
+                responder,
+                timestamp: chrono::Utc::now(),
+                trace_id,
+            },
+        };
+
+        assert!(router.respond(trace_id, response.clone()));
+        let received = rx.await.unwrap();
+        assert_eq!(received.result, Some(serde_json::json!({"answer": 42})));
+    }
+
+    #[tokio::test]
+    async fn respond_to_nonexistent_returns_false() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let router = MessageRouter::new(log, always_allow);
+
+        let trace_id = Uuid::new_v4();
+        let responder = AgentId::new();
+        let response = McpResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Uuid::new_v4(),
+            result: Some(serde_json::json!({})),
+            error: None,
+            metadata: crate::message::ResponseMetadata {
+                responder,
+                timestamp: chrono::Utc::now(),
+                trace_id,
+            },
+        };
+
+        assert!(!router.respond(trace_id, response));
+    }
+
+    #[tokio::test]
+    async fn respond_after_receiver_dropped_returns_false() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let router = MessageRouter::new(log, always_allow);
+
+        let trace_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        router.register_pending(trace_id, tx);
+        drop(rx);
+
+        let responder = AgentId::new();
+        let response = McpResponse {
+            jsonrpc: "2.0".to_string(),
+            id: Uuid::new_v4(),
+            result: Some(serde_json::json!({})),
+            error: None,
+            metadata: crate::message::ResponseMetadata {
+                responder,
+                timestamp: chrono::Utc::now(),
+                trace_id,
+            },
+        };
+
+        assert!(!router.respond(trace_id, response));
     }
 }
