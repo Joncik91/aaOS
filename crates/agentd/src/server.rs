@@ -26,6 +26,7 @@ pub struct Server {
     pub session_store: Arc<dyn aaos_runtime::SessionStore>,
     pub memory_store: Arc<dyn aaos_memory::MemoryStore>,
     pub embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
+    pub skill_registry: Arc<aaos_tools::SkillRegistry>,
 }
 
 impl Server {
@@ -101,6 +102,7 @@ impl Server {
             session_store,
             memory_store,
             embedding_source,
+            skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
         }
     }
 
@@ -183,6 +185,15 @@ impl Server {
         let session_store: Arc<dyn aaos_runtime::SessionStore> =
             Arc::new(aaos_runtime::InMemorySessionStore::new());
 
+        // Discover and load skills
+        let skill_registry = Arc::new(aaos_tools::SkillRegistry::new(discover_all_skills()));
+
+        // Register skill_read tool
+        tool_registry.register(Arc::new(aaos_tools::SkillReadTool::new(
+            skill_registry.clone(),
+            audit_log.clone(),
+        )));
+
         // Register SpawnAgentTool with the LLM client
         let spawn_tool = Arc::new(crate::spawn_tool::SpawnAgentTool::new(
             llm_client.clone(),
@@ -207,6 +218,7 @@ impl Server {
             session_store,
             memory_store,
             embedding_source,
+            skill_registry,
         }
     }
 
@@ -289,6 +301,7 @@ impl Server {
             session_store,
             memory_store,
             embedding_source,
+            skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
         }
     }
 
@@ -346,10 +359,24 @@ impl Server {
     }
 
     async fn spawn_from_yaml(&self, yaml: &str, id: serde_json::Value) -> JsonRpcResponse {
-        let manifest = match AgentManifest::from_yaml(yaml) {
+        let mut manifest = match AgentManifest::from_yaml(yaml) {
             Ok(m) => m,
             Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         };
+
+        // Inject skill catalog into the agent's system prompt (progressive disclosure tier 1)
+        let catalog = self.skill_registry.catalog();
+        if !catalog.is_empty() {
+            let original_prompt = match &manifest.system_prompt {
+                aaos_core::PromptSource::Inline(s) => s.clone(),
+                aaos_core::PromptSource::File(p) => {
+                    std::fs::read_to_string(p).unwrap_or_default()
+                }
+            };
+            manifest.system_prompt = aaos_core::PromptSource::Inline(format!(
+                "{original_prompt}\n\n{catalog}"
+            ));
+        }
 
         let is_persistent = manifest.lifecycle == aaos_core::Lifecycle::Persistent;
 
@@ -1037,6 +1064,29 @@ lifecycle: persistent
         assert!(result.get("trace_id").is_some());
         assert_eq!(result["status"], "delivered");
     }
+}
+
+/// Discover skills from standard AgentSkills paths + AAOS_SKILLS_DIR env var.
+fn discover_all_skills() -> Vec<aaos_core::Skill> {
+    let mut all_skills = Vec::new();
+    for skills_dir in &["/etc/aaos/skills", "/var/lib/aaos/skills"] {
+        let path = std::path::Path::new(skills_dir);
+        if path.is_dir() {
+            all_skills.extend(aaos_core::discover_skills(path));
+        }
+    }
+    if let Ok(extra) = std::env::var("AAOS_SKILLS_DIR") {
+        for dir in extra.split(':') {
+            let path = std::path::Path::new(dir);
+            if path.is_dir() {
+                all_skills.extend(aaos_core::discover_skills(path));
+            }
+        }
+    }
+    if !all_skills.is_empty() {
+        tracing::info!(count = all_skills.len(), "skills loaded");
+    }
+    all_skills
 }
 
 /// Create the memory store backend: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise.

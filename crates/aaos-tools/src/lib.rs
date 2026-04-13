@@ -6,6 +6,7 @@ pub mod memory_delete_tool;
 pub mod memory_query_tool;
 pub mod memory_store_tool;
 pub mod registry;
+pub mod skill_read;
 pub mod tool;
 pub mod web_fetch;
 
@@ -19,4 +20,5 @@ pub use memory_query_tool::MemoryQueryTool;
 pub use memory_store_tool::MemoryStoreTool;
 pub use registry::ToolRegistry;
 pub use tool::{EchoTool, Tool};
+pub use skill_read::{SkillReadTool, SkillRegistry};
 pub use web_fetch::WebFetchTool;
