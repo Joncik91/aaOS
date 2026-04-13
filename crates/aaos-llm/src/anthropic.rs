@@ -214,6 +214,15 @@ impl AnthropicClient {
 
 #[async_trait]
 impl LlmClient for AnthropicClient {
+    fn max_context_tokens(&self, model: &str) -> u32 {
+        match model {
+            m if m.contains("haiku") => 200_000,
+            m if m.contains("sonnet") => 200_000,
+            m if m.contains("opus") => 200_000,
+            _ => 128_000, // conservative default for unknown models
+        }
+    }
+
     async fn complete(&self, request: CompletionRequest) -> LlmResult<CompletionResponse> {
         self.validate_model(&request.model)?;
 

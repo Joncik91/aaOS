@@ -715,6 +715,10 @@ capabilities:
 
     #[async_trait]
     impl LlmClient for MockLlm {
+        fn max_context_tokens(&self, _model: &str) -> u32 {
+            200_000
+        }
+
         async fn complete(&self, _req: CompletionRequest) -> LlmResult<CompletionResponse> {
             self.responses.lock().unwrap().remove(0)
         }

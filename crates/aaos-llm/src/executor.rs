@@ -505,6 +505,10 @@ mod tests {
 
     #[async_trait]
     impl LlmClient for MockLlmClient {
+        fn max_context_tokens(&self, _model: &str) -> u32 {
+            200_000
+        }
+
         async fn complete(&self, _request: CompletionRequest) -> LlmResult<CompletionResponse> {
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {

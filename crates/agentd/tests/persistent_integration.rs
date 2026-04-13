@@ -15,6 +15,10 @@ struct EchoLlm;
 
 #[async_trait]
 impl LlmClient for EchoLlm {
+    fn max_context_tokens(&self, _model: &str) -> u32 {
+        200_000
+    }
+
     async fn complete(&self, req: CompletionRequest) -> LlmResult<CompletionResponse> {
         let last_user = req.messages.iter().rev().find_map(|m| {
             if let aaos_llm::Message::User { content } = m {
@@ -42,6 +46,10 @@ struct HistoryCountLlm;
 
 #[async_trait]
 impl LlmClient for HistoryCountLlm {
+    fn max_context_tokens(&self, _model: &str) -> u32 {
+        200_000
+    }
+
     async fn complete(&self, req: CompletionRequest) -> LlmResult<CompletionResponse> {
         let msg_count = req.messages.len();
         Ok(CompletionResponse {
