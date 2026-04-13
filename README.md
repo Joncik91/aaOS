@@ -2,7 +2,7 @@
 
 **The vision:** A new kind of kernel where AI agents are native processes, capabilities replace permissions, and the OS is designed for autonomy — not human interaction.
 
-**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 7 Rust crates, ~12,000 lines, 205 tests. Not a kernel yet — a proof of concept that validates the programming model before it gets baked into one.
+**What exists today:** A working prototype that proves these abstractions in userspace on Linux. 7 Rust crates, ~12,000 lines, 209 tests. Runs autonomously in Docker — a Bootstrap Agent receives a goal, spawns specialized child agents, and produces output with zero human intervention.
 
 ## Why a New Kernel
 
@@ -21,15 +21,16 @@ This repo is a **userspace prototype** — the agent programming model running a
 
 What's implemented and tested:
 
-- **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path)
-- **Agent orchestration** — Parent spawns children with narrowed capabilities. Delegation chains are auditable.
+- **Self-bootstrapping agent swarms** — A Bootstrap Agent (Sonnet) receives a goal, analyzes it, spawns specialized child agents (Haiku) with narrowed capabilities, coordinates their work, and produces output. All autonomous. Runs in Docker with `agentd` as PID 1.
+- **Persistent goal queue** — The Bootstrap Agent runs as a persistent process, accepting goals via Unix socket. Container stays alive between tasks.
+- **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have."
+- **Agent orchestration** — Parent spawns children with narrowed capabilities. Spawn depth limit (5), agent count limit (100). Failed children are retried once automatically.
 - **Persistent agents** — Long-running agents with background message loops, request-response IPC via `send_and_wait()`, conversation persistence in JSONL
 - **Managed context windows** — Runtime transparently summarizes old messages via LLM when the context fills, archives originals to disk. Agents see coherent conversations without hitting token limits.
-- **Episodic memory** — Per-agent persistent memory via `memory_store`/`memory_query`/`memory_delete` tools. Semantic search via cosine similarity over embeddings (Ollama nomic-embed-text). Agents explicitly store and retrieve facts by meaning.
-- **Human-in-the-loop approval** — Manifests declare which tools need approval. Execution blocks until a human responds via the API.
-- **Kernel-level audit trail** — 21 event kinds: spawn, capability grant, tool invoke, message send, approval, context summarization, memory operations
+- **Episodic memory** — Per-agent persistent memory via `memory_store`/`memory_query`/`memory_delete` tools. Semantic search via cosine similarity over embeddings (Ollama nomic-embed-text).
+- **Workspace isolation** — Each goal gets its own workspace directory. Child agents write intermediate files there.
+- **Kernel-level audit trail** — 21 event kinds, streamed as JSON-lines to stdout for container observability
 - **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
-- **Real LLM integration** — Agents call the Anthropic API, use real tools (file I/O, HTTP, memory), subject to real capability enforcement
 
 ## The Path to a Real Kernel
 
@@ -37,15 +38,13 @@ What's implemented and tested:
  You are here
       |
       v
- [Prototype]  Userspace on Linux — proving the model        ✅ Phase A
+ [Prototype]  Userspace on Linux — proving the model           ✅ Phase A
       |
- [Persistent Agents]  Long-running agents, request-response IPC   ✅ Phase B
+ [Persistent Agents]  Long-running agents, request-response IPC  ✅ Phase B
       |
- [Agent Memory]  Managed context windows, episodic store    ✅ Phase C  <-- you are here
+ [Agent Memory]  Managed context windows, episodic store         ✅ Phase C
       |
- [Supervision Dashboard]  Web UI for monitoring, approval, policy
-      |
- [Inference Scheduling]  LLM as a kernel-scheduled resource
+ [Self-Bootstrapping VM]  Autonomous agent swarms in Docker      ✅ Phase D  <-- you are here
       |
  [Real Kernel]  Migrate to Redox OS or seL4 microkernel
 ```
@@ -109,24 +108,30 @@ memory:
 
 ## Quick Start
 
-Requires Docker.
+Requires Docker and an Anthropic API key.
 
 ```bash
 # Clone
 git clone https://github.com/Joncik91/aaOS.git
 cd aaOS
 
-# Run tests
-docker compose run --rm test
+# Run the autonomous bootstrap demo
+ANTHROPIC_API_KEY="sk-..." AAOS_GOAL="Fetch https://news.ycombinator.com and write a summary of the top 5 stories to /output/summary.txt" \
+  docker compose -f docker-compose.bootstrap.yaml up
 
-# Start the daemon (requires Anthropic API key)
-ANTHROPIC_API_KEY="sk-..." docker compose up daemon
+# Check the output
+cat output/summary.txt
+```
 
-# In another terminal — spawn and run an agent
-echo '{"jsonrpc":"2.0","id":1,"method":"agent.spawn_and_run","params":{
-  "manifest":"name: hello\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"Be concise.\"\n",
-  "message":"What is 2+2?"
-}}' | socat -t30 - UNIX-CONNECT:/run/agentd/agentd.sock
+The Bootstrap Agent (Sonnet) analyzes the goal, spawns Fetcher and Writer agents (Haiku), coordinates their work, and writes the output. Total cost: ~$0.03.
+
+To send additional goals to the running container:
+```bash
+# The container stays alive and accepts goals via Unix socket
+echo '{"jsonrpc":"2.0","id":1,"method":"agent.run","params":{
+  "agent_id":"<bootstrap-agent-id>",
+  "message":"Fetch https://lobste.rs and summarize the top 3 stories to /output/lobsters.txt"
+}}' | python3 -c "import socket,sys,json; s=socket.socket(socket.AF_UNIX); s.connect('/tmp/aaos-sock/agentd.sock'); s.sendall((sys.stdin.read()+'\n').encode()); print(s.recv(4096).decode())"
 ```
 
 ## API

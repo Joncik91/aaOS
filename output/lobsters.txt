@@ -1,0 +1,38 @@
+================================================================================
+                         LOBSTE.RS TOP 3 STORIES
+                              April 13, 2026
+================================================================================
+
+RANK 1: "48 hours ago lobste.rs surpassed 20,000 users"
+────────────────────────────────────────────────────────────────────────────
+Votes:       141
+Tags:        meta
+Comments:    20
+URL:         https://lobste.rs/s/7fhahl/48_hours_ago_lobste_rs_surpassed_20_000
+
+Summary:     A celebratory milestone announcement marking the Lobsters community
+             reaching 20,000 registered users.
+
+
+RANK 2: "No one owes you supply-chain security"
+────────────────────────────────────────────────────────────────────────────
+Votes:       102
+Tags:        security
+Comments:    64
+URL:         https://purplesyringa.moe/blog/no-one-owes-you-supply-chain-security/
+
+Summary:     A security-focused discussion exploring the responsibilities and
+             limitations of supply-chain security practices.
+
+
+RANK 3: "The peril of laziness lost"
+────────────────────────────────────────────────────────────────────────────
+Votes:       83
+Tags:        vibecoding
+Comments:    11
+URL:         https://bcantrill.dtrace.org/2026/04/12/the-peril-of-laziness-lost/
+
+Summary:     A technical exploration of how dismissing laziness as a negative
+             trait may overlook its value in pragmatic programming practices.
+
+================================================================================

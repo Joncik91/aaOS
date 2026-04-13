@@ -54,11 +54,21 @@ MCP-native inter-agent communication:
 - **SchemaValidator** — Validates payloads against registered schemas
 - **`send_and_wait()`** — Method on `AgentServices` for request-response IPC. Creates a oneshot channel, registers it on the router, routes the message, and awaits the response with a configurable timeout. Capability-checked.
 
-### 6. Human Supervision Layer
+### 6. Bootstrap & Orchestration Layer
 
-Web-based dashboard for monitoring agents. Deliberately last — the system must be functional without it.
+The system can run autonomously in a Docker container with `agentd` as PID 1:
 
-**Status:** Future work.
+- **Bootstrap Agent** — A persistent Sonnet agent that receives goals, decomposes them into agent roles, writes child manifests, spawns children with narrowed capabilities, coordinates work, and produces output. Few-shot manifest examples in the system prompt guide reliable YAML generation.
+- **Persistent Goal Queue** — Bootstrap runs as a persistent agent accepting goals via the Unix socket API. Container stays alive between tasks.
+- **Workspace Isolation** — Each goal gets `/data/workspace/{name}/`. Children write intermediate files there. Output goes to `/output/`.
+- **Safety Guardrails** — Agent count limit (100), spawn depth limit (5), parent⊆child capability enforcement, automatic retry of failed children.
+- **StdoutAuditLog** — Audit events streamed as JSON-lines to stdout for `docker logs -f` observability.
+
+### 7. Human Supervision Layer
+
+Read-only observation of the autonomous system. Deliberately last — the system must be functional without it.
+
+**Status:** `StdoutAuditLog` provides JSON-lines observability. Web dashboard is future work.
 
 ## Capability Security Model
 

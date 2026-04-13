@@ -129,3 +129,43 @@ Phase C added two new dimensions to the build process:
 **Alternative evaluation through external review.** Architecture decisions (vector store, embedding source) were presented as option tables and routed through Copilot for independent assessment. This produced concrete recommendations (skip LanceDB, use Ollama) with reasoning that the primary AI would not have generated alone.
 
 The overall pattern: **design → multi-model peer review → fix before implementation → subagent-driven execution → cumulative E2E verification**. Each phase has made the feedback loop tighter and caught bugs earlier.
+
+---
+
+## Phase D: Self-Bootstrapping Agent VM
+
+Built in a single session. The roadmap originally called for a web dashboard (Phase D) and inference scheduling (Phase E) next. A conversation about what would actually prove the vision led to a different direction: skip the dashboard, build the autonomous demo.
+
+### What Was Built
+
+A Docker container where `agentd` is PID 1 and a Bootstrap Agent (Sonnet) self-organizes agent swarms. Three OS-level features: persistent Bootstrap loop with Unix socket goal queue, workspace isolation per goal, and automatic retry of failed child agents. Plus safety guardrails: agent count limit (100), spawn depth limit (5), `StdoutAuditLog` for observability.
+
+First successful run: goal "fetch HN and summarize the top 5 stories" → Bootstrap spawned a Fetcher agent (Haiku) that called `web_fetch`, spawned a Writer agent (Haiku) that called `file_write`, and produced `/output/summary.txt`. The capability system worked — Bootstrap correctly couldn't read `/output/*` even though its child wrote there. ~75 seconds, ~$0.03.
+
+Second test: sent a second goal to the running container via Unix socket. Bootstrap processed it as a persistent agent — spawned new children, used workspace isolation (`/data/workspace/rust-reddit/`), wrote output. The container stayed alive between goals.
+
+### What the AI Got Wrong
+
+- **Copilot couldn't read `spawn_tool.rs`** during the feasibility review due to file permission errors, and concluded `spawn_agent` tool and parent⊆child capability enforcement didn't exist. They did — from Phase A. This wasted some planning time on "gaps" that were already filled. Lesson: external reviewers are only as good as the context they can access.
+
+- **Model ID wrong in bootstrap manifest.** Used `claude-sonnet-4-6-20250725` (a dated ID) instead of `claude-sonnet-4-6`. Also, the `SUPPORTED_MODELS` allowlist in `AnthropicClient` was stale. Two container launches failed before this was caught.
+
+### What Required Human Judgment
+
+- **"Let the AI build all itself on boot."** The human's vision for Phase D. The AI (and Copilot) suggested safer, smaller demos ("fetch 3 URLs"). The human pushed for the maximally ambitious version — a self-organizing system from a single Bootstrap Agent. This shaped the entire phase.
+
+- **"Is that not drifting away?"** When Copilot recommended `shell_exec` and a CI demo, the human recognized this would turn aaOS into a developer tool, not an OS. The human separated OS-level work (goal queue, workspace isolation, supervisor) from application-level work (shell_exec, CI). This kept the project on vision.
+
+- **"The engineering level is way past my knowledge — I can think in systems."** The human acknowledged the boundary of their expertise and trusted the AI + peer review for engineering, while providing systems-level direction. This division — human provides vision and pushes back on drift, AI provides engineering — is the same pattern from Phase A, evolved further.
+
+### The Pattern (Final Form)
+
+Phase D demonstrated the mature build process:
+
+1. **Vision from human** — "the OS isn't for humans anymore, let the AI build itself on boot"
+2. **Feasibility review via external model** (Copilot) — identified real gaps and false gaps
+3. **Human filters the review** — caught that some "missing" features already existed, rejected application-specific suggestions
+4. **Rapid implementation** — 3 features, ~200 lines total, subagent-driven
+5. **Live demo validates the vision** — Docker container, real API calls, real output file, zero human intervention inside the container
+
+The total implementation was ~330 lines of new code. Most of the session time was spent on vision, direction, and peer review — not coding. The code was the easy part. The hard part was deciding what to build.

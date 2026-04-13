@@ -24,19 +24,15 @@ Persistent agents run continuously in a tokio background task, processing messag
 
 **What this enables:** Agents that learn from experience. A persistent agent that remembers facts across summarization boundaries. Agents that explicitly store and retrieve knowledge by meaning. The foundation for shared intelligence (C3) when multi-agent patterns prove the need.
 
-## Phase D: Supervision Dashboard
+## Phase D: Self-Bootstrapping Agent VM *(complete)*
 
-A web-based UI for humans to observe, steer, and intervene — the "desktop environment" for the agent OS.
+A Docker container where `agentd` is PID 1 and a Bootstrap Agent autonomously builds agent swarms to accomplish goals.
 
-**Activity monitor.** Real-time view of all running agents, their states, current tools in use, and token consumption. Like `htop` for agents.
+**What was built:** Bootstrap Agent manifest (Sonnet) with few-shot child manifest examples, persistent goal queue via Unix socket, workspace isolation per goal (`/data/workspace/{name}/`), spawn depth limit (5), global agent count limit (100), parent⊆child capability enforcement (already existed from Phase A), automatic retry of failed child agents, `StdoutAuditLog` for container observability.
 
-**Audit trail viewer.** Every action is already logged. The dashboard makes it navigable: search by agent, filter by event type, trace from any action back to root cause through parent events and trace IDs.
+**What this proves:** The OS vision works. A container boots, receives a goal ("fetch HN and summarize the top 5 stories"), and the Bootstrap Agent self-organizes: spawns a Fetcher agent with `web_fetch` capability, spawns a Writer agent with `file_write:/output/*`, coordinates their work, and produces a real output file. The capability system enforces isolation — the Bootstrap Agent correctly cannot read `/output/*` even though its child wrote there. Total time ~75 seconds, ~$0.03. The container stays alive accepting additional goals via the socket.
 
-**Approval queue UI.** The `approval.list` / `approval.respond` API already exists. The dashboard wraps it: see pending requests with full context (agent name, tool, input, file path), approve or deny with one click.
-
-**Policy editor.** System-wide rules that apply across agents: token budget limits, auto-deny patterns (never approve writes to certain paths), rate limiting, model restrictions. Policies are enforced by the kernel, configured through the dashboard.
-
-**Architecture:** A thin client over the existing Unix socket API. The daemon already serves all the data — the dashboard just presents it. No new backend logic required, only a frontend.
+**What this enables:** Autonomous agent systems that self-organize for arbitrary goals. The OS manages agent lifecycle, capability enforcement, and observability. Humans provide goals, not instructions.
 
 ## Phase E: Inference Scheduling & Local Models
 
@@ -60,4 +56,4 @@ Move from userspace abstractions on Linux to a real capability-based microkernel
 
 **What stays the same.** The `AgentServices` trait. The `Tool` trait. The manifest format. The API methods. Everything above the kernel — the entire agent programming model — is unchanged. Applications (agent manifests, tools, orchestration logic) work identically. This is the Android pattern: the app model is the product, the kernel is an implementation detail.
 
-**Prerequisites.** Phases B through E must be battle-tested before this begins. The abstractions need to prove themselves under real workloads before being baked into a kernel where changes are expensive.
+**Prerequisites.** Phases B through D have proven the abstractions under real workloads. The kernel migration replaces the implementation, not the programming model.
