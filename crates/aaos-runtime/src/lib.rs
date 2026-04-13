@@ -1,3 +1,4 @@
+pub mod persistent;
 pub mod process;
 pub mod registry;
 pub mod scheduler;
@@ -10,4 +11,5 @@ pub use registry::AgentRegistry;
 pub use scheduler::{Priority, RoundRobinScheduler, ScheduleEntry, Scheduler};
 pub use services::InProcessAgentServices;
 pub use session::{InMemorySessionStore, JsonlSessionStore, SessionStore};
+pub use persistent::persistent_agent_loop;
 pub use supervisor::{RestartPolicy, SupervisedAgent, SupervisorConfig};
