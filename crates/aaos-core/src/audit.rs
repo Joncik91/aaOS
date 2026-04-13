@@ -78,6 +78,15 @@ pub enum AuditEventKind {
         trace_id: Uuid,
         method: String,
     },
+    ContextSummarized {
+        messages_summarized: u32,
+        source_range: (usize, usize),
+        tokens_saved_estimate: u32,
+    },
+    ContextSummarizationFailed {
+        reason: String,
+        fallback: String,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
@@ -283,6 +292,35 @@ mod tests {
             AuditEventKind::AgentMessageReceived {
                 trace_id: Uuid::new_v4(),
                 method: "agent.run".into(),
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn context_summarized_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::ContextSummarized {
+                messages_summarized: 20,
+                source_range: (0, 19),
+                tokens_saved_estimate: 15000,
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn context_summarization_failed_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::ContextSummarizationFailed {
+                reason: "LLM timeout".into(),
+                fallback: "hard_truncation".into(),
             },
         );
         let json = serde_json::to_string(&event).unwrap();
