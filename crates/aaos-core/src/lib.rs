@@ -5,6 +5,7 @@ pub mod capability;
 pub mod error;
 pub mod manifest;
 pub mod services;
+pub mod skill;
 pub mod tool_definition;
 
 pub use agent_id::AgentId;
@@ -16,4 +17,5 @@ pub use manifest::{AgentManifest, CapabilityDeclaration, Lifecycle, MemoryConfig
 pub use services::{
     AgentServices, ApprovalResult, ApprovalService, NoOpApprovalService, TokenUsage,
 };
+pub use skill::{Skill, SkillMetadata, discover_skills};
 pub use tool_definition::ToolDefinition;
