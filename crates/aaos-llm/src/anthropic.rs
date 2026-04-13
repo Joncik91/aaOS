@@ -103,6 +103,11 @@ impl AnthropicClient {
                         "is_error": is_error,
                     }],
                 }),
+                Message::Summary { .. } => {
+                    // Summary messages are folded into the system prompt by ContextManager.
+                    // They should never appear in the messages array sent to the API.
+                    panic!("BUG: Message::Summary must not be sent to the LLM API directly; fold into system prompt via ContextManager")
+                }
             })
             .collect();
 

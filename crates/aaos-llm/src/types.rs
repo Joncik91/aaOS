@@ -60,6 +60,11 @@ pub enum Message {
         content: Value,
         is_error: bool,
     },
+    Summary {
+        content: String,
+        messages_summarized: u32,
+        source_range: (usize, usize),
+    },
 }
 
 #[cfg(test)]
@@ -93,6 +98,26 @@ mod tests {
                 }
             }
             _ => panic!("expected Assistant variant"),
+        }
+    }
+
+    #[test]
+    fn message_summary_roundtrips_json() {
+        let msg = Message::Summary {
+            content: "User discussed project deadlines.".into(),
+            messages_summarized: 15,
+            source_range: (0, 14),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"role\":\"summary\""));
+        let parsed: Message = serde_json::from_str(&json).unwrap();
+        match parsed {
+            Message::Summary { content, messages_summarized, source_range } => {
+                assert_eq!(content, "User discussed project deadlines.");
+                assert_eq!(messages_summarized, 15);
+                assert_eq!(source_range, (0, 14));
+            }
+            _ => panic!("expected Summary variant"),
         }
     }
 
