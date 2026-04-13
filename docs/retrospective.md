@@ -169,3 +169,43 @@ Phase D demonstrated the mature build process:
 5. **Live demo validates the vision** — Docker container, real API calls, real output file, zero human intervention inside the container
 
 The total implementation was ~330 lines of new code. Most of the session time was spent on vision, direction, and peer review — not coding. The code was the easy part. The hard part was deciding what to build.
+
+---
+
+## Phase E (Partial): Multi-Provider LLM Support & Self-Designing Demo
+
+Built in a single session. Two things happened: an `OpenAiCompatibleClient` was implemented so aaOS can talk to any OpenAI-compatible API (DeepSeek, etc.), and then the system was used to design its own next phase — autonomously.
+
+### What Was Built
+
+**OpenAI-compatible LLM client.** New `openai_compat.rs` in `aaos-llm` crate. Implements `LlmClient` trait for any provider that speaks the OpenAI Chat Completions format. Request translation (system-as-first-message, tool_calls as function format, role:"tool" for results), response translation (choices[0].message, finish_reason mapping, prompt_tokens/completion_tokens). `OpenAiCompatConfig::deepseek_from_env()` constructor. 15 unit tests. The daemon checks `DEEPSEEK_API_KEY` first, falls back to `ANTHROPIC_API_KEY`.
+
+**Self-designing demo.** Bootstrap Agent (DeepSeek Reasoner) received: "Read the aaOS architecture and roadmap, then design Phase E: Inference Scheduling." It spawned a Fetcher (DeepSeek Chat) to pull the docs from GitHub, an Analyzer to extract architectural facts into episodic memory (5 facts stored via `memory_store`), then wrote three files itself: `phase-e-spec.md` (9.7KB), `phase-e-plan.md` (13KB), `phase-e-review.md` (12.5KB). Total: 14 iterations, ~$0.02, ~10 minutes.
+
+### What the AI Got Wrong
+
+- **`file_read` before docs existed.** Bootstrap tried to read `/data/workspace/architecture.md` before the Fetcher wrote it. Recovered by spawning the Fetcher first.
+
+- **`spawn_agent` failed once.** Bootstrap tried to spawn a child with a name not in the `spawn_child` allowlist. Recovered by writing the file itself instead.
+
+- **The generated Rust types don't compile.** GPT-5.4 peer review caught 5 hard errors: wrong `LlmClient` method signatures (used `chat()` not `complete()`), `&mut self` in `Arc`-wrapped struct, `AtomicU32` in `#[derive(Clone)]`, invalid enum variant syntax, `Instant` with serde. The agent wrote Rust-flavored pseudocode, not real Rust.
+
+- **Ignored existing codebase patterns.** Duplicated the `Priority` enum instead of extending the existing one. Created a new `InferenceScheduler` that ignores the existing `Scheduler` trait. Proposed capability extensions without showing changes to the actual `Capability` enum.
+
+- **Designed for local models when the user wants API-only.** The spec was heavily oriented toward Ollama/vLLM/GPU scheduling. The human's actual requirement is cheap API inference (DeepSeek), not local models. The agent had no way to know this — it designed from the roadmap, which mentions local models. This is a context limitation, not an intelligence failure.
+
+### What Required Human Judgment
+
+- **"The goal should be to build the OS itself, not URL fetching."** The human redirected from demo goals to self-referential ones. The AI would have kept doing fetch-and-summarize demos indefinitely.
+
+- **"I don't agree with Ollama — I don't want anything local."** After the spec was generated and peer-reviewed, the human rejected the entire local-model premise. The OS designed Phase E correctly according to the roadmap, but the roadmap's Phase E assumed local models, and the human's actual need had evolved. Lesson: generated designs are only as good as the requirements they're given.
+
+- **Peer review via Copilot/GPT-5.4.** The human insisted on external review, which caught every compile error and several architectural conflicts the self-review missed. The agent's own review was thoughtful but surface-level — it identified risks conceptually without checking whether the Rust code would actually compile against the existing codebase.
+
+### The Pattern (Meta)
+
+Phase E demonstrated something new: **the system designing itself**. Previous phases had the human directing and the AI implementing. This time the AI (inside the container) did the design work, and the human + external reviewer evaluated it. The output was credible in structure and vision but wrong in details — exactly the kind of work that benefits from peer review.
+
+The cost model proved out: $0.02 for a complete spec/plan/review cycle. DeepSeek Reasoner for orchestration + DeepSeek Chat for workers is ~15x cheaper than Anthropic, with no rate limits. The `OpenAiCompatibleClient` makes this provider-agnostic — any OpenAI-compatible API works.
+
+Key insight: **AI-generated specs need the same review rigor as AI-generated code.** The agent's self-review caught conceptual risks but missed compile errors. External peer review (GPT-5.4) caught the compile errors but needed access to the actual codebase to do so. The combination — self-review + peer review with codebase access — caught everything.

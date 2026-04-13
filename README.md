@@ -44,7 +44,9 @@ What's implemented and tested:
       |
  [Agent Memory]  Managed context windows, episodic store         ✅ Phase C
       |
- [Self-Bootstrapping VM]  Autonomous agent swarms in Docker      ✅ Phase D  <-- you are here
+ [Self-Bootstrapping VM]  Autonomous agent swarms in Docker      ✅ Phase D
+      |
+ [Multi-Provider LLM]  DeepSeek, OpenAI-compat, inference sched  ✅ Phase E1  <-- you are here
       |
  [Real Kernel]  Migrate to Redox OS or seL4 microkernel
 ```
@@ -108,22 +110,29 @@ memory:
 
 ## Quick Start
 
-Requires Docker and an Anthropic API key.
+Requires Docker and a DeepSeek API key (or Anthropic API key as fallback).
 
 ```bash
 # Clone
 git clone https://github.com/Joncik91/aaOS.git
 cd aaOS
 
-# Run the autonomous bootstrap demo
-ANTHROPIC_API_KEY="sk-..." AAOS_GOAL="Fetch https://news.ycombinator.com and write a summary of the top 5 stories to /output/summary.txt" \
-  docker compose -f docker-compose.bootstrap.yaml up
+# Build the container
+docker build -t aaos-bootstrap -f Dockerfile.bootstrap .
+
+# Run the autonomous bootstrap demo (DeepSeek — ~$0.02 per goal)
+docker run --rm --name aaos-run \
+  -e DEEPSEEK_API_KEY="sk-..." \
+  -e AAOS_BOOTSTRAP_MANIFEST=/etc/aaos/manifests/bootstrap.yaml \
+  -e AAOS_BOOTSTRAP_GOAL="Fetch https://news.ycombinator.com and write a summary of the top 5 stories to /output/summary.txt" \
+  -v ./output:/output \
+  aaos-bootstrap
 
 # Check the output
 cat output/summary.txt
 ```
 
-The Bootstrap Agent (Sonnet) analyzes the goal, spawns Fetcher and Writer agents (Haiku), coordinates their work, and writes the output. Total cost: ~$0.03.
+The Bootstrap Agent (DeepSeek Reasoner) analyzes the goal, spawns Fetcher and Writer agents (DeepSeek Chat), coordinates their work, and writes the output. Total cost: ~$0.02. Falls back to Anthropic if `ANTHROPIC_API_KEY` is set instead.
 
 To send additional goals to the running container:
 ```bash

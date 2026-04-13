@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aaos_llm::{AnthropicClient, AnthropicConfig};
+use aaos_llm::{AnthropicClient, AnthropicConfig, OpenAiCompatConfig, OpenAiCompatibleClient};
 use clap::Parser;
 use serde_json::json;
 use tracing_subscriber::EnvFilter;
@@ -90,10 +90,19 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
     tracing::info!(manifest = %manifest_path.display(), "loading bootstrap manifest");
     tracing::info!(goal = %goal, "bootstrap goal");
 
-    // Require an LLM client in bootstrap mode
-    let config = AnthropicConfig::from_env()
-        .map_err(|e| anyhow::anyhow!("bootstrap mode requires ANTHROPIC_API_KEY: {e}"))?;
-    let llm_client: Arc<dyn aaos_llm::LlmClient> = Arc::new(AnthropicClient::new(config));
+    // Prefer DeepSeek if DEEPSEEK_API_KEY is set, fall back to Anthropic.
+    let llm_client: Arc<dyn aaos_llm::LlmClient> =
+        if let Ok(config) = OpenAiCompatConfig::deepseek_from_env() {
+            tracing::info!(base_url = %config.base_url, "using DeepSeek LLM client");
+            Arc::new(OpenAiCompatibleClient::new(config))
+        } else if let Ok(config) = AnthropicConfig::from_env() {
+            tracing::info!(base_url = %config.base_url, "using Anthropic LLM client");
+            Arc::new(AnthropicClient::new(config))
+        } else {
+            return Err(anyhow::anyhow!(
+                "bootstrap mode requires DEEPSEEK_API_KEY or ANTHROPIC_API_KEY"
+            ));
+        };
 
     // Use StdoutAuditLog for container observability (logs to stdout as JSON)
     let audit_log: Arc<dyn aaos_core::AuditLog> = Arc::new(aaos_core::StdoutAuditLog);

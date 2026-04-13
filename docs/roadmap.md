@@ -34,17 +34,17 @@ A Docker container where `agentd` is PID 1 and a Bootstrap Agent autonomously bu
 
 **What this enables:** Autonomous agent systems that self-organize for arbitrary goals. The OS manages agent lifecycle, capability enforcement, and observability. Humans provide goals, not instructions.
 
-## Phase E: Inference Scheduling & Local Models
+## Phase E: Multi-Provider LLM Support & Inference Scheduling *(E1 complete, E2–E3 planned)*
 
-Treat LLM inference as a schedulable resource, like CPU time.
+**E1: Multi-provider API support.** *(complete)* `OpenAiCompatibleClient` in `aaos-llm` speaks the OpenAI Chat Completions format — works with DeepSeek, OpenRouter, and any OpenAI-compatible provider. The daemon checks `DEEPSEEK_API_KEY` first, falls back to `ANTHROPIC_API_KEY`. Bootstrap uses `deepseek-reasoner` (thinking mode), children use `deepseek-chat`. 15 unit tests. Verified end-to-end: Bootstrap + 3 child agents designed Phase E autonomously for ~$0.02.
 
-**Local model support.** Integrate Ollama or vLLM as `LlmClient` implementations alongside `AnthropicClient`. The manifest's `model` field determines which provider handles the request. Different agents can use different models: cheap local models for routine tasks, powerful API models for complex reasoning.
+**What was built (E1):** `OpenAiCompatConfig::deepseek_from_env()`, request translation (system-as-first-message, tool_calls as function format, role:"tool" for results), response translation (choices[0].message, finish_reason mapping, prompt_tokens/completion_tokens), auth via `Authorization: Bearer`. Manifest model field routes to the correct provider.
 
-**Inference scheduling.** Multiple agents competing for inference time need a scheduler. The existing `RoundRobinScheduler` (implemented but dormant) becomes the inference queue. Priority-based scheduling: a critical agent gets inference before a background scanner. Budget enforcement: per-agent token limits, per-session cost caps.
+**E2: Inference scheduling.** *(planned)* Multiple agents competing for API inference need a scheduler. The existing `RoundRobinScheduler` (implemented but dormant) becomes the inference queue. Priority-based scheduling: a critical agent gets inference before a background scanner. Rate limiting per provider to stay within API limits.
 
-**KV cache management.** For local models, the KV cache is the equivalent of virtual memory. A persistent agent's cache should survive between turns. The runtime manages cache allocation, eviction, and sharing — agents with overlapping context (same codebase, same docs) can share cache entries.
+**E3: Budget enforcement.** *(planned)* Per-agent token limits, per-session cost caps. Token usage tracking per provider with different cost models. The `AgentServices::report_usage()` method already receives `TokenUsage` — budget enforcement wires into this existing path.
 
-**What this enables:** Cost-effective agent fleets. A team of 20 agents where 15 run on a local 7B model and 5 use Claude for the hard decisions. GPU/NPU allocation as a kernel concern, not an application concern.
+**What this enables:** Cost-effective agent fleets using cheap API providers. A team of 20 agents where most use DeepSeek Chat ($0.27/M input) and a few use Claude for complex reasoning. Provider selection as a kernel concern, not an application concern.
 
 ## Phase F: Real Kernel Migration
 
