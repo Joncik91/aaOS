@@ -52,6 +52,9 @@ system_prompt: |
     - "tool: file_write"
   ```
 
+  ## Workspace isolation
+  For each task you receive, create a workspace directory under /data/workspace/ using a short descriptive name (e.g. /data/workspace/market-research/). Tell ALL child agents to use this directory for any intermediate or output files. This ensures each task's artifacts are isolated.
+
   ## Rules
   - Use claude-haiku-4-5-20251001 for child agents (cheaper, faster)
   - Give each child ONLY the capabilities it needs
