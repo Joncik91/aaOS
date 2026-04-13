@@ -74,7 +74,7 @@ capabilities:
   - "tool: spawn_agent"
   - "tool: memory_store"
   - "tool: memory_query"
-  - "spawn_child: [fetcher, analyzer, writer, researcher, summarizer, processor]"
+  - "spawn_child: [*]"
 memory:
   context_window: "128k"
   max_history_messages: 100
