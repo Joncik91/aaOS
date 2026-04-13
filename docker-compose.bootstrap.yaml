@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  aaos:
+    build:
+      context: .
+      dockerfile: Dockerfile.bootstrap
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - AAOS_BOOTSTRAP_MANIFEST=/etc/aaos/manifests/bootstrap.yaml
+      - AAOS_BOOTSTRAP_GOAL=${AAOS_GOAL:-Fetch the front pages of https://news.ycombinator.com, https://lobste.rs, and https://reddit.com/r/rust, then write a combined summary of the top stories to /output/summary.txt}
+    volumes:
+      - ./output:/output
+    init: false  # agentd IS the init process
