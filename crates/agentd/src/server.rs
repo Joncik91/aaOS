@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aaos_core::{AgentManifest, AgentServices, ApprovalService, AuditLog, InMemoryAuditLog};
@@ -43,11 +43,11 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::FileReadTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
 
-        // Memory subsystem (default: in-memory store + mock embeddings)
+        // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
         let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
             Arc::new(aaos_memory::MockEmbeddingSource::new(768));
-        let memory_store: Arc<dyn aaos_memory::MemoryStore> = Arc::new(
-            aaos_memory::InMemoryMemoryStore::new(10_000, 768, embedding_source.model_name()),
+        let memory_store: Arc<dyn aaos_memory::MemoryStore> = create_memory_store(
+            embedding_source.model_name(),
         );
 
         // Register memory tools
@@ -140,11 +140,11 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::FileReadTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
 
-        // Memory subsystem (default: in-memory store + mock embeddings)
+        // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
         let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
             Arc::new(aaos_memory::MockEmbeddingSource::new(768));
-        let memory_store: Arc<dyn aaos_memory::MemoryStore> = Arc::new(
-            aaos_memory::InMemoryMemoryStore::new(10_000, 768, embedding_source.model_name()),
+        let memory_store: Arc<dyn aaos_memory::MemoryStore> = create_memory_store(
+            embedding_source.model_name(),
         );
 
         // Register memory tools
@@ -1037,4 +1037,21 @@ lifecycle: persistent
         assert!(result.get("trace_id").is_some());
         assert_eq!(result["status"], "delivered");
     }
+}
+
+/// Create the memory store backend: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise.
+fn create_memory_store(embedding_model: &str) -> Arc<dyn aaos_memory::MemoryStore> {
+    if let Ok(db_path) = std::env::var("AAOS_MEMORY_DB") {
+        match aaos_memory::SqliteMemoryStore::open(&PathBuf::from(&db_path)) {
+            Ok(store) => {
+                tracing::info!(path = %db_path, "persistent memory store (SQLite)");
+                return Arc::new(store);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %db_path, "failed to open SQLite memory, falling back to in-memory");
+            }
+        }
+    }
+    tracing::info!("using in-memory memory store (non-persistent)");
+    Arc::new(aaos_memory::InMemoryMemoryStore::new(10_000, 768, embedding_model))
 }

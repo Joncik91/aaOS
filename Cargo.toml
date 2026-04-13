@@ -29,6 +29,7 @@ jsonschema = "0.28"
 reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"
 scopeguard = "1"
+rusqlite = { version = "0.33", features = ["bundled"] }
 
 # Internal crates
 aaos-core = { path = "crates/aaos-core" }

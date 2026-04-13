@@ -35,9 +35,10 @@ COPY --from=builder /build/target/release/agentd /usr/local/bin/agentd
 COPY manifests/ /etc/aaos/manifests/
 
 # Data directories for agents
-RUN mkdir -p /data /output /var/lib/aaos/sessions /data/workspace /var/run
+RUN mkdir -p /data /output /var/lib/aaos/sessions /data/workspace /var/run /var/lib/aaos/memory
 
 ENV RUST_LOG=info
+ENV AAOS_MEMORY_DB=/var/lib/aaos/memory/memories.db
 
 # Expose the Unix socket for additional goals
 VOLUME ["/var/run"]

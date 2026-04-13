@@ -17,6 +17,7 @@ tracing = { workspace = true }
 dashmap = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
