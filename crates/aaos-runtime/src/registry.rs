@@ -9,7 +9,6 @@ use dashmap::DashMap;
 
 use crate::persistent::persistent_agent_loop;
 use crate::process::{AgentCommand, AgentInfo, AgentProcess, AgentState};
-use crate::session::SessionStore;
 
 /// Thread-safe registry of all running agent processes.
 ///

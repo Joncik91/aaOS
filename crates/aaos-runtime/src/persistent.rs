@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use aaos_core::{
-    AgentId, AgentManifest, AgentServices, AuditEvent, AuditEventKind, AuditLog,
+    AgentId, AgentManifest, AuditEvent, AuditEventKind, AuditLog,
 };
 use aaos_ipc::{McpMessage, MessageRouter};
 use aaos_llm::{AgentExecutor, ExecutionStopReason};
@@ -63,7 +63,7 @@ pub async fn persistent_agent_loop(
                 let user_input = extract_user_message(&msg);
 
                 let result = executor
-                    .run_with_history(&agent_id, &manifest, &user_input, &history)
+                    .run_with_history(agent_id, &manifest, &user_input, &history)
                     .await;
 
                 match result.stop_reason {

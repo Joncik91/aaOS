@@ -5,6 +5,10 @@ edition = "2021"
 license = "Apache-2.0"
 description = "aaOS agent daemon — manages agent lifecycles"
 
+[lib]
+name = "agentd"
+path = "src/lib.rs"
+
 [[bin]]
 name = "agentd"
 path = "src/main.rs"

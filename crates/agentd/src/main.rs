@@ -1,17 +1,11 @@
-mod api;
-mod approval;
-mod config;
-mod server;
-mod spawn_tool;
-
 use std::sync::Arc;
 
 use aaos_llm::{AnthropicClient, AnthropicConfig};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use config::{Cli, Command};
-use server::Server;
+use agentd::config::{Cli, Command};
+use agentd::server::Server;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

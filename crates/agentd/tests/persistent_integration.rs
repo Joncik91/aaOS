@@ -3,13 +3,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use aaos_core::{AgentId, InMemoryAuditLog, TokenUsage};
+use aaos_core::TokenUsage;
 use aaos_llm::{
     CompletionRequest, CompletionResponse, ContentBlock, LlmClient, LlmResult, LlmStopReason,
 };
 use async_trait::async_trait;
 use serde_json::json;
-use std::sync::Mutex;
 
 /// Mock LLM that echoes back the user message.
 struct EchoLlm;

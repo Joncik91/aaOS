@@ -49,11 +49,13 @@ version = "0.0.0"
 dependencies = [
  "aaos-core",
  "aaos-ipc",
+ "aaos-llm",
  "aaos-tools",
  "async-trait",
  "dashmap",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
 ]
