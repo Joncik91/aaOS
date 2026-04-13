@@ -13,6 +13,8 @@ pub struct ExecutorConfig {
     pub max_iterations: u32,
     /// Maximum total tokens (input + output) across all iterations. Default: 1_000_000.
     pub max_total_tokens: u64,
+    /// Maximum output tokens per LLM call. Default: 16384.
+    pub max_output_tokens: u32,
 }
 
 impl Default for ExecutorConfig {
@@ -20,6 +22,7 @@ impl Default for ExecutorConfig {
         Self {
             max_iterations: 50,
             max_total_tokens: 1_000_000,
+            max_output_tokens: 16_384,
         }
     }
 }
@@ -137,7 +140,7 @@ impl AgentExecutor {
                 system: system.clone(),
                 messages: messages.clone(),
                 tools: tools.clone(),
-                max_tokens: 4096,
+                max_tokens: self.config.max_output_tokens,
             };
 
             let response = match self.llm.complete(request).await {
@@ -366,7 +369,7 @@ impl AgentExecutor {
                 system: system.clone(),
                 messages: messages.clone(),
                 tools: tools.clone(),
-                max_tokens: 4096,
+                max_tokens: self.config.max_output_tokens,
             };
 
             let response = match self.llm.complete(request).await {
@@ -799,6 +802,7 @@ capabilities:
         let config = ExecutorConfig {
             max_iterations: 3,
             max_total_tokens: 1_000_000,
+            max_output_tokens: 16_384,
         };
         let executor = AgentExecutor::new(llm, services, config);
 
@@ -830,6 +834,7 @@ capabilities:
         let config = ExecutorConfig {
             max_iterations: 50,
             max_total_tokens: 100, // Very low budget
+            max_output_tokens: 16_384,
         };
         let executor = AgentExecutor::new(llm, services, config);
 
