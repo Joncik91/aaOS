@@ -36,12 +36,19 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub archive_ttl_days: Option<u32>,
     #[serde(default)]
-    pub episodic_store: Option<String>,
+    pub episodic_enabled: bool,
+    #[serde(default = "default_episodic_max_records")]
+    pub episodic_max_records: usize,
+    #[serde(default = "default_episodic_max_content_bytes")]
+    pub episodic_max_content_bytes: usize,
 }
 
 fn default_context_window() -> String {
     "128k".to_string()
 }
+
+fn default_episodic_max_records() -> usize { 10_000 }
+fn default_episodic_max_content_bytes() -> usize { 4096 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -51,7 +58,9 @@ impl Default for MemoryConfig {
             summarization_model: None,
             summarization_threshold: None,
             archive_ttl_days: None,
-            episodic_store: None,
+            episodic_enabled: false,
+            episodic_max_records: default_episodic_max_records(),
+            episodic_max_content_bytes: default_episodic_max_content_bytes(),
         }
     }
 }
@@ -176,7 +185,7 @@ capabilities:
   - "file_read: /data/project-x/*"
 memory:
   context_window: "128k"
-  episodic_store: "512MB"
+  episodic_enabled: true
 lifecycle: persistent
 metadata:
   team: research
@@ -186,7 +195,7 @@ metadata:
         assert_eq!(manifest.name, "research-agent");
         assert_eq!(manifest.capabilities.len(), 2);
         assert_eq!(manifest.lifecycle, Lifecycle::Persistent);
-        assert_eq!(manifest.memory.episodic_store, Some("512MB".into()));
+        assert!(manifest.memory.episodic_enabled);
     }
 
     #[test]
@@ -315,5 +324,30 @@ memory:
         assert_eq!(config.summarization_model, None);
         assert_eq!(config.summarization_threshold, None);
         assert_eq!(config.archive_ttl_days, None);
+    }
+
+    #[test]
+    fn parse_manifest_with_episodic_config() {
+        let yaml = r#"
+name: memory-agent
+model: claude-haiku-4-5-20251001
+system_prompt: "test"
+memory:
+  episodic_enabled: true
+  episodic_max_records: 5000
+  episodic_max_content_bytes: 8192
+"#;
+        let manifest = AgentManifest::from_yaml(yaml).unwrap();
+        assert!(manifest.memory.episodic_enabled);
+        assert_eq!(manifest.memory.episodic_max_records, 5000);
+        assert_eq!(manifest.memory.episodic_max_content_bytes, 8192);
+    }
+
+    #[test]
+    fn memory_config_episodic_defaults() {
+        let config = MemoryConfig::default();
+        assert!(!config.episodic_enabled);
+        assert_eq!(config.episodic_max_records, 10_000);
+        assert_eq!(config.episodic_max_content_bytes, 4096);
     }
 }

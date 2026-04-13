@@ -87,6 +87,15 @@ pub enum AuditEventKind {
         reason: String,
         fallback: String,
     },
+    MemoryStored {
+        memory_id: Uuid,
+        category: String,
+        content_hash: String,
+    },
+    MemoryQueried {
+        query_hash: String,
+        results_count: usize,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
@@ -321,6 +330,35 @@ mod tests {
             AuditEventKind::ContextSummarizationFailed {
                 reason: "LLM timeout".into(),
                 fallback: "hard_truncation".into(),
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn memory_stored_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::MemoryStored {
+                memory_id: Uuid::new_v4(),
+                category: "fact".into(),
+                content_hash: "abc123".into(),
+            },
+        );
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn memory_queried_event_roundtrips_json() {
+        let event = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::MemoryQueried {
+                query_hash: "def456".into(),
+                results_count: 3,
             },
         );
         let json = serde_json::to_string(&event).unwrap();
