@@ -1,3 +1,4 @@
+pub mod context;
 pub mod persistent;
 pub mod process;
 pub mod registry;
@@ -6,6 +7,7 @@ pub mod services;
 pub mod session;
 pub mod supervisor;
 
+pub use context::ContextManager;
 pub use process::{AgentCommand, AgentInfo, AgentProcess, AgentState};
 pub use registry::AgentRegistry;
 pub use scheduler::{Priority, RoundRobinScheduler, ScheduleEntry, Scheduler};
