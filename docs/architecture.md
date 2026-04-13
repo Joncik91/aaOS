@@ -25,14 +25,14 @@ The core of the system. Manages:
 - **Scheduler** — Round-robin with priority support (implemented, not yet activated)
 - **Supervisor** — Restart policies (always, on-failure, never) with exponential backoff
 
-### 3. Agent Memory Layer
+### 3. Agent Memory Layer (`aaos-memory`)
 
 Three memory tiers:
 
-- **Context Window** — Managed by the runtime, not the agent
-- **Conversation Persistence** — JSONL session store keyed by agent ID. Persistent agents load history at startup and append after each turn. `run_with_history()` on the executor prepends prior messages and returns a transcript delta for storage.
-- **Episodic Store** — Per-agent vector-indexed persistent memory (future work)
-- **Shared Knowledge** — Semantic-first storage replacing the filesystem (future work)
+- **Context Window** — Managed by `ContextManager` in the runtime, not the agent. When the conversation grows too long (estimated via chars/4 heuristic against a configurable `TokenBudget`), the runtime summarizes older messages via an LLM call and archives the originals to `ArchiveSegment` files. Summary messages are folded into the system prompt prefix, preserving API turn alternation. Tool call/result pairs are kept atomic during summarization selection. Fallback to hard truncation on LLM failure. Configurable summarization threshold (default 0.7) and model.
+- **Conversation Persistence** — JSONL session store keyed by agent ID. Persistent agents load history at startup and append after each turn. `run_with_history_and_prompt()` on the executor accepts an overridden system prompt (for summary prefix injection). Archive segments stored as `{agent_id}.archive.{uuid}.json` files with TTL-based pruning.
+- **Episodic Store** — Per-agent vector-indexed persistent memory via `MemoryStore` trait. Agents explicitly store facts, observations, decisions, and preferences via `memory_store` tool, and retrieve them by meaning via `memory_query` tool (cosine similarity over embeddings). `InMemoryMemoryStore` with brute-force search, LRU cap eviction, agent isolation, replaces/update semantics, dimension mismatch handling. Embeddings via `EmbeddingSource` trait — `OllamaEmbeddingSource` (nomic-embed-text, 768 dims) for production, `MockEmbeddingSource` for tests. SQLite+sqlite-vec planned for durable persistence.
+- **Shared Knowledge** — Cross-agent semantic storage (deferred — requires proven multi-agent patterns)
 
 ### 4. Tool & Service Layer (`aaos-tools`)
 
@@ -42,7 +42,7 @@ Universal tool registry where every capability is:
 - Invoked through capability-checked channels
 - Logged to the audit trail
 
-Built-in tools: `echo`, `web_fetch`, `file_read`, `file_write`, `spawn_agent`. External tools integrate via the Tool trait.
+Built-in tools: `echo`, `web_fetch`, `file_read`, `file_write`, `spawn_agent`, `memory_store`, `memory_query`, `memory_delete`. External tools integrate via the Tool trait.
 
 ### 5. IPC Layer (`aaos-ipc`)
 
@@ -90,5 +90,7 @@ Every action in aaOS produces an `AuditEvent`:
 - Agent execution started/completed
 - Agent loop started/stopped (persistent agents)
 - Agent message received (persistent agents, with trace_id)
+- Context summarized/summarization failed (context window management)
+- Memory stored/queried (episodic memory, with content/query hashes)
 
-Events include trace IDs for request-level correlation and parent event IDs for causal tracing. 17 event kinds total.
+Events include trace IDs for request-level correlation and parent event IDs for causal tracing. 21 event kinds total.

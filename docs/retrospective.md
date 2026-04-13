@@ -81,3 +81,51 @@ Persistent agents, request-response IPC, and conversation persistence. The codeb
 Phase B used the same design-build-validate loop as Phase A, but with a key addition: **subagent-driven development**. Each of the 10 implementation tasks was dispatched to a fresh subagent with isolated context, then the result was verified. This kept the orchestrating session's context clean for coordination while subagents handled the mechanical implementation.
 
 The live API smoke test proved its worth immediately — it caught the most serious bug in the implementation (persistent loop never starting). Mock tests passed because they tested the loop in isolation. The integration test exposed the wiring gap between components. This validates the principle: **mock tests verify logic, live tests verify integration.**
+
+---
+
+## Phase C: Agent Memory System
+
+Built in a single Claude session via subagent-driven development. Design brainstorming, three spec documents (C1, C2, C3) each peer-reviewed by Qwen CLI and Copilot CLI, two implementation plans each peer-reviewed, then execution via fresh subagent per task.
+
+### What Was Built
+
+Two of three sub-projects implemented; the third deferred by design.
+
+**C1: Managed context windows.** `ContextManager` sits between the persistent agent loop and the executor, transparently summarizing old messages when the context fills. `TokenBudget` parses human-readable sizes ("128k"), estimates context with a chars/4 heuristic, and triggers summarization at a configurable threshold. Summary messages fold into the system prompt prefix (not as User messages — that would break API turn alternation). Tool call/result pairs are kept atomic during selection. Archives preserve raw messages on disk; TTL-based pruning prevents unbounded growth. Fallback to hard truncation on LLM failure.
+
+**C2: Episodic memory store.** New `aaos-memory` crate (7th workspace member). `MemoryStore` trait with `InMemoryMemoryStore` — cosine similarity search, agent isolation, LRU cap eviction, replaces/update semantics, dimension mismatch handling. `EmbeddingSource` trait with `MockEmbeddingSource` (testing) and `OllamaEmbeddingSource` (production — nomic-embed-text via local Ollama, 768 dims). Three new tools: `memory_store`, `memory_query`, `memory_delete`.
+
+**C3: Shared knowledge graph.** Design direction documented, explicitly deferred. Peer reviewers (Qwen + Copilot) confirmed deferral: "building shared infrastructure without proven demand is a classic trap." Seven prerequisites listed before activation.
+
+The codebase grew from ~8000 to ~12000 lines, 141 tests to 205. 4 live API tests verified end-to-end with real Haiku 4.5 and Ollama.
+
+### What the AI Got Wrong
+
+- **Circular dependency in the plan.** The C1 plan put `estimate_tokens(&[Message])` on `TokenBudget` in `aaos-core`, but `aaos-llm` already depends on `aaos-core` — circular. Both Qwen and Copilot caught this independently. Fixed by moving message-aware functions to `aaos-runtime::context`.
+
+- **Prepared context never passed to executor.** The C1 plan called `prepare_context()` after the executor ran, meaning summarization output was discarded for the LLM call. Both reviewers flagged this as the #1 blocker. Fixed by adding `run_with_history_and_prompt()` and restructuring the persistent loop to call prepare_context BEFORE the executor.
+
+- **Model name mismatch in server.** `Server::new()` created `InMemoryMemoryStore` expecting model `"nomic-embed-text"` but `MockEmbeddingSource` reports `"mock-embed"`. All query results were silently dropped due to dimension mismatch filtering. Caught during integration test implementation.
+
+- **LanceDB API instability.** Both reviewers flagged that `lancedb` Rust crate has unstable APIs. Copilot recommended skipping it entirely in favor of SQLite+sqlite-vec. Decision: ship with InMemoryMemoryStore, use Ollama for real embeddings, defer persistent vector store.
+
+### What Required Human Judgment
+
+- **"Ask Qwen for a review. Then ask Copilot for what Qwen proposes."** The human established the multi-model peer review pattern that caught the three biggest bugs in the plans before any code was written.
+
+- **"The only thing that matters is to see visually if it works as designed."** The human clarified that engineering correctness was delegated to the AI + peer review; the human's validation criterion was observing the system work end-to-end.
+
+- **"So it should be also A+B+C1."** The human insisted on a cumulative E2E test covering all phases together, not just isolated C1 testing. This is the same pattern as Phase B where the human demanded Phase A + Phase B E2E verification.
+
+- **"Ask Copilot for review"** on vector store alternatives. The human routed architecture decisions through external review, leading to the SQLite+sqlite-vec recommendation and the Ollama embedding source decision.
+
+### The Pattern (Evolved Further)
+
+Phase C added two new dimensions to the build process:
+
+**Multi-model peer review.** Design specs and implementation plans were reviewed by both Qwen and Copilot before implementation began. This caught 3 blocker-level bugs, 5 high-severity issues, and numerous medium/minor issues — all before a single line of implementation code was written. The cost of these reviews was ~$0.02 each; the cost of debugging the circular dependency or the "prepared context never used" bug at runtime would have been orders of magnitude higher.
+
+**Alternative evaluation through external review.** Architecture decisions (vector store, embedding source) were presented as option tables and routed through Copilot for independent assessment. This produced concrete recommendations (skip LanceDB, use Ollama) with reasoning that the primary AI would not have generated alone.
+
+The overall pattern: **design → multi-model peer review → fix before implementation → subagent-driven execution → cumulative E2E verification**. Each phase has made the feedback loop tighter and caught bugs earlier.

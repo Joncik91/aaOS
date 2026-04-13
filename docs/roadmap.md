@@ -10,17 +10,19 @@ Persistent agents run continuously in a tokio background task, processing messag
 
 **What this enables:** Agents that remember context across interactions. Multi-agent workflows where peers communicate directly via `send_and_wait`. The foundation for the NarrativeEngine orchestration layer.
 
-## Phase C: Agent Memory System
+## Phase C: Agent Memory System *(C1+C2 complete, C3 deferred)*
 
-Three memory tiers, replacing the flat filesystem as the primary storage abstraction.
+**C1: Managed context windows.** *(complete)* The runtime manages what's in the agent's context window. When the conversation grows too long, `ContextManager` summarizes older messages via an LLM call and archives the originals to disk. The agent sees a coherent conversation; the runtime handles the compression transparently. `TokenBudget` estimates context size using a chars/4 heuristic, triggering summarization at a configurable threshold (default 70%). Summary messages are folded into the system prompt prefix, preserving User/Assistant turn alternation. Tool call/result pairs are kept atomic during summarization. Fallback to hard truncation on LLM failure.
 
-**Managed context windows.** The runtime manages what's in the agent's context window, not the agent itself. When the window fills, the runtime summarizes older messages and pages them out — like virtual memory for attention. The agent sees a coherent conversation; the runtime handles the compression transparently.
+**What was built (C1):** `TokenBudget` type with `from_config()`, `ContextManager` with `prepare_context()`, `Message::Summary` variant, `ArchiveSegment` + archive methods on `SessionStore` trait, `LlmClient::max_context_tokens()`, `run_with_history_and_prompt()` on `AgentExecutor`, 2 new audit events. 25 new tests (166 total). Verified end-to-end with real Haiku 4.5 — summarization preserves facts across compression boundaries.
 
-**Episodic store.** Per-agent vector-indexed persistent memory, queryable via a `memory_query` tool. An agent stores facts, observations, and decisions. Later, it queries by meaning: "What did I learn about the authentication module?" returns relevant memories ranked by similarity. Implementation: embedded vector database (LanceDB or Qdrant) scoped by agent ID, governed by capability tokens.
+**C2: Episodic store.** *(complete)* Per-agent persistent memory via explicit `memory_store`, `memory_query`, and `memory_delete` tools. Agents store facts, observations, decisions, and preferences. Later, they query by meaning via cosine similarity over embeddings. In-memory store with brute-force search (SQLite+sqlite-vec planned for persistence). Embeddings via Ollama's nomic-embed-text model (768 dims, OpenAI-compatible `/v1/embeddings` endpoint).
 
-**Shared knowledge graph.** The native storage abstraction is meaning, not location. Content is indexed by what it is, not where it lives. Agents query a semantic graph: "Find all files related to capability enforcement" returns relevant code, docs, and prior analysis — without the agent knowing paths. Path-based access remains for compatibility, but the native interface is semantic.
+**What was built (C2):** New `aaos-memory` crate (7th workspace member) with `MemoryStore` trait, `InMemoryMemoryStore` (cosine similarity, agent isolation, LRU cap eviction, replaces/update semantics, dimension mismatch handling), `EmbeddingSource` trait with `MockEmbeddingSource` and `OllamaEmbeddingSource`. Three new tools in `aaos-tools`. `MemoryConfig` with episodic fields. 2 new audit events. 39 new tests (205 total). Verified end-to-end with real Haiku + Ollama nomic-embed-text.
 
-**What this enables:** Agents that learn from experience. A reviewer that remembers past code patterns and their outcomes. An architect that builds a progressively deeper understanding of the system. Shared knowledge that compounds across agents and sessions.
+**C3: Shared knowledge graph.** *(deferred)* Cross-agent knowledge sharing. Design direction documented but not buildable — requires C1+C2 production usage, cross-agent capability model, proven multi-agent need. See `docs/phase-c3-design.md` (local only).
+
+**What this enables:** Agents that learn from experience. A persistent agent that remembers facts across summarization boundaries. Agents that explicitly store and retrieve knowledge by meaning. The foundation for shared intelligence (C3) when multi-agent patterns prove the need.
 
 ## Phase D: Supervision Dashboard
 
