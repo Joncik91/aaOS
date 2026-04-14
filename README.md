@@ -228,6 +228,7 @@ aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthrop
 - [Self-Reflection Log](docs/reflection-log.md) — Runs where aaOS reads its own code and proposes changes
 - [Patterns](docs/patterns.md) — Cross-cutting lessons distilled from the retrospective and reflection log
 - [Ideas](docs/ideas.md) — Things we considered and deferred, with the signal that would prompt reconsideration
+- [Distribution Architecture](docs/distribution-architecture.md) — The agent-native Linux distribution target: components, capability enforcement via Linux primitives, packaging, migration from today's Docker-only deployment
 
 ## License
 

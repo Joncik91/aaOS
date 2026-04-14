@@ -70,6 +70,8 @@ Full chronological detail per run lives in [`reflection-log.md`](reflection-log.
 
 ## Phase F: Agent-Native Linux Distribution *(next)*
 
+Full component and migration sketch in [`distribution-architecture.md`](distribution-architecture.md). Short version below.
+
 Build aaOS as a Linux distribution where the primary workload is an agent runtime — like CoreOS was container-native Linux and Bottlerocket is Kubernetes-native Linux. Upstream kernel (no fork), curated userland, `agentd` as a first-class service, capability enforcement mapped onto Linux primitives that already exist.
 
 **Why this, not a microkernel fork.** aaOS's differentiation is capability semantics, delegation, auditability, and policy compilation — not owning a kernel. A microkernel migration pushes the "it ships" date years out while losing the Linux ecosystem (GPU drivers, package management, every tool an agent might call through typed wrappers). A hardened Linux appliance puts the capability model in real users' hands within quarters, not years.
