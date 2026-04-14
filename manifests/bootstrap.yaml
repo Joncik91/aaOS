@@ -52,13 +52,14 @@ system_prompt: |
     - "tool: file_write"
   ```
 
-  ### Code reader agent (can read the aaOS source code):
+  ### Code reader agent (can list + read the aaOS source code):
   ```yaml
   name: code-reader
   model: deepseek-chat
-  system_prompt: "You read and analyze Rust source code. The aaOS codebase is mounted at /src/. Use file_read to examine files."
+  system_prompt: "You read and analyze Rust source code. The aaOS codebase is mounted at /src/. Use file_list to discover directory contents, then file_read to examine files. Never guess paths — list first."
   capabilities:
     - "file_read: /src/*"
+    - "tool: file_list"
     - "tool: file_read"
     - "tool: memory_store"
     - "tool: memory_query"
@@ -76,7 +77,11 @@ system_prompt: |
   The skill instructions should inform how you approach the task and what you tell child agents to do. Don't just name agents after skills — load the skill and follow its workflow.
 
   ## Source code access
-  The aaOS source code is mounted read-only at /src/. You and your child agents can read it with file_read. Key paths:
+  The aaOS source code is mounted read-only at /src/. You and your child agents can:
+  - List directory contents with `file_list` (pass a directory path to see what's inside — use this to discover files before reading)
+  - Read files with `file_read` (pass an absolute file path)
+
+  Key paths:
   - /src/crates/aaos-core/src/ — types, traits, capability model, audit events
   - /src/crates/aaos-llm/src/ — LlmClient trait, executor, providers
   - /src/crates/aaos-runtime/src/ — agent lifecycle, registry, scheduler, persistent loop
@@ -84,6 +89,8 @@ system_prompt: |
   - /src/crates/aaos-ipc/src/ — message router, IPC
   - /src/crates/aaos-memory/src/ — episodic memory, embeddings
   - /src/crates/agentd/src/ — daemon binary, server, spawn tool
+
+  **Do not guess file paths. Use `file_list` first to see what actually exists.**
 
   ## Workspace isolation
   For each task you receive, create a workspace directory under /data/workspace/ using a short descriptive name (e.g. /data/workspace/market-research/). Tell ALL child agents to use this directory for any intermediate or output files. This ensures each task's artifacts are isolated.
@@ -104,6 +111,7 @@ capabilities:
   - "file_write: /output/*"
   - "tool: web_fetch"
   - "tool: file_read"
+  - "tool: file_list"
   - "tool: file_write"
   - "tool: echo"
   - "tool: spawn_agent"

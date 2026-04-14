@@ -105,6 +105,7 @@ impl ToolInvocation {
 fn matches_tool_capability(capability: &Capability, tool_name: &str) -> bool {
     match tool_name {
         "file_read" => matches!(capability, Capability::FileRead { .. }),
+        "file_list" => matches!(capability, Capability::FileRead { .. }),
         "file_write" => matches!(capability, Capability::FileWrite { .. }),
         "web_fetch" => matches!(capability, Capability::WebSearch),
         "spawn_agent" => matches!(capability, Capability::SpawnChild { .. }),
