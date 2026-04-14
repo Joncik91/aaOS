@@ -45,13 +45,23 @@ impl AgentRegistry {
 
     /// Spawn a new agent from a manifest. Returns the new agent's ID.
     pub fn spawn(&self, manifest: AgentManifest) -> Result<AgentId> {
+        self.spawn_with_id(manifest, AgentId::new())
+    }
+
+    /// Spawn an agent using a caller-provided ID. Intended for privileged
+    /// callers that need a stable identity across restarts (Bootstrap Agent).
+    /// If an agent with this ID already exists, returns an error.
+    pub fn spawn_with_id(&self, manifest: AgentManifest, id: AgentId) -> Result<AgentId> {
         if self.agents.len() >= self.max_agents {
             return Err(CoreError::InvalidManifest(
                 format!("agent limit exceeded: max {} agents", self.max_agents).into(),
             ));
         }
-
-        let id = AgentId::new();
+        if self.agents.contains_key(&id) {
+            return Err(CoreError::InvalidManifest(
+                format!("agent with id {id} already exists").into(),
+            ));
+        }
 
         // Issue capability tokens based on manifest declarations
         let capabilities = self.issue_capabilities(id, &manifest);
@@ -443,6 +453,19 @@ capabilities:
 "#
         ))
         .unwrap()
+    }
+
+    #[test]
+    fn spawn_with_id_uses_pinned_id_and_rejects_duplicates() {
+        let (registry, _log) = test_registry();
+        let pinned = AgentId::new();
+        let id = registry
+            .spawn_with_id(test_manifest("bootstrap"), pinned)
+            .unwrap();
+        assert_eq!(id, pinned);
+        // Spawning a second agent with the same pinned id must fail.
+        let dup = registry.spawn_with_id(test_manifest("bootstrap-2"), pinned);
+        assert!(dup.is_err());
     }
 
     #[test]

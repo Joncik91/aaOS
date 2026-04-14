@@ -24,7 +24,16 @@ fi
 
 # Clean up any previous run
 docker rm -f aaos-run 2>/dev/null || true
-mkdir -p "$SCRIPT_DIR/output"
+mkdir -p "$SCRIPT_DIR/output" "$SCRIPT_DIR/memory"
+
+# Persistent memory: if AAOS_PERSISTENT_MEMORY=1, bind-mount the memory dir so
+# SQLite episodic memory + the stable Bootstrap ID survive container restarts.
+# Opt-in because persistent memory carries prompt-injection / bad-strategy risk.
+MEMORY_MOUNT=""
+if [ "${AAOS_PERSISTENT_MEMORY:-0}" = "1" ]; then
+    MEMORY_MOUNT="-v $SCRIPT_DIR/memory:/var/lib/aaos/memory"
+    echo "Persistent memory enabled at $SCRIPT_DIR/memory (Bootstrap memory will survive restarts)"
+fi
 
 echo "Starting aaOS..."
 echo "Goal: $GOAL"
@@ -40,6 +49,7 @@ docker run -d --name aaos-run \
     -e RUST_LOG="${RUST_LOG:-info}" \
     -v "$SCRIPT_DIR:/src:ro" \
     -v "$SCRIPT_DIR/output:/output" \
+    $MEMORY_MOUNT \
     aaos-bootstrap >/dev/null
 
 # Launch dashboard in a separate terminal window

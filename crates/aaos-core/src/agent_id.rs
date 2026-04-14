@@ -16,6 +16,14 @@ impl AgentId {
         Self(Uuid::new_v4())
     }
 
+    /// Construct an AgentId from an explicit UUID. Only for privileged callers
+    /// that need a stable identity across restarts (e.g., Bootstrap Agent
+    /// persisted via `AAOS_BOOTSTRAP_ID`). Normal agents should use `new()`
+    /// so IDs remain unforgeable.
+    pub fn from_uuid(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
     }

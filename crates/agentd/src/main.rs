@@ -92,6 +92,53 @@ fn rpc(method: &str, params: serde_json::Value) -> JsonRpcRequest {
     }
 }
 
+/// Wipe persistent Bootstrap memory and the stable-ID file. Used when
+/// AAOS_RESET_MEMORY=1 is set — the next boot starts with a fresh Bootstrap identity.
+fn reset_persistent_memory() {
+    let mem_db = std::env::var("AAOS_MEMORY_DB")
+        .unwrap_or_else(|_| "/var/lib/aaos/memory/memories.db".to_string());
+    let id_path = "/var/lib/aaos/bootstrap_id";
+    for p in [&mem_db, &format!("{mem_db}-wal"), &format!("{mem_db}-shm"), &id_path.to_string()] {
+        match std::fs::remove_file(p) {
+            Ok(()) => tracing::warn!(path = %p, "AAOS_RESET_MEMORY: deleted"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(path = %p, error = %e, "failed to delete"),
+        }
+    }
+}
+
+/// Resolve the Bootstrap Agent's stable ID.
+/// Priority: `AAOS_BOOTSTRAP_ID` env var > `/var/lib/aaos/bootstrap_id` file > new UUID (persisted).
+/// A stable ID lets the Bootstrap Agent's episodic memory persist across container restarts.
+fn load_or_create_bootstrap_id() -> aaos_core::AgentId {
+    if let Ok(s) = std::env::var("AAOS_BOOTSTRAP_ID") {
+        if let Ok(uuid) = uuid::Uuid::parse_str(s.trim()) {
+            return aaos_core::AgentId::from_uuid(uuid);
+        }
+        tracing::warn!(value = %s, "AAOS_BOOTSTRAP_ID set but not a valid UUID; falling back to file");
+    }
+
+    let path = std::path::PathBuf::from("/var/lib/aaos/bootstrap_id");
+    if let Ok(contents) = std::fs::read_to_string(&path) {
+        if let Ok(uuid) = uuid::Uuid::parse_str(contents.trim()) {
+            tracing::info!(path = %path.display(), "bootstrap id loaded from disk");
+            return aaos_core::AgentId::from_uuid(uuid);
+        }
+        tracing::warn!(path = %path.display(), "bootstrap id file corrupt; regenerating");
+    }
+
+    let uuid = uuid::Uuid::new_v4();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(&path, uuid.to_string()) {
+        tracing::warn!(error = %e, path = %path.display(), "failed to persist bootstrap id (memory will not survive restart)");
+    } else {
+        tracing::info!(path = %path.display(), uuid = %uuid, "bootstrap id created and persisted");
+    }
+    aaos_core::AgentId::from_uuid(uuid)
+}
+
 /// Bootstrap mode: spawn the Bootstrap Agent as a persistent agent, send the initial
 /// goal, then start the Unix socket listener so additional goals can arrive via
 /// `agent.run`. The container stays alive until explicitly stopped.
@@ -99,6 +146,12 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
     tracing::info!("aaOS bootstrap mode (persistent)");
     tracing::info!(manifest = %manifest_path.display(), "loading bootstrap manifest");
     tracing::info!(goal = %goal, "bootstrap goal");
+
+    // Explicit memory reset: wipe persistent Bootstrap memory + stable ID file before starting.
+    // Used when prior runs poisoned memory with bad strategies or sensitive content.
+    if std::env::var("AAOS_RESET_MEMORY").ok().as_deref() == Some("1") {
+        reset_persistent_memory();
+    }
 
     // Prefer DeepSeek if DEEPSEEK_API_KEY is set, fall back to Anthropic.
     let raw_client: Arc<dyn aaos_llm::LlmClient> =
@@ -135,10 +188,16 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
     // Read manifest as YAML string for the spawn RPC
     let manifest_yaml = std::fs::read_to_string(&manifest_path)?;
 
-    // Step 1: Spawn the bootstrap agent as persistent via the server's agent.spawn handler.
-    // This sets up the persistent loop with context manager, session store, etc.
+    // Step 1: Determine the Bootstrap Agent's ID.
+    // Priority: AAOS_BOOTSTRAP_ID env var > /var/lib/aaos/bootstrap_id file > fresh UUID.
+    // A stable ID lets episodic memory accumulate across container restarts.
+    // Intentionally scoped to Bootstrap only — regular agent IDs remain unforgeable per-spawn.
+    let bootstrap_id = load_or_create_bootstrap_id();
+    tracing::info!(bootstrap_id = %bootstrap_id, "bootstrap agent id resolved");
+
+    // Spawn the bootstrap agent as persistent with the pinned ID.
     let spawn_resp = server
-        .handle_request(&rpc("agent.spawn", json!({ "manifest": manifest_yaml })))
+        .spawn_with_pinned_id(&manifest_yaml, bootstrap_id)
         .await;
 
     let agent_id_str = spawn_resp

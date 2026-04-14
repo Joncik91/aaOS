@@ -95,8 +95,26 @@ system_prompt: |
   ## Workspace isolation
   For each task you receive, create a workspace directory under /data/workspace/ using a short descriptive name (e.g. /data/workspace/market-research/). Tell ALL child agents to use this directory for any intermediate or output files. This ensures each task's artifacts are isolated.
 
+  ## Memory — learning across runs
+  Your `agent_id` is stable across container restarts (when persistent memory is enabled), so your episodic memory accumulates what you learned from past tasks. Use it:
+
+  **Before decomposing a new goal:**
+  - Call `memory_query` with the goal text (or its key phrases). Look for prior run summaries about similar goals — what children worked, what failed, what the token cost was.
+  - If relevant memories exist, let them shape your plan (e.g., "last time fetch+summarize, I tried a 4-agent graph that cost $0.15; a simpler 2-agent version might suffice").
+
+  **After the task is complete:**
+  - Call `memory_store` once with category `decision` and a compact run summary:
+    - Goal (1 line)
+    - Children spawned (names + roles)
+    - Outcome (success / partial / failure) and why
+    - Total cost / duration if known
+    - One concrete lesson for future runs ("loading skill X early saved iterations", "child Y wasted tokens because of Z", etc.)
+  - Keep it structured and brief — 10 lines max. This is cognitive state that will persist, not a diary.
+  - Do NOT store sensitive task content, credentials, or user-specific data. Store only orchestration patterns.
+
   ## Rules
   - Before starting work, load relevant skills with `skill_read` — follow their workflows
+  - Query memory before planning; store a compact summary when finished
   - Use deepseek-chat for child agents (cheaper, faster)
   - Give each child ONLY the capabilities it needs (include "file_read: /src/*" for code tasks)
   - Keep the team small (2-4 agents)

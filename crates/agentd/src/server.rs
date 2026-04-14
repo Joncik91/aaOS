@@ -308,6 +308,17 @@ impl Server {
         }
     }
 
+    /// Spawn an agent from YAML with a caller-supplied stable ID.
+    /// Only used by privileged internal paths (Bootstrap Agent persistence).
+    pub async fn spawn_with_pinned_id(
+        &self,
+        yaml: &str,
+        pinned_id: aaos_core::AgentId,
+    ) -> JsonRpcResponse {
+        self.spawn_from_yaml_with_id(yaml, serde_json::Value::Null, Some(pinned_id))
+            .await
+    }
+
     /// Handle a JSON-RPC request and return a response.
     pub async fn handle_request(&self, request: &crate::api::JsonRpcRequest) -> JsonRpcResponse {
         match request.method.as_str() {
@@ -362,6 +373,15 @@ impl Server {
     }
 
     async fn spawn_from_yaml(&self, yaml: &str, id: serde_json::Value) -> JsonRpcResponse {
+        self.spawn_from_yaml_with_id(yaml, id, None).await
+    }
+
+    async fn spawn_from_yaml_with_id(
+        &self,
+        yaml: &str,
+        id: serde_json::Value,
+        pinned_id: Option<aaos_core::AgentId>,
+    ) -> JsonRpcResponse {
         let mut manifest = match AgentManifest::from_yaml(yaml) {
             Ok(m) => m,
             Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
@@ -383,9 +403,15 @@ impl Server {
 
         let is_persistent = manifest.lifecycle == aaos_core::Lifecycle::Persistent;
 
-        let agent_id = match self.registry.spawn(manifest.clone()) {
-            Ok(id) => id,
-            Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+        let agent_id = match pinned_id {
+            Some(pin) => match self.registry.spawn_with_id(manifest.clone(), pin) {
+                Ok(id) => id,
+                Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+            },
+            None => match self.registry.spawn(manifest.clone()) {
+                Ok(id) => id,
+                Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+            },
         };
 
         // For persistent agents: start the background message loop
