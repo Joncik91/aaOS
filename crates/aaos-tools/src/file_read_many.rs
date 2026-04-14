@@ -29,8 +29,12 @@ impl Tool for FileReadManyTool {
             name: "file_read_many".to_string(),
             description:
                 "Read multiple files in parallel. Each path is capability-checked individually; \
-                 per-file failures are returned alongside successes so one bad path doesn't \
-                 abort the batch. Use this when you know the 2-16 files you need upfront."
+                 per-file failures (not found, capability denied, too large, not a file) are \
+                 returned as structured error entries alongside successes, so one bad path \
+                 doesn't abort the batch. Use this when you know the 2-16 files you need upfront. \
+                 Note: an internal task panic — a programming bug, not an expected per-file \
+                 failure — aborts the entire batch with an error; do not use with untrusted \
+                 file sources."
                     .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -94,6 +98,10 @@ impl Tool for FileReadManyTool {
             match join_result {
                 Ok((idx, v)) => indexed.push((idx, v)),
                 Err(e) => {
+                    // A JoinError here is a task panic or cancellation — both
+                    // are programming bugs (we never cancel tasks). Per Run 9
+                    // peer review: fail loud rather than converting panics
+                    // into per-file errors that would mask the root cause.
                     return Err(CoreError::Ipc(format!("file_read_many task panicked: {e}")));
                 }
             }
