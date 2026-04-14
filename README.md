@@ -2,7 +2,7 @@
 
 **An agent-first runtime where AI agents are native processes, capabilities replace permissions, and the system is designed for autonomy — not human interaction.**
 
-**The long-term vision:** Migrate these abstractions to a real capability-based microkernel (Redox OS or seL4) where agent isolation is hardware-enforced and inference is a schedulable resource like CPU time.
+**The long-term vision:** An agent-native Linux distribution — think CoreOS for agents. Upstream kernel, curated userland, `agentd` as a first-class service, capability tokens enforced via Linux primitives (namespaces, seccomp-BPF, Landlock, cgroups v2). The `AgentServices` trait is a substrate-agnostic ABI: process-backed today, MicroVM-per-agent (Firecracker/Kata/gVisor) later for harder tenant isolation, microkernel (seL4/Redox) only if a customer demands formally verified boundaries. The programming model is the product; the substrate is replaceable.
 
 **What exists today:** A working agent runtime on Linux. 7 Rust crates, ~13,000 lines, 220+ tests. Runs autonomously in Docker — a Bootstrap Agent receives a goal, spawns specialized child agents, and produces output with zero human intervention. The system has designed its own features and audited its own security — both for pennies.
 
@@ -17,7 +17,7 @@ Agent frameworks bolt orchestration onto existing runtimes. aaOS takes the oppos
 
 ## What the Runtime Provides
 
-aaOS runs as a daemon (`agentd`) on Linux, isolated in Docker. The `AgentServices` trait defines the syscall interface — designed to survive a future migration to a real microkernel.
+aaOS runs as a daemon (`agentd`) on Linux, isolated in Docker. The `AgentServices` trait is a substrate-agnostic ABI — today implemented with Linux processes, tomorrow with MicroVMs, maybe someday with a microkernel if formally-verified isolation ever becomes the gating requirement.
 
 What's implemented and tested:
 
@@ -57,7 +57,11 @@ What's implemented and tested:
       |
  [Self-Reflection]  System reads own code, proposes features      ✅ Done  <-- you are here
       |
- [Real Kernel]  Migrate to Redox OS or seL4 microkernel          Future
+ [Agent-Native Linux]  Distribution, systemd service, Landlock  Next
+      |
+ [Isolation Ladder]  MicroVM-per-agent via Firecracker/Kata    Research
+      |
+ [Microkernel]  seL4/Redox backend — only if demand exists      Optional
 ```
 
 The `AgentServices` trait is the bridge between runtime and kernel. The `Tool` trait defines tool integration. The manifest format defines agent bundles. When the kernel migration happens, everything above changes implementation — not interface. Agent manifests, tools, and orchestration logic work identically.
@@ -78,7 +82,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Agent Runtime Core                  |  Process model, registry, tokens, IPC router
 +---------------------------------------------+
-|       Linux + Docker                         |  Host OS, replaced by microkernel in future
+|       Linux + Docker                         |  Host OS today; target is a hardened Linux distribution (Phase F)
 +---------------------------------------------+
 ```
 
@@ -214,7 +218,7 @@ aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthrop
 2. **Capability-Based Security** — No ambient authority. Unforgeable tokens replace permissions.
 3. **Structured Communication** — Typed MCP messages, not raw byte pipes.
 4. **Observable by Default** — Every action logged as a runtime guarantee.
-5. **Kernel-Ready Abstractions** — `AgentServices` is the future syscall interface. Code written today works on a real microkernel tomorrow.
+5. **Substrate-Agnostic Abstractions** — `AgentServices` is an ABI, not a kernel API. Today: Linux processes with capability wrappers. Next: hardened Linux distribution. Later: MicroVM-per-agent if tenant isolation demands it. Microkernel only if a customer demands formally-verified boundaries.
 
 ## Documentation
 

@@ -68,14 +68,45 @@ Full chronological detail per run lives in [`reflection-log.md`](reflection-log.
 
 **What's deferred pending more data:** the structured `PatternStore`, new `aaos-reflection` crate, and `CoordinationPattern` schema are still not warranted. The minimal protocol (stable Bootstrap ID + opt-in persistent memory + query-before/store-after in the manifest) is the empirical foundation. If 10-20 runs surface recurring patterns worth indexing formally, the structured system gets designed against real data — not speculation.
 
-## Phase F: Real Kernel Migration
+## Phase F: Agent-Native Linux Distribution *(next)*
 
-Move from userspace abstractions on Linux to a real capability-based microkernel.
+Build aaOS as a Linux distribution where the primary workload is an agent runtime — like CoreOS was container-native Linux and Bottlerocket is Kubernetes-native Linux. Upstream kernel (no fork), curated userland, `agentd` as a first-class service, capability enforcement mapped onto Linux primitives that already exist.
 
-**Target kernels.** Redox OS (Rust-native, capability-based, active development) or seL4 (formally verified). The agent syscall API is already defined by the `AgentServices` trait — the migration replaces the implementation, not the interface.
+**Why this, not a microkernel fork.** aaOS's differentiation is capability semantics, delegation, auditability, and policy compilation — not owning a kernel. A microkernel migration pushes the "it ships" date years out while losing the Linux ecosystem (GPU drivers, package management, every tool an agent might call through typed wrappers). A hardened Linux appliance puts the capability model in real users' hands within quarters, not years.
 
-**What changes.** Capability tokens become kernel objects, not userspace UUIDs. Agent isolation uses hardware-enforced process boundaries, not Docker containers. The audit trail is a kernel subsystem, not an application-level log. IPC uses kernel message passing, not Unix sockets.
+**What changes (concrete).**
+- **`agentd` as a systemd service** (not PID 1 — that branding costs more edge-case burden than it's worth).
+- **Capability tokens stay the policy model.** Enforcement gets a defense-in-depth backstop via Linux primitives — capabilities are still issued, narrowed, audited, and checked by `agentd`.
+- **Namespaces** for per-agent isolation (mount, pid, net, user, cgroup). Replaces Docker-as-only-substrate.
+- **Seccomp-BPF** as a damage-limiter, not the model. Syscall allowlists per agent derived from manifest capabilities.
+- **Landlock** (Linux 5.13+) for filesystem capability enforcement at the kernel layer. Path-glob capabilities compile to Landlock rulesets.
+- **cgroups v2** for CPU/memory/I/O quotas per agent — resource budgets become first-class.
+- **Typed MCP wrappers for Linux tools.** `grep`, `jq`, `git`, `cargo`, `gcc`, `ffmpeg`, `pandoc` — each exposed as a tool with a declared capability. Full POSIX ecosystem for agents, every call capability-checked at the wrapper boundary.
 
-**What stays the same.** The `AgentServices` trait. The `Tool` trait. The manifest format. The API methods. Everything above the kernel — the entire agent programming model — is unchanged. Applications (agent manifests, tools, orchestration logic) work identically. This is the Android pattern: the app model is the product, the kernel is an implementation detail.
+**Deliverables.**
+- Debian/Ubuntu package: `apt install aaos`.
+- ISO for bare-metal installs.
+- Cloud images (AMI, GCE, Azure).
+- Nix expression for reproducible builds.
+- Reference hardware: NUCs, Raspberry Pi 5, cloud VMs.
 
-**Prerequisites.** Phases B through D have proven the abstractions under real workloads. The kernel migration replaces the implementation, not the programming model.
+**What stays the same.** The `AgentServices` trait. The `Tool` trait. The manifest format. The runtime API methods. The whole agent programming model. Distribution is the *substrate*; the programming model is the product.
+
+**Migration path from today.** Phase by phase, no big-bang rewrite:
+1. `agentd.service` systemd unit on any Linux — today's binary, zero change.
+2. Per-agent seccomp profiles auto-generated from capability manifests.
+3. Landlock + cgroup v2 integration.
+4. Minimal Debian-based image with `agentd` preinstalled and configured.
+5. Typed MCP wrappers for ~30 common Linux tools.
+
+## Phase G: Isolation Ladder *(research branch)*
+
+`AgentServices` becomes a substrate-agnostic ABI with multiple enforcement backends. The same agent manifest runs on different isolation levels depending on threat model:
+
+- **Level 1 — Process** (current): Linux process with seccomp+Landlock. Low overhead, appropriate for trusted workloads.
+- **Level 2 — MicroVM**: Firecracker / Kata / gVisor per agent (or per swarm). Hardware-virtualized isolation; what AWS Lambda and Fly.io use. Strong tenant isolation without writing a kernel.
+- **Level 3 — Microkernel** (research): seL4 or Redox backend, only pursued if a specific market segment (high-assurance regulated deployments) demands formally verified isolation enough to fund it. Not prioritized; documented as a backend option on a clean ABI so the door stays open.
+
+**Why this matters.** The `AgentServices` trait was originally pitched as "future syscall interface." Reframe: it's a **substrate-agnostic ABI**. An operator picks their isolation level based on threat model and resource budget, not on what kernel we happened to build.
+
+**Prerequisites.** Phase F ships. Real workloads on hardened Linux prove the capability model. If tenant-isolation pressure emerges, MicroVM backend is the next layer. Microkernel only if formally-verified enforcement is the buyer's gating requirement.
