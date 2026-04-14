@@ -36,7 +36,7 @@ What's implemented and tested:
 - **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
 - **Self-designing capability** — Agents can read the mounted aaOS source code at `/src/` and produce working Rust implementations. The OS has designed its own budget enforcement system.
 - **Self-auditing security** — The system performed a security audit of itself (1.37M tokens, $0.05), found a real path traversal vulnerability in `glob_matches` that had been present since Phase A, and produced a hardening plan. The vulnerability was fixed based on the audit findings.
-- **Iterative self-improvement** — Five self-reflection runs to date. Runs 1-3 (fresh container, zero memory) each found the next deepest bug: path traversal → missing revocation → unenforced constraints. Run 4 loaded skills correctly (first run to use them as executable knowledge, not just naming inspiration) and proposed a Meta-Cognitive Coordination Layer for Bootstrap cross-run learning — shipped as a minimal version (stable Bootstrap ID + opt-in memory volume + query/store protocol). Run 5 was the first with persistent memory enabled; it exercised the full query-before/store-after protocol and converged independently on the same Meta-Cognitive direction, this time with a behavioral-adaptation-layer design (no Rust changes needed) after hitting the read-only `/src/` constraint. Three manifest-only fixes followed: skill adherence to each skill's "When NOT to use" section, no memory_store for children (ephemeral IDs orphan the writes), and symmetric file_read/file_write capability grants for child workspaces. Total cost across all five runs (per the Anthropic/DeepSeek dashboard): ~$0.54 on DeepSeek plus small Anthropic amounts from earlier runs — roughly $0.70 cumulative.
+- **Iterative self-improvement** — Five self-reflection runs to date. Runs 1-3 found real runtime bugs (path traversal → missing revocation → unenforced constraints). Run 4 produced a feature proposal (Meta-Cognitive Coordination Layer for cross-run learning) that shipped as a minimal version after review. Run 5 was the first to exercise the persistent-memory protocol end-to-end and produced three manifest-only tuning fixes. Full run-by-run chronicle in [`docs/reflection-log.md`](docs/reflection-log.md); cross-cutting lessons in [`docs/patterns.md`](docs/patterns.md). Cumulative spend since the Anthropic→DeepSeek switch (per dashboard): ~$0.54; ~$0.70 all-in with earlier Anthropic runs.
 
 ## Roadmap
 
@@ -218,7 +218,9 @@ aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthrop
 
 - [Architecture](docs/architecture.md) — Layer details and design decisions
 - [Roadmap](docs/roadmap.md) — Phase-by-phase path from runtime to real kernel
-- [Build Retrospective](docs/retrospective.md) — How the runtime was built and evolved
+- [Build Retrospective](docs/retrospective.md) — Phase-by-phase build history (A through E)
+- [Self-Reflection Log](docs/reflection-log.md) — Runs where aaOS reads its own code and proposes changes
+- [Patterns](docs/patterns.md) — Cross-cutting lessons distilled from the retrospective and reflection log
 
 ## License
 
