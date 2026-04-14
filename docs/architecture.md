@@ -43,7 +43,9 @@ Universal tool registry where every capability is:
 - Invoked through capability-checked channels
 - Logged to the audit trail
 
-Built-in tools: `echo`, `web_fetch`, `file_read`, `file_list`, `file_write`, `spawn_agent`, `memory_store`, `memory_query`, `memory_delete`, `skill_read`. External tools integrate via the Tool trait.
+Built-in tools: `echo`, `web_fetch`, `file_read`, `file_read_many`, `file_list`, `file_write`, `spawn_agent`, `memory_store`, `memory_query`, `memory_delete`, `skill_read`. External tools integrate via the Tool trait.
+
+**`file_read_many`** — Batch read of 2-16 files in parallel. Each path is capability-checked individually; per-file failures (capability denied, not found, too large) appear in the result array alongside successes so one bad path doesn't abort the batch. Introduced in the Phase 1 speed work after Run 7b's code-reader spent ~4m of ~5m37s on sequential `file_read` loops. Cuts scan-phase latency 3-5x compared to per-file loops. Explicit opt-in (tool-level) rather than executor-level parallelism — same-turn tool calls can be semantically dependent, so generic parallelism is a footgun.
 
 **`file_list`** — List directory contents (name, kind, size) or return metadata for a single file. Introduced after run 4 analysis showed children were guessing paths and calling `file_read` on directories to explore them. Uses the same `FileRead` capability glob as `file_read`, same lexical path normalization — capability model unchanged.
 

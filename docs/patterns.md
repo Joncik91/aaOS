@@ -82,6 +82,20 @@ Between Runs 5 and 6 the Bootstrap manifest gained an explicit rule: *"Do NOT gr
 
 The same lesson applies to any future constraint: path whitelists, budget caps, retry limits. If the manifest is the only thing stopping bad behavior, the LLM will eventually route around it.
 
+## Fewer orchestration turns usually beats smarter orchestration
+
+Run 7b used a 4-child chain (code-reader → analyzer → analyzer-with-source → writer). Profiling showed the chain itself — Bootstrap's digest/spawn turns between children, plus an unscoped proposer producing 5 intermediate documents — consumed ~8-10 minutes of a ~29-minute run. Copilot's Round-1 pushback on the Phase 1 speed plan: "In systems like this, fewer orchestration turns usually beats smarter orchestration." Shipped in `5be74ac` as a manifest-level chain trim (default 2 children now) plus output-scoping instructions.
+
+The natural counter-move when a system feels slow is to parallelize the work; the better counter-move is often to remove steps that didn't need to exist. `spawn_agent`'s round-trip cost (child spawn + context growth + Bootstrap digest of the reply) is real and mostly invisible in the per-child cost numbers — it only shows up when you profile the whole chain.
+
+**Rule of thumb:** before adding parallelism, auditing an orchestration chain by asking "what work would be lost if this step didn't exist" should be the default. In Run 7b, analyzer-#1 (option-ranking) and writer (final synthesis) both collapsed into Bootstrap's own turns without quality loss.
+
+## Batch tools beat generic parallelism at the executor level
+
+Copilot's Round-1 review of the Phase 1 speed plan flagged a broader principle: **don't change executor semantics to "parallelize any same-turn tool calls"**. Same-turn calls can be semantically dependent even when they look independent. The safer shape is a **tool-level opt-in** — ship batch tools that are known-safe (`file_read_many`, `spawn_agents`) and leave serial execution as the default for everything else. Explicit is better than speculatively-generic when the ordering contract matters for the LLM's downstream reasoning.
+
+Shipped: `file_read_many` (Phase 1). Deferred: `spawn_agents` (needs atomic budget reservation + per-agent workspace guarantees the current registry doesn't provide).
+
 ## Audit events need structure to be useful, not just strings
 
 The `ContextSummarizationFailed` audit variant has existed since Phase C with a single `reason: String` field. For most of that time it was also **unreachable** — `prepare_context()` caught summarization failures with `tracing::warn!` and silently fell back to uncompressed context, so the caller never got an `Err` to audit. Run 7's finding triggered the Commit B follow-up that surfaced the failure typed (`SummarizationFailureKind`: `llm_call_failed`, `empty_response`, `boundary_selection`, `reply_parse_error`) alongside the free-form reason, and wired the audit event path through the fallback branch. Operators now see `SUMM! [llm_call_failed] <message>` in the detail log instead of either nothing or an opaque string.

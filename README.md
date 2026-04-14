@@ -72,7 +72,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Orchestration Layer                 |  spawn_agent, capability narrowing
 +---------------------------------------------+
-|        Tool & Service Layer                  |  10 tools, capability-checked, schema-validated
+|        Tool & Service Layer                  |  11 tools, capability-checked, schema-validated
 +---------------------------------------------+
 |        Agent Memory Layer                    |  Context windows, episodic store, embeddings
 +---------------------------------------------+
@@ -86,7 +86,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 - **aaos-core** — Types, traits, capability model, audit events (21 kinds), budget tracking
 - **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management
 - **aaos-ipc** — MCP message router with capability validation, request-response IPC
-- **aaos-tools** — Tool registry, invocation, 10 built-in tools (including memory + skill_read + file_list)
+- **aaos-tools** — Tool registry, invocation, 11 built-in tools (including memory + skill_read + file_list + file_read_many batch)
 - **aaos-llm** — LLM clients (Anthropic + OpenAI-compat), execution loop, inference scheduler
 - **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **agentd** — Daemon binary, Unix socket API, approval queue
@@ -187,6 +187,7 @@ JSON-RPC 2.0 over Unix socket.
 | `web_fetch` | `WebSearch` | HTTP GET a URL |
 | `file_read` | `FileRead { path_glob }` | Read file, path-checked |
 | `file_list` | `FileRead { path_glob }` | List directory contents — use before guessing filenames |
+| `file_read_many` | `FileRead { path_glob }` (per file) | Batch-read up to 16 files in parallel; partial failures OK |
 | `file_write` | `FileWrite { path_glob }` | Write file, path-checked |
 | `spawn_agent` | `SpawnChild { allowed_agents }` | Spawn child with narrowed capabilities |
 | `memory_store` | `tool: memory_store` | Store a fact/observation/decision/preference |
