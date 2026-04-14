@@ -196,23 +196,92 @@ impl CapabilityToken {
     }
 }
 
-/// Glob matching with path normalization to prevent traversal attacks.
+/// Glob matching with path canonicalization to prevent traversal and symlink
+/// bypass attacks.
 ///
-/// Normalizes paths by resolving `..` and `.` components lexically (without
-/// touching the filesystem) before matching. This prevents attacks like
-/// `/data/../etc/passwd` matching a `/data/*` grant.
+/// The *pattern* (from a trusted manifest) is normalized lexically only — its
+/// path components are authoritative as written by the operator.
+///
+/// The *requested path* (from a potentially-adversarial agent) is first
+/// canonicalized against the real filesystem (resolving symlinks and `..`),
+/// then matched. For paths that don't exist yet (e.g. a new file about to be
+/// written), canonicalization walks up to the nearest existing ancestor,
+/// canonicalizes it, then re-appends the non-existent tail. This closes the
+/// Run 9 finding: a symlink `/data/project -> /etc` no longer lets a grant
+/// of `/data/*` reach `/etc/passwd`.
+///
+/// Caveat: canonicalize-then-open is not atomic (TOCTOU). An attacker who can
+/// swap a symlink between the capability check and the actual open() can still
+/// redirect. Stronger guarantees require `openat(AT_FDCWD, ..., O_NOFOLLOW)`
+/// and comparing fstat against the grant, which is platform-specific. Tracked
+/// as a follow-up in `docs/ideas.md`.
 fn glob_matches(pattern: &str, path: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    let normalized = normalize_path(path);
+    let canonical = canonical_for_match(path);
     if let Some(prefix) = pattern.strip_suffix('*') {
         let norm_prefix = normalize_path(prefix);
-        normalized.starts_with(&norm_prefix)
+        canonical.starts_with(&norm_prefix)
     } else {
         let norm_pattern = normalize_path(pattern);
-        norm_pattern == normalized
+        norm_pattern == canonical
     }
+}
+
+/// Canonicalize a requested path for capability matching. Resolves symlinks
+/// via the filesystem when possible. For paths that don't exist (e.g. a new
+/// file about to be written), canonicalizes the nearest existing ancestor
+/// with respect to the **lexically normalized** input — preserving the
+/// traversal-blocking behavior of the pre-Fix-4 normalizer.
+///
+/// Why lexical-first then canonicalize: `PathBuf::pop()` + `push()` do not
+/// round-trip `..` components reliably (push treats `..` as a literal
+/// component when the base is absolute, so "foo/.." + "bar" stays "foo/../bar"
+/// rather than collapsing). Normalizing lexically first removes `..` entirely,
+/// leaving only real path components to feed to the filesystem.
+fn canonical_for_match(path: &str) -> String {
+    use std::path::{Path, PathBuf};
+
+    // 1. Lexically normalize FIRST — resolves `..` / `.` so the filesystem
+    //    sees the intended path, not a traversal attempt. After this step,
+    //    "/data/../etc/passwd" is "/etc/passwd" regardless of whether /data
+    //    exists.
+    let normalized = normalize_path(path);
+
+    // 2. Try to canonicalize the normalized path. If it exists and contains
+    //    symlinks, this resolves them to their real targets.
+    if let Ok(canonical) = std::fs::canonicalize(&normalized) {
+        return canonical.to_string_lossy().into_owned();
+    }
+
+    // 3. Path doesn't exist yet (writing a new file, or a path inside a
+    //    not-yet-created dir). Walk up the normalized path and canonicalize
+    //    the nearest existing ancestor, then re-attach the remaining tail.
+    //    Because the input is already lexically normalized, pop/push here is
+    //    safe — no `..` components remain.
+    let p = Path::new(&normalized);
+    let mut ancestor: PathBuf = p.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Some(name) = ancestor.file_name() {
+            tail.push(name.to_os_string());
+        }
+        if !ancestor.pop() {
+            break;
+        }
+        if let Ok(mut canonical) = std::fs::canonicalize(&ancestor) {
+            for seg in tail.iter().rev() {
+                canonical.push(seg);
+            }
+            return canonical.to_string_lossy().into_owned();
+        }
+    }
+
+    // 4. No ancestor resolved (e.g., entire path tree doesn't exist, as is
+    //    common in unit tests or fresh test containers). Return the
+    //    lexically-normalized form — still traversal-safe.
+    normalized
 }
 
 /// Lexical path normalization: resolves `.` and `..` without filesystem access.
@@ -415,5 +484,74 @@ mod tests {
         let json = serde_json::to_string(&token).unwrap();
         let parsed: CapabilityToken = serde_json::from_str(&json).unwrap();
         assert_eq!(token.capability, parsed.capability);
+    }
+
+    #[test]
+    fn symlink_bypass_blocked() {
+        // Run 9 Fix 4: a symlink inside a granted prefix must not redirect
+        // out of it. Create a tmpdir, put a symlink in it pointing to /etc,
+        // grant access only to the tmpdir, and verify a read-through-symlink
+        // request is denied.
+        use std::path::PathBuf;
+        let base = std::env::temp_dir().join(format!("aaos-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&base).expect("create base dir");
+        let link_path: PathBuf = base.join("evil-link");
+        // Skip test if symlink creation fails (unusual filesystems / CI
+        // containers without the needed permission). The cross-platform
+        // guard keeps the test portable while still covering the case
+        // everywhere we can.
+        #[cfg(unix)]
+        let created = std::os::unix::fs::symlink("/etc", &link_path).is_ok();
+        #[cfg(not(unix))]
+        let created = false;
+        if !created {
+            // Clean up and exit — symlinks aren't available here.
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let grant = format!("{}/*", base.to_string_lossy());
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::FileRead { path_glob: grant.clone() },
+            Constraints::default(),
+        );
+
+        // Legit in-dir read: allowed (file doesn't exist but that's fine —
+        // we canonicalize the parent and re-attach the tail).
+        let legit = format!("{}/some-file.txt", base.to_string_lossy());
+        assert!(
+            token.permits(&Capability::FileRead { path_glob: legit.clone() }),
+            "legitimate path in granted dir must still match: {legit} vs {grant}"
+        );
+
+        // Symlink bypass attempt: reading via evil-link/passwd would reach
+        // /etc/passwd, which is OUTSIDE the grant. Must be denied.
+        let bypass = format!("{}/evil-link/passwd", base.to_string_lossy());
+        assert!(
+            !token.permits(&Capability::FileRead { path_glob: bypass.clone() }),
+            "symlink bypass must be blocked: {bypass} reaches /etc/passwd"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn canonicalize_falls_back_lexically_for_nonexistent_paths() {
+        // Run 9 Fix 4: paths that don't exist (e.g. a new file about to be
+        // written to /output/) must still match. Canonicalization walks up
+        // to the nearest existing ancestor and re-attaches the tail.
+        // Here both pattern and path reference a definitely-nonexistent
+        // tree, so the lexical fallback kicks in.
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::FileWrite {
+                path_glob: "/nonexistent-aaos-root-xyz/*".into(),
+            },
+            Constraints::default(),
+        );
+        assert!(token.permits(&Capability::FileWrite {
+            path_glob: "/nonexistent-aaos-root-xyz/new-file.txt".into()
+        }));
     }
 }
