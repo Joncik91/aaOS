@@ -82,6 +82,15 @@ impl AgentRegistry {
         process.persistent_identity = persistent_identity;
         process.transition_to(AgentState::Running)?;
 
+        // Wire IPC channels into the process struct BEFORE publishing it in
+        // the registry. If registration becomes fallible later, the process
+        // never gets into the map and there's no orphan to clean up.
+        if let Some(router) = self.router.get() {
+            let (msg_rx, resp_rx) = router.register(id);
+            process.message_rx = Some(msg_rx);
+            process.response_rx = Some(resp_rx);
+        }
+
         self.audit_log.record(AuditEvent::new(
             id,
             AuditEventKind::AgentSpawned {
@@ -90,14 +99,6 @@ impl AgentRegistry {
         ));
 
         self.agents.insert(id, process);
-
-        if let Some(router) = self.router.get() {
-            let (msg_rx, resp_rx) = router.register(id);
-            if let Some(mut entry) = self.agents.get_mut(&id) {
-                entry.value_mut().message_rx = Some(msg_rx);
-                entry.value_mut().response_rx = Some(resp_rx);
-            }
-        }
 
         tracing::info!(agent_id = %id, name = %manifest.name, "agent spawned");
         Ok(id)
@@ -773,5 +774,30 @@ capabilities:
         let (registry, _log) = test_registry();
         let result = registry.has_stable_identity(AgentId::new());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn spawn_wires_ipc_channels_before_publishing() {
+        // Invariant: by the time an agent is visible in the registry, its
+        // message_rx and response_rx are populated (when a router is set).
+        // Before the fix, the agent was published first and channels wired
+        // after, leaving a window where the agent existed without channels.
+        let (registry, log) = test_registry();
+        let router = Arc::new(MessageRouter::new(
+            log.clone() as Arc<dyn AuditLog>,
+            |_, _| true, // permissive capability checker for this test
+        ));
+        registry.set_router(router);
+
+        let id = registry.spawn(test_manifest("channels-test")).unwrap();
+        let entry = registry.agents.get(&id).expect("agent in registry");
+        assert!(
+            entry.value().message_rx.is_some(),
+            "message_rx must be populated by the time the agent is in the registry"
+        );
+        assert!(
+            entry.value().response_rx.is_some(),
+            "response_rx must be populated by the time the agent is in the registry"
+        );
     }
 }
