@@ -396,11 +396,11 @@ Revised plan shipped in `5be74ac`:
 - `InMemoryAuditLog::with_cap(N)` opt-in cap for long-running test harnesses.
 
 ### Cost
-- Run 9 spend per dashboard: **~$0.02** (cumulative moved from $0.86 → $0.88). Cheapest reflection run since Run 6, despite the 4-child chain — DeepSeek cache discounts on repeated `/src/` reads plus shorter per-child turns.
-- Cumulative per dashboard: **$0.88** all DeepSeek runs to date (~$1.04 all-in including earlier Anthropic runs).
+- Run 9 spend per dashboard: **~$0.07** (cumulative moved from $0.86 → $0.93). In line with Run 8's $0.10 despite the adversarial prompt producing seven findings — DeepSeek cache discounts on repeated `/src/` reads across the 4-child chain.
+- Cumulative per dashboard: **$0.93** all DeepSeek runs to date (~$1.09 all-in including earlier Anthropic runs).
 
 ### Design / Review Notes
-- Two-tier review (self-verification of findings + Copilot review of fixes) took roughly one hour of implementation time including all compile/test cycles. The fixes themselves were bounded (≤200 LoC total across 7 commits). Net: seven real bugs closed for ~$0.02 of inference + one hour of review-and-fix work.
+- Two-tier review (self-verification of findings + Copilot review of fixes) took roughly one hour of implementation time including all compile/test cycles. The fixes themselves were bounded (≤200 LoC total across 7 commits). Net: seven real bugs closed for ~$0.07 of inference + one hour of review-and-fix work.
 - Peer-reviewer pushback ratio was high (5 of 7 proposed fixes revised). Indicates (a) Copilot adds real value beyond rubber-stamping, and (b) LLM-proposed fixes still need expert review even when the *findings* are real.
 - The adversarial-prompt + not-already-in-docs shape is worth codifying for future bug-hunting runs. Keep the philosophical prompt for roadmap-exploration runs. **Two distinct prompt shapes for two distinct signals.**
 
