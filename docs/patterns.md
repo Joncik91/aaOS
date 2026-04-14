@@ -122,3 +122,27 @@ Two shapes fix this badly and one fixes it well:
 - **Good:** a separate field (Run 6 shipped `prior_findings` on `spawn_agent`) that the kernel wraps with kernel-authored delimiters + a prompt-injection warning. The parent LLM can't remove the warning; the child is told explicitly to treat the block as quoted input.
 
 Caveat: a parent can still *fabricate* content in the field. This is continuity, not cryptographic provenance. The natural next upgrade is handoff-handles: pointers into the audit log that the child can verify, so a parent cannot forge findings from a child that never spoke. Noted as TODO; not built until a run actually needs it.
+
+## Prompt shape determines the signal
+
+Run 8 and Run 9 ran against the same codebase within the same week, both as self-reflection. Run 8 used *"What am I? What should I become? Build it."* and produced a roadmap-shaped proposal that mostly rediscovered `docs/ideas.md`. Run 9 used an *adversarial* prompt — "find a concrete bug or security issue, file:line report, no items already in docs/ideas.md or docs/roadmap.md" — and found seven real bugs, including a security fix that extended a Phase-A finding.
+
+Same system, same code, same LLM, same capability model. The only thing that changed was the prompt. The philosophical prompt biases toward synthesis of existing documentation; the adversarial prompt biases toward independent code reading.
+
+**Consequence:** treat prompt shape as a signal-selection knob. Keep both shapes in the rotation — roadmap-exploration runs for forward-looking ideas, adversarial runs for bug-finding. Don't expect one prompt to do both jobs.
+
+## LLM-proposed fixes need review even when the findings are real
+
+Run 9 found seven real bugs — all verified against source. But when the system proposed fixes, a second peer review (Copilot/GPT-5.4) pushed back on five of the seven. Pushbacks included: non-atomic clear+append still drops data on partial write; `catch_unwind` would hide bugs that should fail loud; silent `.min()` clamp papers over broken invariants; `Vec::remove(0)` is O(n); canonicalize caching stale metadata is the wrong failure mode for a security boundary.
+
+None of these were "the finding is wrong." All were "the proposed fix has a subtle issue." Without the second review, we would have shipped working-but-subtly-regressive code for five of the seven bugs.
+
+**Consequence:** self-reflection produces findings; external review is still needed to produce safe fixes. The two roles are not interchangeable, and the review is cheap compared to debugging a regression later.
+
+## Security fixes have threat-model shelf lives
+
+Phase A's path-traversal fix blocked `..` traversal via lexical normalization. Correct for the threat model as written at the time. Run 9 showed the threat model was incomplete — symlinks are another way to redirect a path, and the lexical fix doesn't touch them.
+
+The fix wasn't buggy; the *specification* was incomplete. A fresh adversarial reviewer with full code access catches this kind of gap better than the original author, whose mental model is anchored to the original threat statement.
+
+**Consequence:** re-audit security-critical code *periodically* against a fresh threat model, not just against the original spec. The cost is small; the payoff is catching class-of-bug extensions before they're exploited.

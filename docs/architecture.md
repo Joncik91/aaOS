@@ -120,5 +120,6 @@ Every action in aaOS produces an `AuditEvent`:
 - Agent message received (persistent agents, with trace_id)
 - Context summarized/summarization failed (context window management). `ContextSummarizationFailed` carries a typed `SummarizationFailureKind` (`llm_call_failed`, `empty_response`, `boundary_selection`, `reply_parse_error`) alongside the free-form reason, so operators can route on category without string parsing.
 - Memory stored/queried (episodic memory, with content/query hashes)
+- Session-store error (persistent-agent on-disk history write failed; emitted with `operation` = `clear`|`append` and a throttle of one event per minute per agent to avoid log spam from a persistently-broken store)
 
-Events include trace IDs for request-level correlation and parent event IDs for causal tracing. 21 event kinds total.
+Events include trace IDs for request-level correlation and parent event IDs for causal tracing. 22 event kinds total.
