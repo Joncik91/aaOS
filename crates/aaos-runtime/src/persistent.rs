@@ -76,7 +76,7 @@ pub async fn persistent_agent_loop(
                 let (messages_for_llm, prompt_for_llm) = if let Some(ref cm) = context_manager {
                     match cm.prepare_context(&history, &system_prompt_str).await {
                         Ok(prepared) => {
-                            // Handle summarization: archive, then mutate history
+                            // Handle summarization success: archive, then mutate history
                             if let Some(ref summ) = prepared.summarization {
                                 // 1. Archive the old messages FIRST
                                 let segment = ArchiveSegment {
@@ -106,14 +106,31 @@ pub async fn persistent_agent_loop(
                                 ));
                             }
 
+                            // Handle summarization failure (non-fatal — context is
+                            // returned uncompressed). Emit a structured audit event
+                            // so operators can see the failure and its category.
+                            if let Some(ref failure) = prepared.summarization_failure {
+                                audit_log.record(AuditEvent::new(
+                                    agent_id,
+                                    AuditEventKind::ContextSummarizationFailed {
+                                        reason: failure.message.clone(),
+                                        fallback: "original_history".into(),
+                                        failure_kind: failure.kind.clone(),
+                                    },
+                                ));
+                            }
+
                             (prepared.messages, prepared.system_prompt)
                         }
                         Err(reason) => {
+                            // prepare_context currently never returns Err; this
+                            // branch is kept for forward compatibility.
                             audit_log.record(AuditEvent::new(
                                 agent_id,
                                 AuditEventKind::ContextSummarizationFailed {
                                     reason: reason.clone(),
                                     fallback: "original_history".into(),
+                                    failure_kind: aaos_core::SummarizationFailureKind::BoundarySelection,
                                 },
                             ));
                             (history.clone(), system_prompt_str.clone())

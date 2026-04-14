@@ -1,8 +1,33 @@
 use std::sync::Arc;
 
-use aaos_core::{AgentId, TokenBudget};
+use aaos_core::{AgentId, SummarizationFailureKind, TokenBudget};
 use aaos_llm::{ContentBlock, LlmClient, Message};
 use aaos_llm::types::{CompletionRequest, CompletionResponse};
+
+/// Typed classification of a summarization failure, carried inside
+/// `PreparedContext.summarization_failure` so callers can emit a structured
+/// `ContextSummarizationFailed` audit event. Internal to the runtime.
+///
+/// The `message` field is stringified at the `LlmError` boundary (see
+/// `aaos-core` cannot depend on `aaos-llm`) — we preserve the message text
+/// but not the typed source. `kind` is the structured classification.
+#[derive(Debug, Clone)]
+pub struct SummarizationFailure {
+    pub kind: SummarizationFailureKind,
+    pub message: String,
+}
+
+impl SummarizationFailure {
+    fn llm_call_failed(msg: impl Into<String>) -> Self {
+        Self { kind: SummarizationFailureKind::LlmCallFailed, message: msg.into() }
+    }
+    fn empty_response() -> Self {
+        Self {
+            kind: SummarizationFailureKind::EmptyResponse,
+            message: "summarization LLM returned empty response".into(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Free helper functions (live here, NOT in aaos-core, because they need Message)
@@ -52,6 +77,10 @@ pub struct PreparedContext {
     pub system_prompt: String,
     /// If summarization occurred, this contains the result.
     pub summarization: Option<SummarizationResult>,
+    /// If summarization was attempted but failed (and the caller should
+    /// emit an audit event), this carries the typed failure info.
+    /// None means "no attempt made" OR "attempt succeeded".
+    pub summarization_failure: Option<SummarizationFailure>,
 }
 
 /// Details of a summarization that occurred during context preparation.
@@ -176,12 +205,21 @@ impl ContextManager {
                     messages: prepared.messages,
                     system_prompt: prepared.system_prompt,
                     summarization: Some(summarization),
+                    summarization_failure: None,
                 })
             }
-            Err(e) => {
-                // Fallback: no-op on failure (logs warning)
-                tracing::warn!("Summarization failed ({e}), falling back to no-op");
-                Ok(Self::fold_summaries_into_prompt(history, system_prompt))
+            Err(failure) => {
+                // Fallback: non-fatal — return uncompressed context. Surface the
+                // typed failure so the caller can emit a ContextSummarizationFailed
+                // audit event with structured classification.
+                tracing::warn!(
+                    failure_kind = ?failure.kind,
+                    message = %failure.message,
+                    "summarization failed; falling back to original history"
+                );
+                let mut prepared = Self::fold_summaries_into_prompt(history, system_prompt);
+                prepared.summarization_failure = Some(failure);
+                Ok(prepared)
             }
         }
     }
@@ -215,6 +253,7 @@ impl ContextManager {
             messages,
             system_prompt: final_system,
             summarization: None,
+            summarization_failure: None,
         }
     }
 
@@ -321,7 +360,15 @@ impl ContextManager {
     }
 
     /// Call the LLM to produce a summary of the formatted conversation.
-    async fn call_summarization_llm(&self, formatted_text: &str) -> Result<String, String> {
+    ///
+    /// Returns a typed `SummarizationFailure` on error so the caller can
+    /// classify and audit it structurally. The LLM error text is preserved
+    /// in `SummarizationFailure::message`; the category is preserved in
+    /// `SummarizationFailure::kind`.
+    async fn call_summarization_llm(
+        &self,
+        formatted_text: &str,
+    ) -> Result<String, SummarizationFailure> {
         let request = CompletionRequest {
             agent_id: AgentId::new(), // ephemeral ID for summarization
             model: self.summarization_model.clone(),
@@ -339,7 +386,7 @@ impl ContextManager {
             .llm_client
             .complete(request)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| SummarizationFailure::llm_call_failed(e.to_string()))?;
 
         // Extract text from response
         let text = response
@@ -353,7 +400,7 @@ impl ContextManager {
             .join("\n");
 
         if text.is_empty() {
-            return Err("summarization LLM returned empty response".to_string());
+            return Err(SummarizationFailure::empty_response());
         }
 
         Ok(text)
@@ -548,6 +595,34 @@ mod tests {
             .await
             .unwrap();
         assert!(result.summarization.is_none()); // no summarization on failure
+
+        // But the caller should now see a typed failure it can audit.
+        let failure = result
+            .summarization_failure
+            .expect("prepare_context should surface the typed failure on LLM error");
+        assert_eq!(failure.kind, SummarizationFailureKind::LlmCallFailed);
+        assert!(
+            failure.message.contains("simulated failure"),
+            "expected underlying LLM error message to be preserved, got: {}",
+            failure.message
+        );
+    }
+
+    #[tokio::test]
+    async fn no_summarization_attempt_has_no_failure() {
+        // When history is short enough that we don't summarize, the failure
+        // field should stay None.
+        let llm = Arc::new(MockSummarizationLlm::with_summary("unused"));
+        let budget = TokenBudget { max_tokens: 1_000_000 };
+        let cm = ContextManager::new(llm, budget, "test-model".into(), 0.7);
+
+        let history = vec![Message::User { content: "hello".into() }];
+        let result = cm
+            .prepare_context(&history, "You are helpful.")
+            .await
+            .unwrap();
+        assert!(result.summarization.is_none());
+        assert!(result.summarization_failure.is_none());
     }
 
     #[tokio::test]

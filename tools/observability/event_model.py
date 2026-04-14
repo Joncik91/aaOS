@@ -258,10 +258,15 @@ class EventModel:
                 agent_name=agent_name, agent_id=agent_id, raw_kind=raw_kind,
             )
         if raw_kind == "context_summarization_failed":
+            reason = event.get("reason") or event.get("error") or ""
+            # failure_kind is new in the runtime (added with the SummarizationFailureKind
+            # enum); older event streams won't have it.
+            kind_tag = event.get("failure_kind")
+            label_prefix = f"[{kind_tag}] " if kind_tag else ""
             return NormalizedEvent(
                 timestamp=ts, kind="summarization_failed",
                 agent_name=agent_name, agent_id=agent_id,
-                denied_reason=truncate(sanitize(event.get("error", "")), 200),
+                denied_reason=truncate(sanitize(f"{label_prefix}{reason}"), 200),
                 raw_kind=raw_kind,
             )
 

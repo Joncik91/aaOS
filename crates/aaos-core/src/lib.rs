@@ -9,7 +9,7 @@ pub mod skill;
 pub mod tool_definition;
 
 pub use agent_id::AgentId;
-pub use audit::{AuditEvent, AuditEventKind, AuditLog, InMemoryAuditLog, StdoutAuditLog, StopReason};
+pub use audit::{AuditEvent, AuditEventKind, AuditLog, InMemoryAuditLog, StdoutAuditLog, StopReason, SummarizationFailureKind};
 pub use capability::{Capability, CapabilityToken, Constraints, RateLimit};
 pub use budget::{BudgetConfig, BudgetExceeded, BudgetTracker};
 pub use error::{CoreError, Result};

@@ -16,6 +16,25 @@ pub enum StopReason {
     Timeout,
 }
 
+/// Classification of why context summarization failed.
+///
+/// Carried on `ContextSummarizationFailed` audit events alongside the free-form
+/// `reason` text, so operators can pattern-match on the category without parsing
+/// strings. When a new failure mode is added to `prepare_context`, add a variant
+/// here and classify the error at its source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SummarizationFailureKind {
+    /// The summarization LLM call returned an error (network, rate limit, auth, 5xx, etc.).
+    LlmCallFailed,
+    /// The summarization LLM returned successfully but with empty content.
+    EmptyResponse,
+    /// No safe boundary for summarization could be selected from the history.
+    BoundarySelection,
+    /// The LLM reply was malformed or unparseable.
+    ReplyParseError,
+}
+
 /// The kind of event that occurred in the system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -88,8 +107,12 @@ pub enum AuditEventKind {
         tokens_saved_estimate: u32,
     },
     ContextSummarizationFailed {
+        /// Free-form error message for humans/logs.
         reason: String,
+        /// What the runtime did instead (e.g., "original_history", "hard_truncation").
         fallback: String,
+        /// Structured classification of the failure for programmatic consumers.
+        failure_kind: SummarizationFailureKind,
     },
     MemoryStored {
         memory_id: Uuid,
@@ -358,6 +381,7 @@ mod tests {
             AuditEventKind::ContextSummarizationFailed {
                 reason: "LLM timeout".into(),
                 fallback: "hard_truncation".into(),
+                failure_kind: SummarizationFailureKind::LlmCallFailed,
             },
         );
         let json = serde_json::to_string(&event).unwrap();
