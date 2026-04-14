@@ -279,6 +279,17 @@ impl ContextManager {
             boundary = Self::adjust_boundary_for_tool_pairs(history, history.len() / 2);
         }
 
+        // Invariant: boundary is a valid right-endpoint for &history[..boundary].
+        // The logic above already preserves this (adjust_boundary's tool-pair
+        // expansion is guarded by `while boundary < history.len()`), but Run 9's
+        // reviewer flagged it as fragile — so document the invariant with a
+        // debug_assert that fires loudly in tests if a future edit breaks it,
+        // without silently clamping in release builds.
+        debug_assert!(
+            boundary <= history.len(),
+            "select_summarization_boundary returned {boundary} > history.len()={}",
+            history.len()
+        );
         boundary
     }
 
@@ -751,5 +762,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn select_summarization_boundary_invariant() {
+        // Regression for the Fix 5 invariant: boundary must always satisfy
+        // boundary <= history.len() so &history[..boundary] can never panic.
+        // Worst-case shape: trailing Assistant(ToolUse) followed by ToolResults,
+        // which used to make adjust_boundary_for_tool_pairs march right up to
+        // the edge. We also verify with empty and single-message histories.
+
+        let empty: Vec<Message> = Vec::new();
+        let boundary = ContextManager::select_summarization_boundary(&empty, 1000);
+        assert!(boundary <= empty.len(), "empty: {boundary}");
+
+        let single = vec![Message::User { content: "hi".into() }];
+        let boundary = ContextManager::select_summarization_boundary(&single, 1);
+        assert!(boundary <= single.len(), "single: {boundary}");
+
+        // Tool-pair edge case: Assistant(ToolUse) + ToolResult at the tail
+        let tool_tail = vec![
+            Message::User { content: "start".into() },
+            Message::Assistant {
+                content: vec![ContentBlock::ToolUse {
+                    id: "tool-1".into(),
+                    name: "noop".into(),
+                    input: serde_json::json!({}),
+                }],
+            },
+            Message::ToolResult {
+                tool_use_id: "tool-1".into(),
+                content: serde_json::json!("ok"),
+                is_error: false,
+            },
+        ];
+        let boundary = ContextManager::select_summarization_boundary(&tool_tail, 1);
+        assert!(
+            boundary <= tool_tail.len(),
+            "tool_tail: boundary={boundary}, len={}",
+            tool_tail.len()
+        );
     }
 }
