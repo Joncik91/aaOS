@@ -3,7 +3,7 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use aaos_core::AgentId;
-use crate::store::{MemoryError, MemoryResult2, MemoryStore};
+use crate::store::{MemoryError, MemoryStoreResult, MemoryStore};
 use crate::types::{MemoryCategory, MemoryRecord, MemoryResult};
 
 /// In-memory implementation of `MemoryStore` backed by `DashMap`.
@@ -54,7 +54,7 @@ fn record_to_result(record: &MemoryRecord, relevance_score: f32) -> MemoryResult
 
 #[async_trait]
 impl MemoryStore for InMemoryMemoryStore {
-    async fn store(&self, record: MemoryRecord) -> MemoryResult2<Uuid> {
+    async fn store(&self, record: MemoryRecord) -> MemoryStoreResult<Uuid> {
         let agent_id = record.agent_id;
         let record_id = record.id;
 
@@ -89,7 +89,7 @@ impl MemoryStore for InMemoryMemoryStore {
         query_embedding: &[f32],
         limit: usize,
         category: Option<MemoryCategory>,
-    ) -> MemoryResult2<Vec<MemoryResult>> {
+    ) -> MemoryStoreResult<Vec<MemoryResult>> {
         let entries = match self.records.get(agent_id) {
             Some(e) => e,
             None => return Ok(Vec::new()),
@@ -138,7 +138,7 @@ impl MemoryStore for InMemoryMemoryStore {
         Ok(scored)
     }
 
-    async fn delete(&self, agent_id: &AgentId, memory_id: &Uuid) -> MemoryResult2<()> {
+    async fn delete(&self, agent_id: &AgentId, memory_id: &Uuid) -> MemoryStoreResult<()> {
         let mut entries = self
             .records
             .get_mut(agent_id)
@@ -157,7 +157,7 @@ impl MemoryStore for InMemoryMemoryStore {
         agent_id: &AgentId,
         offset: usize,
         limit: usize,
-    ) -> MemoryResult2<Vec<MemoryResult>> {
+    ) -> MemoryStoreResult<Vec<MemoryResult>> {
         let entries = match self.records.get(agent_id) {
             Some(e) => e,
             None => return Ok(Vec::new()),
@@ -173,7 +173,7 @@ impl MemoryStore for InMemoryMemoryStore {
         Ok(results)
     }
 
-    async fn count(&self, agent_id: &AgentId) -> MemoryResult2<usize> {
+    async fn count(&self, agent_id: &AgentId) -> MemoryStoreResult<usize> {
         Ok(self.records.get(agent_id).map_or(0, |e| e.len()))
     }
 }

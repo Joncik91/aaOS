@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use aaos_core::AgentId;
-use crate::store::{MemoryError, MemoryResult2, MemoryStore};
+use crate::store::{MemoryError, MemoryStoreResult, MemoryStore};
 use crate::types::{MemoryCategory, MemoryRecord, MemoryResult, MemoryScope};
 
 /// SQLite-backed memory store. Thread-safe via Mutex around the connection.
@@ -23,7 +23,7 @@ pub struct SqliteMemoryStore {
 
 impl SqliteMemoryStore {
     /// Open or create a SQLite database at the given path.
-    pub fn open(path: &Path) -> MemoryResult2<Self> {
+    pub fn open(path: &Path) -> MemoryStoreResult<Self> {
         let conn = rusqlite::Connection::open(path)
             .map_err(|e| MemoryError::Storage(format!("failed to open SQLite: {e}")))?;
 
@@ -56,7 +56,7 @@ impl SqliteMemoryStore {
 
     /// Open an in-memory SQLite database (for tests).
     #[cfg(test)]
-    pub fn in_memory() -> MemoryResult2<Self> {
+    pub fn in_memory() -> MemoryStoreResult<Self> {
         let conn = rusqlite::Connection::open_in_memory()
             .map_err(|e| MemoryError::Storage(format!("failed to open in-memory SQLite: {e}")))?;
         conn.execute_batch(
@@ -147,7 +147,7 @@ fn str_to_scope(s: &str) -> MemoryScope {
 
 #[async_trait]
 impl MemoryStore for SqliteMemoryStore {
-    async fn store(&self, record: MemoryRecord) -> MemoryResult2<Uuid> {
+    async fn store(&self, record: MemoryRecord) -> MemoryStoreResult<Uuid> {
         let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
 
         // Atomic replace: delete old record if this one replaces it
@@ -190,7 +190,7 @@ impl MemoryStore for SqliteMemoryStore {
         query_embedding: &[f32],
         limit: usize,
         category: Option<MemoryCategory>,
-    ) -> MemoryResult2<Vec<MemoryResult>> {
+    ) -> MemoryStoreResult<Vec<MemoryResult>> {
         let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
 
         let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match &category {
@@ -253,7 +253,7 @@ impl MemoryStore for SqliteMemoryStore {
         Ok(scored.into_iter().map(|(r, _)| r).collect())
     }
 
-    async fn delete(&self, agent_id: &AgentId, memory_id: &Uuid) -> MemoryResult2<()> {
+    async fn delete(&self, agent_id: &AgentId, memory_id: &Uuid) -> MemoryStoreResult<()> {
         let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
         let deleted = conn
             .execute(
@@ -272,7 +272,7 @@ impl MemoryStore for SqliteMemoryStore {
         agent_id: &AgentId,
         offset: usize,
         limit: usize,
-    ) -> MemoryResult2<Vec<MemoryResult>> {
+    ) -> MemoryStoreResult<Vec<MemoryResult>> {
         let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
@@ -312,7 +312,7 @@ impl MemoryStore for SqliteMemoryStore {
         Ok(results)
     }
 
-    async fn count(&self, agent_id: &AgentId) -> MemoryResult2<usize> {
+    async fn count(&self, agent_id: &AgentId) -> MemoryStoreResult<usize> {
         let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
         let count: i64 = conn
             .query_row(
