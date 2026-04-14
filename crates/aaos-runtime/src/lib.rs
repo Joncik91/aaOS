@@ -1,4 +1,5 @@
 pub mod context;
+pub mod handoff;
 pub mod persistent;
 pub mod process;
 pub mod registry;
@@ -8,6 +9,7 @@ pub mod session;
 pub mod supervisor;
 
 pub use context::ContextManager;
+pub use handoff::{wrap_initial_message, HandoffContext, MAX_PRIOR_FINDINGS_BYTES};
 pub use process::{AgentCommand, AgentInfo, AgentProcess, AgentState};
 pub use registry::AgentRegistry;
 pub use scheduler::{Priority, RoundRobinScheduler, ScheduleEntry, Scheduler};
