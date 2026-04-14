@@ -222,6 +222,7 @@ aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthrop
 - [Build Retrospective](docs/retrospective.md) — Phase-by-phase build history (A through E)
 - [Self-Reflection Log](docs/reflection-log.md) — Runs where aaOS reads its own code and proposes changes
 - [Patterns](docs/patterns.md) — Cross-cutting lessons distilled from the retrospective and reflection log
+- [Ideas](docs/ideas.md) — Things we considered and deferred, with the signal that would prompt reconsideration
 
 ## License
 
