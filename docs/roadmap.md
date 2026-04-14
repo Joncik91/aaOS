@@ -77,6 +77,30 @@ Three earlier self-reflection runs each found the next deepest bug in the runtim
 
 **Cost so far across all four runs:** ~$0.59. Each run produced either a real bug fix or a design artifact.
 
+## Self-Reflection, Round 5 *(complete)*
+
+First run with persistent memory enabled. Same philosophical goal, same model lineup, but this time `AAOS_PERSISTENT_MEMORY=1` so the stable Bootstrap ID and its episodic store would survive for future runs.
+
+**What worked:**
+
+- **Protocol fully exercised.** Bootstrap called `memory_query` *before* decomposing the goal (4 queries), read skills via `skill_read`, then `memory_store` at the end with a goal-level summary under its stable ID. Future runs will actually be able to retrieve that summary.
+- **`file_list` in active use.** The tool added after run 4 eliminated the path-guessing failures. Children listed directories before reading.
+- **Capability model caught a real mistake in real time.** Bootstrap tried to spawn `pattern-implementer` with `file_write: /src/*` — the parent⊆child enforcement denied it because Bootstrap itself doesn't hold that (and `/src/` is read-only by design). Bootstrap recovered and spawned with correct capabilities.
+- **Behavioral-adaptation-layer pivot.** After hitting the `/src/*` denial, one child correctly reasoned: *"Since we cannot modify the Rust codebase directly (read-only /src/), we implement the evolution as a behavioral adaptation layer using existing capabilities."* That's the empirically-driven "do it in prompting first" path the reviews had recommended for the Meta-Cognitive Coordinator.
+- **Independent convergence.** Run 5 arrived at the same "Meta-Cognitive Coordinator" direction as run 4, without reading run 4's output (mock embeddings meant cross-run retrieval was effectively off). Two fresh runs landing on the same direction is a real signal.
+
+**What the run exposed (all fixed as manifest-only changes):**
+
+1. **Skill over-adherence.** Bootstrap followed `planning-and-task-breakdown`'s workflow mechanically, ignoring the skill's own "When NOT to use: single-file changes with obvious scope." Runtime roughly doubled vs run 4. Fix: manifest now tells Bootstrap to honor each skill's "When to use / When NOT to use" sections and skip the planning dance for simple goals.
+2. **Child memory writes are orphaned.** 7 of 14 stored memories ended up under ephemeral child `agent_id`s, unreadable by any future Bootstrap. Fix: children no longer get `tool: memory_store` in the manifest examples; they return findings in their reply and Bootstrap persists only what's worth keeping. Children may still use `memory_query` (read-only).
+3. **Workspace `file_list` denied for children.** Children got `file_write: /data/workspace/X/*` but no matching `file_read`; `file_list` (gated on `FileRead`) refused. Fix: manifest rule to grant both, with a note that `file_write: /src/*` will fail because source is read-only.
+
+**Cost bookkeeping correction.** Earlier per-run cost estimates in docs were computed naively from `docker logs` token counts at a flat rate. DeepSeek's context caching discounts cache-hit input tokens to ~10% of the normal price, which a persistent Bootstrap benefits from heavily (same system prompt + skill catalog + growing history on every iteration). The authoritative cumulative spend since switching to DeepSeek is **~$0.54** per dashboard — not the higher per-run sums estimated in prior roadmap entries. With earlier Anthropic runs, rough cumulative is ~$0.70 across all five self-reflection rounds. The "pennies per run" framing holds; the exact per-run breakdown in earlier docs was over-estimated.
+
+**Artifacts:** 12 workspace files from run 5 are committed under `output/run-5-artifacts/` (design docs, schemas, pseudocode in JS+Python, plus `memory-dump.json` exporting all 14 stored memories for the record).
+
+**Not implemented (still deferred):** The structured `PatternStore`, new `aaos-reflection` crate, and `CoordinationPattern` schema are still not warranted. Run 5 confirmed the minimal protocol works; we now need 5-10 more runs before there's enough real data to justify designing a schema around it.
+
 ## Phase F: Real Kernel Migration
 
 Move from userspace abstractions on Linux to a real capability-based microkernel.

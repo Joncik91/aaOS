@@ -381,8 +381,61 @@ The runtime's self-reflection shifted from finding bugs (runs 1-3) to proposing 
 
 **The lesson:** agent-proposed designs need the same "observed behavior vs. aspirational architecture" filter that agent-proposed fixes needed in runs 1-3. In both cases the cheapest place to catch a mistake is before any code is written, and the tools are: (1) the human reading the design against the real codebase; (2) an external LLM reviewer with codebase access to cross-check. Both caught issues the original agent missed. Cost of the full review cycle: under $0.01.
 
-### Cost Update
+### Cost Update (corrected)
 
-- Runs 1-3 (bug-finding): $0.11 total, 3 real bugs fixed.
-- Run 4 (feature proposal): $0.48.
-- Running total: ~$0.59 for 3 bugs fixed + 1 shipped minimal feature + an observational foundation for whatever empirical pattern-mining work comes next.
+Earlier estimates in this retrospective were wrong. They multiplied `docker logs` token counts by DeepSeek's nominal per-token price, without accounting for **context caching**, which discounts cache-hit input tokens to roughly 10% of the normal rate. A persistent Bootstrap re-sends a growing conversation each iteration, so cache hits dominate. The authoritative number comes from the DeepSeek dashboard:
+
+- **Cumulative spend since switching from Anthropic to DeepSeek: ~$0.54** across all runs that used DeepSeek (4, 5, and the later parts of earlier rounds).
+- Earlier Anthropic-only runs added a small amount on top. Rough total across all five self-reflection rounds: ~$0.70.
+- The "pennies per run" framing holds. The per-run breakdown attempted in previous retrospective revisions was over-estimated and is corrected here.
+
+---
+
+## Run 5: First Persistent-Memory Run
+
+The first self-reflection round with `AAOS_PERSISTENT_MEMORY=1`. Same philosophical goal. Stable Bootstrap ID (`f3042f07-…`) persisted to `/var/lib/aaos/bootstrap_id`. Host's `./memory/` bind-mounted into the container's `/var/lib/aaos/memory/` so SQLite state survives restarts.
+
+### What Worked
+
+- **Protocol fully exercised end-to-end.** Bootstrap called `memory_query` *before* decomposing (4 queries, empty results as expected on first run), then `memory_store` at completion with a goal-level run summary. That single summary is now retrievable by future Bootstrap runs under the same stable ID. The minimal "query-before, store-after" loop the reviews recommended is live.
+- **`file_list` eliminated the path-guessing problem.** Zero failures of the "file_read on a directory" class that dominated run 4. Children listed directories before reading.
+- **Capability system caught a real mistake in real time.** Bootstrap drafted a `pattern-implementer` child with `file_write: /src/*`. `spawn_agent` refused: "agent f3042f07 lacks FileWrite { path_glob: /src/\* }; cannot delegate to child." Bootstrap recovered by spawning with `/data/workspace/…/*` instead. This is exactly why parent⊆child enforcement exists — the failure happened and the system routed around it.
+- **Behavioral-adaptation-layer pivot.** After the `/src/*` denial, a later child reasoned explicitly: *"Since we cannot modify the Rust codebase directly (read-only /src/), we implement the evolution as a behavioral adaptation layer using existing capabilities."* That's the "do it in prompts first, code second" path the run-4 reviews had pushed for, arrived at by the system itself after hitting the constraint.
+- **Independent convergence on the same direction.** Run 4 and run 5 were both given the same philosophical prompt. Mock embeddings meant run 5 couldn't actually retrieve run 4's outputs. Both independently converged on "Meta-Cognitive Coordinator for Bootstrap cross-run learning." Two fresh runs landing on the same feature is a real signal — not an artifact of memory carryover.
+
+### What the Run Exposed
+
+Three issues, all fixable as manifest-only changes (no runtime code):
+
+1. **Skill over-adherence.** Bootstrap loaded `planning-and-task-breakdown` and followed every step mechanically, ignoring the skill's own explicit "When NOT to use: single-file changes with obvious scope." Runtime roughly doubled compared to run 4 (~30 minutes vs ~12) without a proportional quality gain. Fix: manifest now instructs Bootstrap to honor each skill's "When to use / When NOT to use" sections — "a skill loaded and correctly skipped is better than a skill applied to the wrong task."
+
+2. **Child memory writes are orphaned.** Of 14 records in the SQLite store at run end, only 1 was tagged with Bootstrap's stable ID. The other 13 were under ephemeral child `agent_id`s that no future Bootstrap can retrieve (memory queries are filtered per-agent by design). Classic asymmetry that the proposal phase missed: only the persistent agent benefits from persistent memory. Fix: removed `tool: memory_store` from all child manifest examples in the Bootstrap prompt. Children now return findings in their reply; Bootstrap persists only what's worth keeping.
+
+3. **Workspace `file_list` denied for children.** Children were granted `file_write: /data/workspace/X/*` but not the matching `file_read: /data/workspace/X/*`. `file_list` is gated on `FileRead` capability and correctly refused. This is arguably strict (if you can write, you could usually list), but the capability model being strict is the whole point. Fix: manifest examples now grant both `file_read` and `file_write` for workspace dirs, with a note that `file_write: /src/*` will always fail because source is read-only.
+
+### What the Run Over-Built
+
+The pattern-builder child produced the same pattern-storage logic in **JavaScript** (`pattern-storage.js`, 22 KB) and then again in **Python** (`pattern-storage.py`, 24 KB). Neither language has a path into the aaOS runtime. The correct target would have been an updated `manifests/bootstrap.yaml` plus a short markdown spec — which is what the earlier `implementation-approach.md` had actually pointed at. The builder noticed it couldn't write to `/src/` (correct) and pivoted to "behavioral layer" (correct), then chose languages that still can't execute anywhere (incorrect). New heuristic added to the manifest: "Don't spawn children to produce the same artifact in different languages — pick one representation and move on."
+
+### Artifacts
+
+12 workspace files committed under `output/run-5-artifacts/`, including:
+
+- The agents' own workspace `README.md` (their up-front plan — never seen before run 5)
+- `current-state-analysis.md`, `evolution-plan.md`, `design-analysis.md`, `pattern-storage-design.md`, `implementation-plan.md`, `implementation-approach.md`, `adaptation-algorithm.md`, `bootstrap-upgrade-guide.md`, `schemas.json` — the design artifacts
+- `pattern-storage.js`, `pattern-storage.py` — the over-built equivalents
+- `memory-dump.json` — all 14 stored memories exported from SQLite as a human-readable paper trail
+
+### The Pattern
+
+Run 5 produced observable behavior. That's the whole point of persistent memory: not a feature that "learns" in some abstract sense, but a loop we can *watch*. The three fixes above came directly from watching what Bootstrap and its children actually did — not from reading the architecture.
+
+Two patterns sharpened:
+
+- **Skill adherence is the new failure mode.** Earlier runs (1-3) under-used skills (named agents after them, never loaded them). Run 4 over-trusted them (used them as executable knowledge, no "when to apply" filter). Run 5 followed them too rigidly. The middle path — load the skill, read its applicability sections, then apply judgment — is what the post-run-5 manifest now prescribes.
+
+- **Persistent memory amplifies the identity problem.** aaOS's "unforgeable kernel-generated process IDs" model is correct for a runtime where agents are ephemeral. Persistent learning requires a stable identity somewhere. The `AgentId::from_uuid()` exception for Bootstrap is flagged as such in the code; run 5 validated that it's load-bearing (without it, nothing this run stored would be reachable by run 6). Copilot's earlier caveat — that a separate "system memory identity" distinct from `AgentId` may eventually be cleaner — remains open for future work.
+
+### Cost
+
+Previous estimates in docs had run 5 at ~$0.55 in isolation. Corrected per the DeepSeek dashboard: cumulative spend since the Anthropic→DeepSeek switch is ~$0.54 across **all** runs that used DeepSeek, not per-run. DeepSeek's context caching means most input tokens on persistent Bootstrap iterations are cache hits at ~10% price. Token-count × flat-rate math over-estimates by a large margin. Rough cumulative across all five rounds: ~$0.70.
