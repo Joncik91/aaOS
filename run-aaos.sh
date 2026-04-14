@@ -41,14 +41,26 @@ echo "Goal: $GOAL"
 echo ""
 
 # Start container in background
+# Mask docs/ and README.md from the container's view of /src so
+# self-reflection runs cannot synthesize answers from our own
+# roadmap/architecture/ideas documents — only the source code is visible.
+# Keeps the whole-repo mount (so new top-level files appear automatically)
+# and overlays empty mounts on the excluded paths. Reversal: remove the
+# two mask lines.
+DOCS_MASK_DIR="$(mktemp -d)"
+README_MASK_FILE="$(mktemp)"
+
 docker run -d --name aaos-run \
     -e DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}" \
     -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}" \
     -e AAOS_BOOTSTRAP_MANIFEST=/etc/aaos/manifests/bootstrap.yaml \
     -e AAOS_BOOTSTRAP_GOAL="$GOAL" \
     -e AAOS_MAX_CONCURRENT_INFERENCE="${AAOS_MAX_CONCURRENT_INFERENCE:-5}" \
+    -e AAOS_SPAWN_AGENTS_BATCH_CAP="${AAOS_SPAWN_AGENTS_BATCH_CAP:-3}" \
     -e RUST_LOG="${RUST_LOG:-info}" \
     -v "$SCRIPT_DIR:/src:ro" \
+    -v "$DOCS_MASK_DIR:/src/docs:ro" \
+    -v "$README_MASK_FILE:/src/README.md:ro" \
     -v "$SCRIPT_DIR/output:/output" \
     $MEMORY_MOUNT \
     aaos-bootstrap >/dev/null

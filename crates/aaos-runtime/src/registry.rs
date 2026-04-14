@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use aaos_core::{
@@ -10,12 +11,49 @@ use dashmap::DashMap;
 use crate::persistent::persistent_agent_loop;
 use crate::process::{AgentCommand, AgentInfo, AgentProcess, AgentState};
 
+/// RAII guard for an agent-count reservation. Holds a share of the
+/// registry's `active_count` counter. The counter is decremented on Drop
+/// UNLESS `commit()` was called — in which case ownership transfers to the
+/// agent's presence in the registry, and `remove_agent` decrements on exit.
+///
+/// This makes it impossible to leak a reservation on spawn failure: the only
+/// way to keep the increment is to explicitly commit after a successful
+/// `insert_atomic`.
+#[must_use = "AgentSlot must be committed after insert_atomic succeeds, or it will release on Drop"]
+pub struct AgentSlot {
+    active_count: Arc<AtomicUsize>,
+    committed: bool,
+}
+
+impl AgentSlot {
+    /// Consume the slot; the increment becomes owned by the agent's presence
+    /// in the registry. Call ONLY after `insert_atomic` succeeded.
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for AgentSlot {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.active_count.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
+
 /// Thread-safe registry of all running agent processes.
 ///
 /// This is the aaOS equivalent of the process table. All agent
 /// lifecycle operations go through the registry.
 pub struct AgentRegistry {
     agents: DashMap<AgentId, AgentProcess>,
+    /// Live count of agents currently in the registry. Incremented by
+    /// `reserve_agent_slot`, decremented by `remove_agent` (or `AgentSlot::drop`
+    /// on uncommitted reservations). Used for admission control so the
+    /// len-check-then-insert race is gone.
+    ///
+    /// Invariant (steady state, no in-flight batch): `active_count == agents.len()`.
+    active_count: Arc<AtomicUsize>,
     audit_log: Arc<dyn AuditLog>,
     router: OnceLock<Arc<MessageRouter>>,
     max_agents: usize,
@@ -30,10 +68,71 @@ impl AgentRegistry {
     pub fn new_with_limit(audit_log: Arc<dyn AuditLog>, max_agents: usize) -> Self {
         Self {
             agents: DashMap::new(),
+            active_count: Arc::new(AtomicUsize::new(0)),
             audit_log,
             router: OnceLock::new(),
             max_agents,
         }
+    }
+
+    /// Atomically reserve a slot in `active_count`. Returns a guard that
+    /// releases on Drop unless `commit()` is called after a successful insert.
+    fn reserve_agent_slot(&self) -> Result<AgentSlot> {
+        let mut current = self.active_count.load(Ordering::Acquire);
+        loop {
+            if current >= self.max_agents {
+                return Err(CoreError::InvalidManifest(
+                    format!("agent limit exceeded: max {} agents", self.max_agents).into(),
+                ));
+            }
+            match self.active_count.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(AgentSlot {
+                        active_count: self.active_count.clone(),
+                        committed: false,
+                    });
+                }
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
+    /// Public version for use by batch-spawn tools (e.g. `SpawnAgentsTool`)
+    /// that need to pre-reserve N slots before invoking spawn.
+    pub fn reserve_slot(&self) -> Result<AgentSlot> {
+        self.reserve_agent_slot()
+    }
+
+    /// Atomically insert an agent. Rejects duplicate IDs via `DashMap::Entry`
+    /// vacant-check (no non-atomic contains_key + insert race).
+    fn insert_atomic(&self, id: AgentId, process: AgentProcess) -> Result<()> {
+        use dashmap::mapref::entry::Entry;
+        match self.agents.entry(id) {
+            Entry::Occupied(_) => Err(CoreError::InvalidManifest(
+                format!("agent with id {id} already exists").into(),
+            )),
+            Entry::Vacant(v) => {
+                v.insert(process);
+                Ok(())
+            }
+        }
+    }
+
+    /// THE ONLY place that removes an agent from the registry. Decrements
+    /// `active_count` exactly once. Every lifecycle exit path (`stop_sync`,
+    /// `stop`, shutdown) must funnel through here — do not remove from
+    /// `self.agents` directly elsewhere.
+    fn remove_agent(&self, id: AgentId) -> Option<AgentProcess> {
+        let removed = self.agents.remove(&id).map(|(_, p)| p);
+        if removed.is_some() {
+            self.active_count.fetch_sub(1, Ordering::AcqRel);
+        }
+        removed
     }
 
     /// Set the message router for agent registration.
@@ -64,16 +163,9 @@ impl AgentRegistry {
         id: AgentId,
         persistent_identity: bool,
     ) -> Result<AgentId> {
-        if self.agents.len() >= self.max_agents {
-            return Err(CoreError::InvalidManifest(
-                format!("agent limit exceeded: max {} agents", self.max_agents).into(),
-            ));
-        }
-        if self.agents.contains_key(&id) {
-            return Err(CoreError::InvalidManifest(
-                format!("agent with id {id} already exists").into(),
-            ));
-        }
+        // Atomic admission: reserve a slot in active_count. If we return
+        // early for any reason below, the slot Drops and releases.
+        let slot = self.reserve_agent_slot()?;
 
         // Issue capability tokens based on manifest declarations
         let capabilities = self.issue_capabilities(id, &manifest);
@@ -91,6 +183,11 @@ impl AgentRegistry {
             process.response_rx = Some(resp_rx);
         }
 
+        // Atomic insert — rejects duplicate IDs in a single critical section
+        // (no contains_key + insert race). If this fails, `slot` drops and
+        // releases the reservation.
+        self.insert_atomic(id, process)?;
+
         self.audit_log.record(AuditEvent::new(
             id,
             AuditEventKind::AgentSpawned {
@@ -98,7 +195,8 @@ impl AgentRegistry {
             },
         ));
 
-        self.agents.insert(id, process);
+        // Agent is now in the registry; its remove path will release the slot.
+        slot.commit();
 
         tracing::info!(agent_id = %id, name = %manifest.name, "agent spawned");
         Ok(id)
@@ -139,7 +237,9 @@ impl AgentRegistry {
             router.unregister(&id);
         }
 
-        self.agents.remove(&id);
+        // Use remove_agent (not self.agents.remove directly) so active_count
+        // is decremented through the single authoritative path.
+        self.remove_agent(id);
         tracing::info!(agent_id = %id, "agent stopped");
         Ok(())
     }
@@ -197,6 +297,13 @@ impl AgentRegistry {
 
         process.task_handle = Some(handle);
         Ok(())
+    }
+
+    /// Current number of agents in the registry, as tracked by the
+    /// admission-control counter. Exposed for tests and observability.
+    /// Steady-state invariant: `active_count() == list().len()`.
+    pub fn active_count(&self) -> usize {
+        self.active_count.load(Ordering::Acquire)
     }
 
     /// Get information about a specific agent.
@@ -326,19 +433,8 @@ impl AgentRegistry {
             ));
         }
 
-        if self.agents.len() >= self.max_agents {
-            return Err(CoreError::InvalidManifest(
-                format!("agent limit exceeded: max {} agents", self.max_agents).into(),
-            ));
-        }
-
-        // Duplicate-ID guard — symmetry with spawn_internal:72-76. Prevents a
-        // caller from accidentally stomping an existing agent slot.
-        if self.agents.contains_key(&id) {
-            return Err(CoreError::InvalidManifest(
-                format!("agent with id {id} already exists").into(),
-            ));
-        }
+        // Atomic admission: reserve a slot. Drops/releases on any early return.
+        let slot = self.reserve_agent_slot()?;
 
         // Defense-in-depth: spawn_with_tokens always produces ephemeral agents
         // (fresh UUID per spawn), so private-memory capability is never useful
@@ -372,6 +468,9 @@ impl AgentRegistry {
             process.response_rx = Some(resp_rx);
         }
 
+        // Atomic insert — rejects duplicate IDs in a single critical section.
+        self.insert_atomic(id, process)?;
+
         self.audit_log.record(AuditEvent::new(
             id,
             AuditEventKind::AgentSpawned {
@@ -379,7 +478,8 @@ impl AgentRegistry {
             },
         ));
 
-        self.agents.insert(id, process);
+        // Agent now in the registry; remove path releases the slot.
+        slot.commit();
 
         tracing::info!(agent_id = %id, name = %manifest.name, "agent spawned with custom tokens");
         Ok(())
@@ -856,6 +956,99 @@ capabilities:
         assert!(
             err.contains("already exists"),
             "error should name the collision: {err}"
+        );
+    }
+
+    // ============================================================
+    // active_count drift tests (Run 11 prep: parallel spawn_agents)
+    // ============================================================
+
+    #[test]
+    fn active_count_matches_agents_len_after_spawns() {
+        let (registry, _log) = test_registry();
+        assert_eq!(registry.active_count(), 0);
+        let _a = registry.spawn(test_manifest("a")).unwrap();
+        let _b = registry.spawn(test_manifest("b")).unwrap();
+        let _c = registry.spawn(test_manifest("c")).unwrap();
+        assert_eq!(registry.active_count(), 3);
+        assert_eq!(registry.list().len(), 3);
+    }
+
+    #[test]
+    fn active_count_decrements_after_stop_sync() {
+        let (registry, _log) = test_registry();
+        let a = registry.spawn(test_manifest("a")).unwrap();
+        let _b = registry.spawn(test_manifest("b")).unwrap();
+        assert_eq!(registry.active_count(), 2);
+        registry.stop_sync(a).unwrap();
+        assert_eq!(registry.active_count(), 1);
+        assert_eq!(registry.list().len(), 1);
+    }
+
+    #[test]
+    fn active_count_released_on_duplicate_id_rejection() {
+        // Slot is reserved, insert fails due to duplicate — slot must drop
+        // and release so the count stays accurate.
+        let (registry, _log) = test_registry();
+        let pinned = AgentId::new();
+        registry
+            .spawn_with_id(test_manifest("first"), pinned)
+            .unwrap();
+        assert_eq!(registry.active_count(), 1);
+
+        // Attempt duplicate — should fail, count should stay at 1.
+        let dup = registry.spawn_with_id(test_manifest("dup"), pinned);
+        assert!(dup.is_err());
+        assert_eq!(
+            registry.active_count(),
+            1,
+            "failed duplicate-ID spawn must release the reserved slot"
+        );
+    }
+
+    #[test]
+    fn active_count_enforced_under_limit() {
+        let log = Arc::new(InMemoryAuditLog::new());
+        let registry = AgentRegistry::new_with_limit(log, 2);
+
+        registry.spawn(test_manifest("one")).unwrap();
+        registry.spawn(test_manifest("two")).unwrap();
+        assert_eq!(registry.active_count(), 2);
+
+        let third = registry.spawn(test_manifest("three"));
+        assert!(third.is_err(), "third spawn over limit must fail");
+        assert_eq!(
+            registry.active_count(),
+            2,
+            "failed over-limit spawn must not leak a reservation"
+        );
+    }
+
+    #[test]
+    fn agent_slot_releases_on_drop_without_commit() {
+        // Direct test of the AgentSlot guard: reserve without committing,
+        // verify the counter returns to zero after the guard drops.
+        let (registry, _log) = test_registry();
+        assert_eq!(registry.active_count(), 0);
+        {
+            let _slot = registry.reserve_slot().unwrap();
+            assert_eq!(registry.active_count(), 1);
+        } // _slot drops here without commit
+        assert_eq!(registry.active_count(), 0);
+    }
+
+    #[test]
+    fn agent_slot_keeps_count_on_commit() {
+        let (registry, _log) = test_registry();
+        {
+            let slot = registry.reserve_slot().unwrap();
+            assert_eq!(registry.active_count(), 1);
+            slot.commit();
+        }
+        assert_eq!(
+            registry.active_count(),
+            1,
+            "committed slot must retain the reservation"
         );
     }
 }
