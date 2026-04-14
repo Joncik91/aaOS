@@ -73,7 +73,11 @@ impl Tool for MemoryQueryTool {
             .and_then(|v| v.as_str())
             .map(|s| serde_json::from_value(json!(s)))
             .transpose()
-            .map_err(|_| CoreError::SchemaValidation("invalid category".into()))?;
+            .map_err(|e| CoreError::SchemaValidation(
+                format!(
+                    "invalid category (expected one of: fact, observation, decision, preference): {e}"
+                ).into()
+            ))?;
 
         // Embed the query
         let query_embedding = self
@@ -226,5 +230,25 @@ mod tests {
         let (query_tool, _, ctx, _) = setup();
         let result = query_tool.invoke(json!({}), &ctx).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn query_invalid_category_error_lists_valid_options() {
+        // Fix 7: the error message should name the valid categories so agents
+        // (and humans) can recover without reading the source.
+        let (query_tool, _, ctx, _) = setup();
+        let result = query_tool
+            .invoke(
+                json!({ "query": "anything", "category": "bogus" }),
+                &ctx,
+            )
+            .await;
+        let err = result.expect_err("invalid category must error").to_string();
+        for expected in ["fact", "observation", "decision", "preference"] {
+            assert!(
+                err.contains(expected),
+                "error should list valid categories, got: {err}"
+            );
+        }
     }
 }
