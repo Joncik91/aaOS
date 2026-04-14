@@ -43,6 +43,7 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::WebFetchTool::new()));
         tool_registry.register(Arc::new(aaos_tools::FileReadTool));
         tool_registry.register(Arc::new(aaos_tools::FileListTool));
+        tool_registry.register(Arc::new(aaos_tools::FileReadManyTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
 
         // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
@@ -142,6 +143,7 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::WebFetchTool::new()));
         tool_registry.register(Arc::new(aaos_tools::FileReadTool));
         tool_registry.register(Arc::new(aaos_tools::FileListTool));
+        tool_registry.register(Arc::new(aaos_tools::FileReadManyTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
 
         // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
@@ -242,6 +244,7 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::WebFetchTool::new()));
         tool_registry.register(Arc::new(aaos_tools::FileReadTool));
         tool_registry.register(Arc::new(aaos_tools::FileListTool));
+        tool_registry.register(Arc::new(aaos_tools::FileReadManyTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
 
         // Register memory tools with the provided sources
