@@ -332,6 +332,14 @@ impl AgentRegistry {
             ));
         }
 
+        // Duplicate-ID guard — symmetry with spawn_internal:72-76. Prevents a
+        // caller from accidentally stomping an existing agent slot.
+        if self.agents.contains_key(&id) {
+            return Err(CoreError::InvalidManifest(
+                format!("agent with id {id} already exists").into(),
+            ));
+        }
+
         // Defense-in-depth: spawn_with_tokens always produces ephemeral agents
         // (fresh UUID per spawn), so private-memory capability is never useful
         // and would produce orphaned stores. The primary rejection lives in
@@ -355,6 +363,15 @@ impl AgentRegistry {
         process.depth = depth;
         process.transition_to(AgentState::Running)?;
 
+        // Wire IPC channels into the process BEFORE publishing it in the
+        // registry. Symmetry with spawn_internal (Run 9 Fix 1). Prevents a
+        // window where an agent exists in the map without receive channels.
+        if let Some(router) = self.router.get() {
+            let (msg_rx, resp_rx) = router.register(id);
+            process.message_rx = Some(msg_rx);
+            process.response_rx = Some(resp_rx);
+        }
+
         self.audit_log.record(AuditEvent::new(
             id,
             AuditEventKind::AgentSpawned {
@@ -363,14 +380,6 @@ impl AgentRegistry {
         ));
 
         self.agents.insert(id, process);
-
-        if let Some(router) = self.router.get() {
-            let (msg_rx, resp_rx) = router.register(id);
-            if let Some(mut entry) = self.agents.get_mut(&id) {
-                entry.value_mut().message_rx = Some(msg_rx);
-                entry.value_mut().response_rx = Some(resp_rx);
-            }
-        }
 
         tracing::info!(agent_id = %id, name = %manifest.name, "agent spawned with custom tokens");
         Ok(())
@@ -798,6 +807,55 @@ capabilities:
         assert!(
             entry.value().response_rx.is_some(),
             "response_rx must be populated by the time the agent is in the registry"
+        );
+    }
+
+    #[test]
+    fn spawn_with_tokens_wires_ipc_channels_before_publishing() {
+        // Run 10 finding: spawn_with_tokens had the pre-Fix-1 ordering —
+        // insert first, wire channels via get_mut after. Same invariant hole
+        // as spawn_internal. This test pins the fix by asserting that after
+        // spawn_with_tokens returns, the process in the registry has both
+        // channels populated (when a router is set).
+        let (registry, log) = test_registry();
+        let router = Arc::new(MessageRouter::new(
+            log.clone() as Arc<dyn AuditLog>,
+            |_, _| true,
+        ));
+        registry.set_router(router);
+
+        let id = AgentId::new();
+        registry
+            .spawn_with_tokens(id, test_manifest("tokens-channels-test"), vec![], 1)
+            .unwrap();
+        let entry = registry.agents.get(&id).expect("agent in registry");
+        assert!(
+            entry.value().message_rx.is_some(),
+            "spawn_with_tokens: message_rx must be populated"
+        );
+        assert!(
+            entry.value().response_rx.is_some(),
+            "spawn_with_tokens: response_rx must be populated"
+        );
+    }
+
+    #[test]
+    fn spawn_with_tokens_rejects_duplicate_id() {
+        // Run 10 follow-up: spawn_with_tokens now has the duplicate-ID guard
+        // that spawn_internal already had. Prevents a caller from stomping
+        // an existing agent slot.
+        let (registry, _log) = test_registry();
+        let id = AgentId::new();
+        registry
+            .spawn_with_tokens(id, test_manifest("first"), vec![], 1)
+            .expect("first spawn succeeds");
+
+        let second = registry.spawn_with_tokens(id, test_manifest("duplicate"), vec![], 1);
+        assert!(second.is_err(), "duplicate ID must be rejected");
+        let err = second.unwrap_err().to_string();
+        assert!(
+            err.contains("already exists"),
+            "error should name the collision: {err}"
         );
     }
 }
