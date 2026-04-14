@@ -63,6 +63,10 @@ pub struct AgentProcess {
     pub response_rx: Option<tokio::sync::mpsc::Receiver<aaos_ipc::McpResponse>>,
     pub task_handle: Option<tokio::task::JoinHandle<()>>,
     pub budget_tracker: Option<Arc<BudgetTracker>>,
+    /// True if this agent was spawned with a caller-pinned id that is expected
+    /// to persist across restarts (e.g., Bootstrap). Ephemeral spawns leave
+    /// this false; kernel checks gate private memory on this flag.
+    pub persistent_identity: bool,
 }
 
 impl AgentProcess {
@@ -84,6 +88,7 @@ impl AgentProcess {
             response_rx: None,
             task_handle: None,
             budget_tracker,
+            persistent_identity: false,
         }
     }
 

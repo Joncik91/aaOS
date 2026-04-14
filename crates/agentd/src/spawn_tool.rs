@@ -75,6 +75,41 @@ impl Tool for SpawnAgentTool {
 
         let child_manifest = AgentManifest::from_yaml(manifest_yaml)?;
 
+        // Kernel rule: spawned children always receive ephemeral agent IDs.
+        // memory_store is agent-isolated private memory, so a child's stores
+        // are only queryable by the same UUID — which will never exist again.
+        // Reject up front with a clear message so the LLM can retry without it.
+        for decl in &child_manifest.capabilities {
+            if let Some(Capability::ToolInvoke { tool_name }) = parse_capability(decl) {
+                if tool_name == "memory_store" {
+                    let denied = Capability::ToolInvoke {
+                        tool_name: "memory_store".to_string(),
+                    };
+                    self.audit_log.record(aaos_core::AuditEvent::new(
+                        ctx.agent_id,
+                        aaos_core::AuditEventKind::CapabilityDenied {
+                            capability: denied.clone(),
+                            reason: format!(
+                                "cannot grant memory_store to child '{}': \
+                                 memory_store requires a stable identity, \
+                                 spawned agents are ephemeral",
+                                child_manifest.name
+                            ),
+                        },
+                    ));
+                    return Err(CoreError::CapabilityDenied {
+                        agent_id: ctx.agent_id,
+                        capability: denied,
+                        reason: format!(
+                            "child '{}' cannot be granted memory_store (ephemeral id); \
+                             have the child return findings in its reply and store them yourself",
+                            child_manifest.name
+                        ),
+                    });
+                }
+            }
+        }
+
         // Check spawn permission: child name must be in allowed_agents
         let spawn_allowed = ctx.tokens.iter().any(|t| {
             if let Capability::SpawnChild { allowed_agents } = &t.capability {
@@ -434,5 +469,91 @@ capabilities:
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot delegate"));
+    }
+
+    #[tokio::test]
+    async fn spawn_child_rejects_memory_store_tool() {
+        let (tool, _parent_id, ctx) = setup();
+        let result = tool
+            .invoke(
+                json!({
+                    "manifest": "name: researcher\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"test\"\ncapabilities:\n  - web_search\n  - \"tool: memory_store\"\n",
+                    "message": "test"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("memory_store"), "unexpected: {err}");
+        assert!(err.contains("ephemeral"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn spawn_child_memory_store_rejection_emits_audit_event() {
+        let audit_concrete = Arc::new(InMemoryAuditLog::new());
+        let audit_log: Arc<dyn AuditLog> = audit_concrete.clone();
+        let router = Arc::new(MessageRouter::new(audit_log.clone(), |_, _| true));
+        let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
+        registry.set_router(router.clone());
+        let tool_registry = Arc::new(ToolRegistry::new());
+        tool_registry.register(Arc::new(aaos_tools::EchoTool));
+        let tool_invocation = Arc::new(ToolInvocation::new(
+            tool_registry.clone(),
+            audit_log.clone(),
+        ));
+
+        let parent_manifest = AgentManifest::from_yaml(
+            r#"
+name: orchestrator
+model: claude-haiku-4-5-20251001
+system_prompt: "test"
+capabilities:
+  - web_search
+  - "tool: memory_store"
+  - "spawn_child: [researcher]"
+"#,
+        )
+        .unwrap();
+        let parent_id = registry.spawn(parent_manifest).unwrap();
+        let parent_tokens = registry.get_tokens(parent_id).unwrap();
+        let spawn_tokens: Vec<CapabilityToken> = parent_tokens
+            .iter()
+            .filter(|t| matches!(t.capability, Capability::SpawnChild { .. }))
+            .cloned()
+            .collect();
+        let ctx = InvocationContext {
+            agent_id: parent_id,
+            tokens: spawn_tokens,
+        };
+
+        let approval: Arc<dyn ApprovalService> = Arc::new(NoOpApprovalService);
+        let tool = SpawnAgentTool::new(
+            MockLlm::text("unused"),
+            registry,
+            tool_registry,
+            tool_invocation,
+            audit_log.clone(),
+            router,
+            approval,
+        );
+
+        let _ = tool
+            .invoke(
+                json!({
+                    "manifest": "name: researcher\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"test\"\ncapabilities:\n  - \"tool: memory_store\"\n",
+                    "message": "test"
+                }),
+                &ctx,
+            )
+            .await;
+
+        let events = audit_concrete.events();
+        let denied = events.iter().any(|e| matches!(
+            &e.event,
+            aaos_core::AuditEventKind::CapabilityDenied { capability, .. }
+                if matches!(capability, Capability::ToolInvoke { tool_name } if tool_name == "memory_store")
+        ));
+        assert!(denied, "expected a CapabilityDenied audit event for memory_store");
     }
 }

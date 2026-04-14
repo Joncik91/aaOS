@@ -43,15 +43,27 @@ impl AgentRegistry {
         let _ = self.router.set(router);
     }
 
-    /// Spawn a new agent from a manifest. Returns the new agent's ID.
+    /// Spawn a new agent from a manifest with an ephemeral (kernel-generated)
+    /// ID. Returns the new agent's ID.
     pub fn spawn(&self, manifest: AgentManifest) -> Result<AgentId> {
-        self.spawn_with_id(manifest, AgentId::new())
+        self.spawn_internal(manifest, AgentId::new(), false)
     }
 
-    /// Spawn an agent using a caller-provided ID. Intended for privileged
-    /// callers that need a stable identity across restarts (Bootstrap Agent).
+    /// Spawn an agent using a caller-provided ID that is expected to persist
+    /// across restarts (e.g., Bootstrap). Only privileged code paths should
+    /// use this — it grants the agent a stable identity, which gates private
+    /// memory access.
     /// If an agent with this ID already exists, returns an error.
     pub fn spawn_with_id(&self, manifest: AgentManifest, id: AgentId) -> Result<AgentId> {
+        self.spawn_internal(manifest, id, true)
+    }
+
+    fn spawn_internal(
+        &self,
+        manifest: AgentManifest,
+        id: AgentId,
+        persistent_identity: bool,
+    ) -> Result<AgentId> {
         if self.agents.len() >= self.max_agents {
             return Err(CoreError::InvalidManifest(
                 format!("agent limit exceeded: max {} agents", self.max_agents).into(),
@@ -67,6 +79,7 @@ impl AgentRegistry {
         let capabilities = self.issue_capabilities(id, &manifest);
 
         let mut process = AgentProcess::new(id, manifest.clone(), capabilities);
+        process.persistent_identity = persistent_identity;
         process.transition_to(AgentState::Running)?;
 
         self.audit_log.record(AuditEvent::new(
@@ -88,6 +101,15 @@ impl AgentRegistry {
 
         tracing::info!(agent_id = %id, name = %manifest.name, "agent spawned");
         Ok(id)
+    }
+
+    /// Return whether the given agent was spawned with a stable, persistent
+    /// identity (e.g., Bootstrap). Ephemeral spawns return false.
+    pub fn has_stable_identity(&self, id: AgentId) -> Result<bool> {
+        self.agents
+            .get(&id)
+            .map(|entry| entry.value().persistent_identity)
+            .ok_or(CoreError::AgentNotFound(id))
     }
 
     /// Stop an agent by ID (sync version, does not await the task handle).
@@ -307,6 +329,25 @@ impl AgentRegistry {
             return Err(CoreError::InvalidManifest(
                 format!("agent limit exceeded: max {} agents", self.max_agents).into(),
             ));
+        }
+
+        // Defense-in-depth: spawn_with_tokens always produces ephemeral agents
+        // (fresh UUID per spawn), so private-memory capability is never useful
+        // and would produce orphaned stores. The primary rejection lives in
+        // SpawnAgentTool where the LLM can see and retry; this is the backstop
+        // for any other caller of spawn_with_tokens.
+        for token in &capabilities {
+            if let Capability::ToolInvoke { tool_name } = &token.capability {
+                if tool_name == "memory_store" {
+                    return Err(CoreError::CapabilityDenied {
+                        agent_id: id,
+                        capability: token.capability.clone(),
+                        reason: "memory_store requires a stable identity; \
+                                 spawn_with_tokens produces ephemeral agents"
+                            .into(),
+                    });
+                }
+            }
         }
 
         let mut process = AgentProcess::new(id, manifest.clone(), capabilities);
@@ -680,5 +721,57 @@ capabilities:
             )
             .unwrap();
         assert!(has_spawn);
+    }
+
+    #[test]
+    fn spawn_with_id_sets_persistent_identity() {
+        let (registry, _log) = test_registry();
+        let id = AgentId::new();
+        registry
+            .spawn_with_id(test_manifest("bootstrap"), id)
+            .unwrap();
+        assert_eq!(registry.has_stable_identity(id).unwrap(), true);
+    }
+
+    #[test]
+    fn spawn_does_not_set_persistent_identity() {
+        let (registry, _log) = test_registry();
+        let id = registry.spawn(test_manifest("child")).unwrap();
+        assert_eq!(registry.has_stable_identity(id).unwrap(), false);
+    }
+
+    #[test]
+    fn spawn_with_tokens_does_not_set_persistent_identity() {
+        let (registry, _log) = test_registry();
+        let id = AgentId::new();
+        registry
+            .spawn_with_tokens(id, test_manifest("child"), vec![], 1)
+            .unwrap();
+        assert_eq!(registry.has_stable_identity(id).unwrap(), false);
+    }
+
+    #[test]
+    fn spawn_with_tokens_rejects_memory_store_capability() {
+        let (registry, _log) = test_registry();
+        let id = AgentId::new();
+        let token = CapabilityToken::issue(
+            id,
+            Capability::ToolInvoke {
+                tool_name: "memory_store".into(),
+            },
+            Constraints::default(),
+        );
+        let result = registry.spawn_with_tokens(id, test_manifest("child"), vec![token], 1);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("capability denied"), "unexpected: {err}");
+        assert!(err.contains("memory_store"), "unexpected: {err}");
+        assert!(err.contains("stable identity"), "unexpected: {err}");
+    }
+
+    #[test]
+    fn has_stable_identity_errors_for_unknown_agent() {
+        let (registry, _log) = test_registry();
+        let result = registry.has_stable_identity(AgentId::new());
+        assert!(result.is_err());
     }
 }
