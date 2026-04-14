@@ -47,6 +47,13 @@ Each entry is short by design. If something here grows enough to deserve an impl
 - **Why deferred:** Copilot review flagged this as "too broad — same-turn tool calls can be semantically dependent even when they look independent." Safer shape is tool-level opt-in via explicit batch tools (we did this: `file_read_many`). Generic parallelism would need a per-tool `parallel_safe` classification first.
 - **Signal to reconsider:** multiple concrete tools are all worth running in parallel AND the per-tool classification work has been done.
 
+## TOCTOU hardening for path capability checks (openat + O_NOFOLLOW)
+
+- **Idea:** capability checks resolve symlinks at check time (Fix 4 from Run 9, commit `45418cc`), but the actual file open happens later. An attacker who can swap a symlink between check and open can still redirect the read/write. Stronger guarantee: open the file with `openat(AT_FDCWD, path, O_NOFOLLOW)` in the tool itself and compare the resulting fd's `fstat` device/inode against a canonicalized grant, so no second filesystem lookup happens.
+- **Where seen:** standard Unix filesystem-security pattern (seL4 capability reference monitor, Linux `openat2(RESOLVE_BENEATH)`, Go's `os.Root`).
+- **Why deferred:** TOCTOU requires an attacker who can write to a symlink-mutable path *inside a granted prefix* between the check and the open. In aaOS today the filesystem is a Docker container the agent doesn't write symlinks to (we verified: no manifest grants target symlink-aliased paths), so the exploit surface is near-zero. The platform-specific `openat` plumbing would be invasive across every file tool. Fix 4's filesystem canonicalization closes the bulk of the risk.
+- **Signal to reconsider:** agents gain the ability to create symlinks inside their writable prefixes (no `file_symlink` tool today), OR the kernel migration brings us to a platform where `openat` is the canonical filesystem primitive anyway.
+
 ## Enriched audit events for tool arguments / results
 
 - **Idea:** `ToolInvoked` / `ToolResult` audit events today carry only `tool: String` and a hash. If they carried truncated args (path, first 200 bytes of result), the dashboard and detail-log could show rich summaries without parsing the parallel tracing stream.
