@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -194,10 +196,13 @@ impl AuditLog for StdoutAuditLog {
     }
 }
 
-/// In-memory audit log for testing.
+/// In-memory audit log for testing. Unbounded by default; opt-in cap via
+/// `with_cap()` for long-running test harnesses where unbounded growth would
+/// OOM. Uses VecDeque so rollover is O(1) when a cap is set.
 #[derive(Debug, Default)]
 pub struct InMemoryAuditLog {
-    events: std::sync::Mutex<Vec<AuditEvent>>,
+    events: std::sync::Mutex<VecDeque<AuditEvent>>,
+    max_events: Option<usize>,
 }
 
 impl InMemoryAuditLog {
@@ -205,8 +210,18 @@ impl InMemoryAuditLog {
         Self::default()
     }
 
+    /// Create a capped log. When the cap is reached, the oldest events are
+    /// dropped (O(1) via VecDeque::pop_front). Callers must pass `max >= 1`.
+    pub fn with_cap(max: usize) -> Self {
+        debug_assert!(max >= 1, "InMemoryAuditLog cap must be >= 1");
+        Self {
+            events: std::sync::Mutex::new(VecDeque::with_capacity(max)),
+            max_events: Some(max),
+        }
+    }
+
     pub fn events(&self) -> Vec<AuditEvent> {
-        self.events.lock().unwrap().clone()
+        self.events.lock().unwrap().iter().cloned().collect()
     }
 
     pub fn len(&self) -> usize {
@@ -220,7 +235,13 @@ impl InMemoryAuditLog {
 
 impl AuditLog for InMemoryAuditLog {
     fn record(&self, event: AuditEvent) {
-        self.events.lock().unwrap().push(event);
+        let mut events = self.events.lock().unwrap();
+        if let Some(max) = self.max_events {
+            while events.len() >= max {
+                events.pop_front();
+            }
+        }
+        events.push_back(event);
     }
 }
 
@@ -426,5 +447,48 @@ mod tests {
         let json = serde_json::to_string(&event).unwrap();
         let parsed: AuditEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(event.id, parsed.id);
+    }
+
+    #[test]
+    fn in_memory_audit_log_capped_drops_oldest() {
+        // Fix 6: with_cap() should retain the most recent N events and
+        // drop older ones in O(1) via VecDeque::pop_front().
+        let log = InMemoryAuditLog::with_cap(3);
+        let agent = AgentId::new();
+        for i in 0..5u32 {
+            log.record(AuditEvent::new(
+                agent,
+                AuditEventKind::ToolInvoked {
+                    tool: format!("tool-{i}"),
+                    input_hash: "h".into(),
+                },
+            ));
+        }
+        assert_eq!(log.len(), 3, "should be capped at 3");
+        let events = log.events();
+        // Newest three tools retained; tool-0 and tool-1 dropped.
+        let tools: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                AuditEventKind::ToolInvoked { tool, .. } => Some(tool.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tools, vec!["tool-2", "tool-3", "tool-4"]);
+    }
+
+    #[test]
+    fn in_memory_audit_log_unbounded_by_default() {
+        let log = InMemoryAuditLog::new();
+        let agent = AgentId::new();
+        for _ in 0..50 {
+            log.record(AuditEvent::new(
+                agent,
+                AuditEventKind::AgentSpawned {
+                    manifest_name: "x".into(),
+                },
+            ));
+        }
+        assert_eq!(log.len(), 50);
     }
 }
