@@ -62,9 +62,9 @@ aaOS now supports the [AgentSkills](https://agentskills.io) open standard by Ant
 
 ## Self-Reflection Rounds *(ongoing)*
 
-The runtime has begun reading its own code, finding bugs, and proposing features. Five runs to date — runs 1-3 produced real bug fixes (path traversal, capability revocation, constraint enforcement), run 4 produced a feature proposal (Meta-Cognitive Coordination Layer) shipped as a minimal version after external review, and run 5 exercised the persistent-memory protocol end-to-end and produced three manifest-only tuning fixes.
+The runtime has begun reading its own code, finding bugs, and proposing features. Six runs to date — runs 1-3 produced real bug fixes (path traversal, capability revocation, constraint enforcement), run 4 produced a feature proposal (Meta-Cognitive Coordination Layer) shipped as a minimal version after external review, run 5 exercised the persistent-memory protocol end-to-end and produced three manifest-only tuning fixes, and run 6 surfaced two kernel-level gaps in the Run-5 manifest tuning (soft rules aren't enforcement; no structured child-to-child data channel) that shipped as kernel fixes `505f559` and `5feedbe`.
 
-Full chronological detail per run lives in [`reflection-log.md`](reflection-log.md). Cross-cutting lessons distilled from the runs (LLM calendar estimates aren't real, cost from token-math ≠ dashboard, skill adherence evolves, etc.) are in [`patterns.md`](patterns.md).
+Full chronological detail per run lives in [`reflection-log.md`](reflection-log.md). Cross-cutting lessons distilled from the runs (LLM calendar estimates aren't real, cost from token-math ≠ dashboard, skill adherence evolves, prompts persuade but only the kernel enforces, structured handoff beats opaque prompts) are in [`patterns.md`](patterns.md).
 
 **What's deferred pending more data:** the structured `PatternStore`, new `aaos-reflection` crate, and `CoordinationPattern` schema are still not warranted. The minimal protocol (stable Bootstrap ID + opt-in persistent memory + query-before/store-after in the manifest) is the empirical foundation. If 10-20 runs surface recurring patterns worth indexing formally, the structured system gets designed against real data — not speculation.
 

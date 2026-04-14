@@ -73,3 +73,23 @@ The signal: once a runtime can reason about its own code, it can generate plausi
 Multiple times this project has caught docs reporting stale numbers (crate counts, line counts, test counts, cost figures). The retrospective itself was rewritten once already to fix contradictions, then amended again to correct cost math.
 
 **Ground truth is git + the provider dashboard.** When docs and code disagree, trust the code. When docs and dashboard disagree, trust the dashboard. Update docs when you notice drift — don't let it compound.
+
+## Prompts persuade; only the kernel enforces
+
+Between Runs 5 and 6 the Bootstrap manifest gained an explicit rule: *"Do NOT grant children `tool: memory_store`."* Run 6 confirmed Bootstrap granted it anyway — twice. Four orphaned memory writes landed in the store under ephemeral child IDs no future run could query. Run 5 had the same rule in commentary form; only Run 6 exposed it as unenforceable because the spawn path accepted whatever capabilities the LLM listed.
+
+**If an invariant matters, the kernel has to be the one that says no.** Manifest prose is a teaching aid, not an access control layer. The fix from Run 6 (`505f559`) moved the rule from prose to a `CapabilityDenied` in `SpawnAgentTool` + a defense-in-depth check in `spawn_with_tokens`, with a runtime-owned `persistent_identity` flag so the invariant generalizes beyond Bootstrap.
+
+The same lesson applies to any future constraint: path whitelists, budget caps, retry limits. If the manifest is the only thing stopping bad behavior, the LLM will eventually route around it.
+
+## Structured handoff beats opaque prompts for child-to-child data
+
+Run 6's second bug: the `proposal-writer` was spawned with a goal string and no structured access to the `code-analyzer`'s findings. It dutifully `memory_query`'d (empty), then *confabulated* a generic proposal citing non-existent files, using phrases like "hypothetical based on common patterns" and "(or similar)" — plausible on the surface, disconnected from reality.
+
+Two shapes fix this badly and one fixes it well:
+
+- **Bad:** paste the prior child's output into the next child's `message`. Instructions and data collapse into one stream; prompt injection in the first output becomes executable in the second.
+- **Bad:** have the parent paraphrase findings in prose into the next goal. Information loss, parent becomes a bottleneck, and the LLM is not trained to compress faithfully.
+- **Good:** a separate field (Run 6 shipped `prior_findings` on `spawn_agent`) that the kernel wraps with kernel-authored delimiters + a prompt-injection warning. The parent LLM can't remove the warning; the child is told explicitly to treat the block as quoted input.
+
+Caveat: a parent can still *fabricate* content in the field. This is continuity, not cryptographic provenance. The natural next upgrade is handoff-handles: pointers into the audit log that the child can verify, so a parent cannot forge findings from a child that never spoke. Noted as TODO; not built until a run actually needs it.
