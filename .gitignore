@@ -19,3 +19,4 @@ CLAUDE.md
 
 # Runtime persistent memory (SQLite + WAL). Content is exported per-run to output/run-*-artifacts/memory-dump.json for the record.
 /memory/
+__pycache__/

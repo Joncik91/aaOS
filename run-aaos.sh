@@ -8,7 +8,8 @@ set -e
 
 GOAL="${1:-Fetch https://news.ycombinator.com and write a summary of the top 5 stories to /output/summary.txt}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DASHBOARD="$SCRIPT_DIR/tools/dashboard.py"
+DASHBOARD="$SCRIPT_DIR/tools/observability/dashboard.py"
+DETAIL_LOG="$SCRIPT_DIR/tools/observability/detail_log.py"
 
 # Check for API key
 if [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
@@ -52,28 +53,35 @@ docker run -d --name aaos-run \
     $MEMORY_MOUNT \
     aaos-bootstrap >/dev/null
 
-# Launch dashboard in a separate terminal window
-# The dashboard auto-exits when the container stops (docker logs -f ends)
+# Launch two terminals: a status dashboard + a detail log (think/tool narrative)
 DASH_CMD="docker logs -f aaos-run 2>&1 | python3 $DASHBOARD; echo ''; echo 'aaOS container stopped. Press Enter to close.'; read"
+DETAIL_CMD="docker logs -f aaos-run 2>&1 | python3 $DETAIL_LOG; echo ''; echo 'aaOS container stopped. Press Enter to close.'; read"
 
-if command -v xfce4-terminal >/dev/null 2>&1; then
-    xfce4-terminal --title "aaOS Dashboard" --geometry 120x40 -e "bash -c '$DASH_CMD'" &
-elif command -v gnome-terminal >/dev/null 2>&1; then
-    gnome-terminal --title "aaOS Dashboard" --geometry 120x40 -- bash -c "$DASH_CMD" &
-elif command -v xterm >/dev/null 2>&1; then
-    xterm -title "aaOS Dashboard" -geometry 120x40 -e "bash -c '$DASH_CMD'" &
-else
-    echo "No terminal emulator found. Run manually in another terminal:"
-    echo "  docker logs -f aaos-run 2>&1 | python3 $DASHBOARD"
-fi
+spawn_term() {
+    local title="$1"; local geometry="$2"; local cmd="$3"
+    if command -v xfce4-terminal >/dev/null 2>&1; then
+        xfce4-terminal --title "$title" --geometry "$geometry" -e "bash -c '$cmd'" &
+    elif command -v gnome-terminal >/dev/null 2>&1; then
+        gnome-terminal --title "$title" --geometry "$geometry" -- bash -c "$cmd" &
+    elif command -v xterm >/dev/null 2>&1; then
+        xterm -title "$title" -geometry "$geometry" -e "bash -c '$cmd'" &
+    else
+        echo "No terminal emulator found for '$title'. Run manually: docker logs -f aaos-run | ..."
+        return 1
+    fi
+}
 
+spawn_term "aaOS Dashboard" "120x40" "$DASH_CMD"
 DASH_PID=$!
-echo "Dashboard launched (PID $DASH_PID)"
+spawn_term "aaOS Detail Log" "140x50" "$DETAIL_CMD"
+DETAIL_PID=$!
+
+echo "Dashboard launched (PID $DASH_PID); detail log launched (PID $DETAIL_PID)"
 echo "Container running. Ctrl+C here to stop."
 echo ""
 
 # Wait for container to finish, clean up on Ctrl+C
-trap 'echo ""; echo "Stopping aaOS..."; docker stop aaos-run >/dev/null 2>&1; kill $DASH_PID 2>/dev/null; exit 0' INT TERM
+trap 'echo ""; echo "Stopping aaOS..."; docker stop aaos-run >/dev/null 2>&1; kill $DASH_PID 2>/dev/null; kill $DETAIL_PID 2>/dev/null; exit 0' INT TERM
 
 # Wait for container to exit
 docker wait aaos-run >/dev/null 2>&1
