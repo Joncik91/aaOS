@@ -16,3 +16,6 @@ docs/phase-c2-design.md
 docs/phase-c2-plan.md
 docs/phase-c3-design.md
 CLAUDE.md
+
+# Runtime persistent memory (SQLite + WAL). Content is exported per-run to output/run-*-artifacts/memory-dump.json for the record.
+/memory/
