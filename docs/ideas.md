@@ -13,12 +13,10 @@ Each entry is short by design. If something here grows enough to deserve an impl
 - **Why deferred:** aaOS runs are short (typical Run is 15-30 min, cost <$0.20). Container restarts mid-task have not been observed. Bootstrap memory already persists across restarts via the stable-identity + SQLite path; child workspace state is the only thing we'd lose, and that's recoverable by re-running.
 - **Signal to reconsider:** runs routinely exceed ~1 hour, or we see real failures where a child is >50% done and the container dies.
 
-## `spawn_agents` batch tool
+## `spawn_agents` batch tool — **SHIPPED** (Run 11 prep, commit `04dc0c7`)
 
-- **Idea:** Bootstrap emits one `spawn_agent` call with a list of child manifests; the runtime fans them out in parallel. Symmetric to `file_read_many`.
-- **Where seen:** Anthropic's Claude Code Agent tool supports multiple tool_use blocks per LLM response, each dispatched in parallel.
-- **Why deferred:** safe execution requires atomic budget reservation (current `check-then-spend` would oversubscribe under concurrent launches) and stronger per-agent workspace-dir guarantees than the registry offers today. Copilot's Phase 1 speed-plan review flagged this as "real work, not just a tool wrapper."
-- **Signal to reconsider:** a Run surfaces a natural fan-out pattern (e.g., two independent subtrees to scan) where sequential child execution is clearly the bottleneck.
+- **What was shipped:** `spawn_agents` tool in `agentd/src/spawn_agents_tool.rs`. Best-effort batch semantics: preflight fast-fail snapshot (not atomic), per-child spawn delegates to `SpawnAgentTool::invoke` to reuse its scopeguard cleanup. Cap: `AAOS_SPAWN_AGENTS_BATCH_CAP` env var (default 3). Three Copilot review rounds resolved the atomic-reservation concerns — ended with honest best-effort + centralized cleanup via `remove_agent` in the registry.
+- **What was NOT built:** true transactional multi-spawn (sibling abort on failure) — deferred until there's a concrete workload that needs all-or-nothing guarantees. Today, Bootstrap sees per-child `{agent_id, response, error}` entries and decides what to do with partial success.
 
 ## Repository Intelligence Graph (RIG)
 

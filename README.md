@@ -24,7 +24,7 @@ What's implemented and tested:
 - **Self-bootstrapping agent swarms** — A Bootstrap Agent (DeepSeek Reasoner) receives a goal, analyzes it, spawns specialized child agents (DeepSeek Chat) with narrowed capabilities, coordinates their work, and produces output. All autonomous. Runs in Docker with `agentd` as PID 1. Multi-provider: works with DeepSeek, Anthropic, or any OpenAI-compatible API.
 - **Persistent goal queue** — The Bootstrap Agent runs as a persistent process, accepting goals via Unix socket. Container stays alive between tasks.
 - **Capability-based security** — Unforgeable tokens, zero-permission default, two-level enforcement (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have." Path normalization prevents traversal attacks; child tokens inherit parent constraints. Tokens are revocable at runtime.
-- **Agent orchestration** — Parent spawns children with narrowed capabilities. Spawn depth limit (5), agent count limit (100). Failed children are retried once automatically.
+- **Agent orchestration** — Parent spawns children with narrowed capabilities. Spawn depth limit (5), agent count limit (100). Failed children are retried once automatically. Parallel spawning via `spawn_agents` batch tool runs up to 3 independent children concurrently (tunable via `AAOS_SPAWN_AGENTS_BATCH_CAP`) — wall-clock time is the slowest child, not the sum.
 - **Persistent agents** — Long-running agents with background message loops, request-response IPC via `send_and_wait()`, conversation persistence in JSONL
 - **Managed context windows** — Runtime transparently summarizes old messages via LLM when the context fills, archives originals to disk. Agents see coherent conversations without hitting token limits.
 - **Episodic memory** — Per-agent persistent memory via `memory_store`/`memory_query`/`memory_delete` tools. Semantic search via cosine similarity over embeddings. SQLite-backed for persistence across container restarts (`AAOS_MEMORY_DB`), falls back to in-memory if unset.
@@ -86,7 +86,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 - **aaos-core** — Types, traits, capability model, audit events (21 kinds), budget tracking
 - **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management
 - **aaos-ipc** — MCP message router with capability validation, request-response IPC
-- **aaos-tools** — Tool registry, invocation, 11 built-in tools (including memory + skill_read + file_list + file_read_many batch)
+- **aaos-tools** — Tool registry, invocation, 12 built-in tools (including memory + skill_read + file_list + file_read_many batch + spawn_agents parallel)
 - **aaos-llm** — LLM clients (Anthropic + OpenAI-compat), execution loop, inference scheduler
 - **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **agentd** — Daemon binary, Unix socket API, approval queue
@@ -190,6 +190,7 @@ JSON-RPC 2.0 over Unix socket.
 | `file_read_many` | `FileRead { path_glob }` (per file) | Batch-read up to 16 files in parallel; partial failures OK |
 | `file_write` | `FileWrite { path_glob }` | Write file, path-checked |
 | `spawn_agent` | `SpawnChild { allowed_agents }` | Spawn child with narrowed capabilities |
+| `spawn_agents` | `SpawnChild { allowed_agents }` (per child) | Spawn up to 3 independent children concurrently; best-effort per-child, wall-clock = slowest child |
 | `memory_store` | `tool: memory_store` | Store a fact/observation/decision/preference |
 | `memory_query` | `tool: memory_query` | Semantic search over stored memories |
 | `memory_delete` | `tool: memory_delete` | Delete a stored memory by ID |

@@ -139,6 +139,18 @@ None of these were "the finding is wrong." All were "the proposed fix has a subt
 
 **Consequence:** self-reflection produces findings; external review is still needed to produce safe fixes. The two roles are not interchangeable, and the review is cheap compared to debugging a regression later.
 
+## Runtime admission control needs more than one review round
+
+Features that change how agents are admitted or cleaned up (registry reservation, batch spawn, atomic counters) consistently need **three peer-review rounds** to stabilize. Each round catches a different class of issue:
+
+- Round 1: semantics and threat model. Does "all-or-nothing" actually mean that? Is this cap a real cap or documentation?
+- Round 2: concurrency primitives. Are the compare-and-swap loops correct? Is `contains_key + insert` a race? Who decrements the counter on error paths?
+- Round 3: implementation-layer mistakes. Can this tool actually compile where you put it? Does the cleanup path you described exist?
+
+Single-round review misses at least one of these tiers. The shape of the mistake changes after each round of fixes: round-2 fixes create round-3 surface for critique. Cost is ~1-2 minutes per round of Copilot time, plus the wall-clock of the author reading the review. Worth it every time — each caught issue is a real bug that would have shipped.
+
+Derived from Run 11 prep (commits `73b3653`, `04dc0c7`): three rounds to land `spawn_agents`, each round caught a distinct class of problem.
+
 ## Self-reflection is an adversarial reviewer, not a bug-finder
 
 Across ten runs, the system has shipped ~14 fixes. Honest audit of what they actually were:
