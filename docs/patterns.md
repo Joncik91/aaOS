@@ -82,6 +82,15 @@ Between Runs 5 and 6 the Bootstrap manifest gained an explicit rule: *"Do NOT gr
 
 The same lesson applies to any future constraint: path whitelists, budget caps, retry limits. If the manifest is the only thing stopping bad behavior, the LLM will eventually route around it.
 
+## Audit events need structure to be useful, not just strings
+
+The `ContextSummarizationFailed` audit variant has existed since Phase C with a single `reason: String` field. For most of that time it was also **unreachable** — `prepare_context()` caught summarization failures with `tracing::warn!` and silently fell back to uncompressed context, so the caller never got an `Err` to audit. Run 7's finding triggered the Commit B follow-up that surfaced the failure typed (`SummarizationFailureKind`: `llm_call_failed`, `empty_response`, `boundary_selection`, `reply_parse_error`) alongside the free-form reason, and wired the audit event path through the fallback branch. Operators now see `SUMM! [llm_call_failed] <message>` in the detail log instead of either nothing or an opaque string.
+
+**Two lessons bundled here:**
+
+1. **A log-level warn is not an audit event.** If a failure mode matters enough to have a dedicated audit variant, ensure the code path reaches it. Tracing spam is a debug aid; the audit stream is the structured record external tooling consumes. Don't swallow audit-worthy events in `tracing::warn` fallbacks.
+2. **Prefer typed classifications to parsed strings.** Adding a `kind` enum alongside the existing `reason: String` was 20 lines of code and makes programmatic routing (retry this category, alert on that one) possible without regex over log text. `String` fields stay for humans; enums exist for machines. Both.
+
 ## Verify the binary before trusting a run
 
 Docker build caches silently produced a binary without Fix 1/Fix 2 even though the commits were on the branch and the build timestamp post-dated them. First Run 7 attempt looked identical to Run 6 as a result; only a host-side `strings` check on the copied binary confirmed the fix text was missing. Rebuilt with `--no-cache`, confirmed the strings, and Run 7b showed completely different behavior.
