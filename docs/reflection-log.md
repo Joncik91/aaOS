@@ -406,7 +406,7 @@ Revised plan shipped in `5be74ac`:
 
 ---
 
-## How to Add Run 8 and Beyond
+## How to Add Run 10 and Beyond
 
 Template for each new entry:
 
