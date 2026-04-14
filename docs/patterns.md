@@ -139,6 +139,17 @@ None of these were "the finding is wrong." All were "the proposed fix has a subt
 
 **Consequence:** self-reflection produces findings; external review is still needed to produce safe fixes. The two roles are not interchangeable, and the review is cheap compared to debugging a regression later.
 
+## Self-reflection is an adversarial reviewer, not a bug-finder
+
+Across ten runs, the system has shipped ~14 fixes. Honest audit of what they actually were:
+
+- **~2 fixes** addressed bugs a user would have noticed in production (Run 6's writer confabulating with no `prior_findings`; Run 7's silent audit-event drop on summarization failure).
+- **~12 fixes** addressed *invariants* — code patterns that were correct today but fragile: ordering bugs that hadn't yet tripped because the fallible step didn't exist yet, security gaps that weren't exploited because no agent had tried, hardening around paths not currently exercised.
+
+This is a useful role, but it's a narrower claim than "autonomous bug-finder." What the system is *doing* is static code review against a threat model and a set of design invariants. What it can *not* do: find bugs that require running the code, performance issues, UX friction, integration problems with real providers, or anything where the symptom is observable rather than structural.
+
+**The honest framing:** self-reflection produces a cheap adversarial reviewer for security and invariant code. Not a fuzzer, not an integration-test suite, not a substitute for production telemetry. Worth the ~$0.07/run cost for a capability-based runtime where invariants matter before they fire — but don't overclaim it as general bug discovery.
+
 ## Security fixes have threat-model shelf lives
 
 Phase A's path-traversal fix blocked `..` traversal via lexical normalization. Correct for the threat model as written at the time. Run 9 showed the threat model was incomplete — symlinks are another way to redirect a path, and the lexical fix doesn't touch them.
