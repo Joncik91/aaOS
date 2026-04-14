@@ -82,6 +82,12 @@ Between Runs 5 and 6 the Bootstrap manifest gained an explicit rule: *"Do NOT gr
 
 The same lesson applies to any future constraint: path whitelists, budget caps, retry limits. If the manifest is the only thing stopping bad behavior, the LLM will eventually route around it.
 
+## Verify the binary before trusting a run
+
+Docker build caches silently produced a binary without Fix 1/Fix 2 even though the commits were on the branch and the build timestamp post-dated them. First Run 7 attempt looked identical to Run 6 as a result; only a host-side `strings` check on the copied binary confirmed the fix text was missing. Rebuilt with `--no-cache`, confirmed the strings, and Run 7b showed completely different behavior.
+
+**Discipline:** after any runtime code change, rebuild with `docker build --no-cache` and grep the binary for a known unique string from the change (e.g. an error-message literal) before launching the run. One layer between "committed code" and "code the container actually runs" is enough to invalidate an entire test run.
+
 ## Structured handoff beats opaque prompts for child-to-child data
 
 Run 6's second bug: the `proposal-writer` was spawned with a goal string and no structured access to the `code-analyzer`'s findings. It dutifully `memory_query`'d (empty), then *confabulated* a generic proposal citing non-existent files, using phrases like "hypothetical based on common patterns" and "(or similar)" — plausible on the surface, disconnected from reality.
