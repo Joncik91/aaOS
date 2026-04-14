@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use aaos_core::{
     AgentId, AgentManifest, AuditEvent, AuditEventKind, AuditLog, PromptSource,
@@ -10,6 +11,10 @@ use tokio::sync::mpsc;
 use crate::context::ContextManager;
 use crate::process::AgentCommand;
 use crate::session::{ArchiveSegment, SessionStore};
+
+/// Minimum interval between `SessionStoreError` audit events per agent.
+/// A persistently-broken store doesn't need to spam the audit log.
+const SESSION_STORE_ERROR_THROTTLE: Duration = Duration::from_secs(60);
 
 /// Extract the user message string from an McpMessage's params.
 fn extract_user_message(msg: &McpMessage) -> String {
@@ -38,6 +43,9 @@ pub async fn persistent_agent_loop(
 
     let max_history = manifest.memory.max_history_messages.unwrap_or(100);
     let mut messages_processed: u64 = 0;
+    // Throttles repeated SessionStoreError audit events so a broken store
+    // doesn't drown the log in per-turn failures.
+    let mut last_session_store_error: Option<Instant> = None;
 
     // Pre-resolve system prompt once for the loop lifetime
     let system_prompt_str = match &manifest.system_prompt {
@@ -91,9 +99,40 @@ pub async fn persistent_agent_loop(
                                 history.drain(..=end);
                                 history.insert(0, summ.summary.clone());
 
-                                // 3. Clear and rewrite session store with new history
-                                let _ = session_store.clear(&agent_id);
-                                let _ = session_store.append(&agent_id, &history);
+                                // 3. Clear and rewrite session store with new history.
+                                // NOTE: clear+append is not atomic. If append partially persists
+                                // before failing, the on-disk store can diverge from the in-memory
+                                // history until the next summarization cycle. A transactional
+                                // replace() on the SessionStore trait would close this; deferred
+                                // as a follow-up.
+                                let should_emit = match last_session_store_error {
+                                    Some(prev) if prev.elapsed() < SESSION_STORE_ERROR_THROTTLE => false,
+                                    _ => { last_session_store_error = Some(Instant::now()); true }
+                                };
+                                if let Err(e) = session_store.clear(&agent_id) {
+                                    if should_emit {
+                                        audit_log.record(AuditEvent::new(
+                                            agent_id,
+                                            AuditEventKind::SessionStoreError {
+                                                operation: "clear".to_string(),
+                                                message: e.to_string(),
+                                            },
+                                        ));
+                                    }
+                                    // Do NOT append — writing over a non-cleared store would
+                                    // mix old and new history. The in-memory history is still
+                                    // intact and will be rewritten next cycle.
+                                } else if let Err(e) = session_store.append(&agent_id, &history) {
+                                    if should_emit {
+                                        audit_log.record(AuditEvent::new(
+                                            agent_id,
+                                            AuditEventKind::SessionStoreError {
+                                                operation: "append".to_string(),
+                                                message: e.to_string(),
+                                            },
+                                        ));
+                                    }
+                                }
 
                                 // 4. Emit audit event
                                 audit_log.record(AuditEvent::new(
@@ -455,5 +494,25 @@ lifecycle: persistent
         let loop_stopped = events.iter().any(|e| matches!(&e.event, AuditEventKind::AgentLoopStopped { .. }));
         assert!(loop_started);
         assert!(loop_stopped);
+    }
+
+    #[test]
+    fn session_store_error_audit_kind_serializes() {
+        // Fix 2 introduces SessionStoreError — verify it serializes with the
+        // expected fields. End-to-end testing of the throttle and clear-failure
+        // path requires driving summarization through persistent_agent_loop,
+        // which needs a live LLM mock set up for it; this unit test at least
+        // pins the audit event shape.
+        let ev = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::SessionStoreError {
+                operation: "clear".to_string(),
+                message: "disk full".to_string(),
+            },
+        );
+        let json = serde_json::to_string(&ev.event).unwrap();
+        assert!(json.contains("\"kind\":\"session_store_error\""), "unexpected: {json}");
+        assert!(json.contains("\"operation\":\"clear\""));
+        assert!(json.contains("\"message\":\"disk full\""));
     }
 }

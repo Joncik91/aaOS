@@ -123,6 +123,16 @@ pub enum AuditEventKind {
         query_hash: String,
         results_count: usize,
     },
+    /// A persistent session-store operation failed. The in-memory history is
+    /// still intact; this signals that the on-disk copy is stale or at risk
+    /// of divergence until the next successful summarization cycle.
+    SessionStoreError {
+        /// Which operation failed: "clear" or "append". String (not &'static)
+        /// so the variant derives Deserialize; callers should pass literals.
+        operation: String,
+        /// The error message reported by the store.
+        message: String,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
