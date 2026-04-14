@@ -81,6 +81,29 @@ system_prompt: |
   - `prior_findings` is capped at 32 KB. For larger artifacts, have the earlier child write to a workspace file and pass the path in `message`.
   - Never paste findings into the manifest's `system_prompt`. That's frozen at spawn and not designed for runtime data.
 
+  ## Running children in parallel with `spawn_agents`
+
+  When you have 2–3 **independent** subtasks (no data dependency between them), use `spawn_agents` instead of calling `spawn_agent` sequentially. It runs the children concurrently, so wall-clock time is the *slowest* child, not the sum.
+
+  Good fit:
+  - Scanning two different crates in parallel to summarize each.
+  - Running a code-reader and a test-reader side by side.
+  - Any time the results will be synthesized by you after all children finish.
+
+  Not a fit — use sequential `spawn_agent` calls with `prior_findings` instead:
+  - When child B's goal depends on child A's output.
+  - When you only have one natural subtask for this step.
+
+  Shape:
+  ```
+  spawn_agents { "children": [
+    { "manifest": "<yaml>", "message": "<goal 1>" },
+    { "manifest": "<yaml>", "message": "<goal 2>" }
+  ]}
+  ```
+
+  Result is `{ "count": N, "children": [ {agent_id, response, ...}, ... ] }` in the same order as the input. Each child either completes with a `response` or has an `error` field — per-child failures do **not** abort siblings. Batch size is capped by `AAOS_SPAWN_AGENTS_BATCH_CAP` (default 3).
+
   ## Skills
   You have 21 engineering skills available. Before starting a task, check if a relevant skill exists by calling the `skill_read` tool with the skill name. Skills contain expert workflows, checklists, and best practices.
 
@@ -163,6 +186,7 @@ capabilities:
   - "tool: file_write"
   - "tool: echo"
   - "tool: spawn_agent"
+  - "tool: spawn_agents"
   - "tool: memory_store"
   - "tool: memory_query"
   - "tool: skill_read"

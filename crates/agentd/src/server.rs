@@ -122,7 +122,12 @@ impl Server {
             server.router.clone(),
             server.approval_queue.clone() as Arc<dyn ApprovalService>,
         ));
-        server.tool_registry.register(spawn_tool);
+        server.tool_registry.register(spawn_tool.clone());
+        // Register SpawnAgentsTool (batch, parallel) — delegates per-child
+        // to SpawnAgentTool so cleanup (scopeguard) stays in one place.
+        server.tool_registry.register(Arc::new(
+            crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, server.registry.clone()),
+        ));
         server.llm_client = Some(llm_client);
         server
     }
@@ -208,7 +213,11 @@ impl Server {
             router.clone(),
             approval_queue.clone() as Arc<dyn ApprovalService>,
         ));
-        tool_registry.register(spawn_tool);
+        tool_registry.register(spawn_tool.clone());
+        // Register SpawnAgentsTool (batch, parallel).
+        tool_registry.register(Arc::new(
+            crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, registry.clone()),
+        ));
 
         Self {
             registry,
@@ -293,7 +302,11 @@ impl Server {
             router.clone(),
             approval_queue.clone() as Arc<dyn ApprovalService>,
         ));
-        tool_registry.register(spawn_tool);
+        tool_registry.register(spawn_tool.clone());
+        // Register SpawnAgentsTool (batch, parallel).
+        tool_registry.register(Arc::new(
+            crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, registry.clone()),
+        ));
 
         Self {
             registry,

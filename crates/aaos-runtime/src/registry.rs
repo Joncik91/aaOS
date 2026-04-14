@@ -306,6 +306,12 @@ impl AgentRegistry {
         self.active_count.load(Ordering::Acquire)
     }
 
+    /// Maximum number of concurrent agents. Exposed for tools that need
+    /// to preflight-check admission (e.g. `spawn_agents` batch).
+    pub fn max_agents(&self) -> usize {
+        self.max_agents
+    }
+
     /// Get information about a specific agent.
     pub fn get_info(&self, id: AgentId) -> Result<AgentInfo> {
         self.agents
