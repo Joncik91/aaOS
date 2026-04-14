@@ -303,7 +303,7 @@ Two commits derived from Run 7b's proposal, scoped minimally rather than impleme
 
 ### Run 7 Follow-up: Phase 1 speed work *(same day, commit `5be74ac`)*
 
-Run 7b took ~29 minutes and cost ~$0.16 per dashboard. Profiling the timeline showed the cost concentrated in three places: a 4-child orchestration chain (2.5 min of Bootstrap digest/spawn overhead), a ~4-minute sequential `file_read` loop inside the scanner, and an analyzer that produced 5 unscoped intermediate documents. We did a grounded research pass — reading the wiki's notes on DeerFlow 2.0's parallel-subagents pattern, Claude Code's Agent tool, the TB-CSPN deterministic-orchestration paper, and the Repository Intelligence Graph research — then sent a plan to Copilot for review. Round 1 pushback:
+Run 7b took ~29 minutes and cost ~$0.16 per dashboard. Profiling the timeline showed the cost concentrated in three places: a 4-child orchestration chain (2.5 min of Bootstrap digest/spawn overhead), a ~4-minute sequential `file_read` loop inside the scanner, and an analyzer that produced 5 unscoped intermediate documents. We did a grounded research pass — surveying external work on DeerFlow 2.0's parallel-subagents pattern, Claude Code's Agent tool, the TB-CSPN deterministic-orchestration paper, and the Repository Intelligence Graph research — then sent a plan to Copilot for review. Round 1 pushback:
 
 - Don't make executor-level parallelism generic — it's too broad, many same-turn tool calls are semantically dependent. Instead use a **tool-level opt-in** (batch tools) or a whitelist.
 - The biggest wins in a system like aaOS come from **fewer orchestration turns**, not smarter orchestration. "Trim the chain" is the best single idea.
@@ -323,7 +323,7 @@ Revised plan shipped in `5be74ac`:
 - `spawn_agents` batch (needs atomic budget reservation + stronger per-agent workspace guarantees)
 - RIG / deterministic decomposition for "scan + propose" goals (Phase 2 candidates — evaluate only after we measure Phase 1's actual effect)
 
-**Research pages consulted during planning** (all under `/root/claude-obsidian/research/`): `deerflow-2-0-architecture.md`, `framework-energy-waste.md`, `the-complexity-trigger.md`, `claude-code-and-similar-cli-agent-tools.md`. The key takeaway from those: **the agentic tax concentrates at the orchestrator, and deterministic rule-based coordination can cut API calls ~67% at the cost of adding a control plane**. Phase 1 does not touch the control plane yet; Phase 2 might.
+**External research surveyed during planning** (ByteDance DeerFlow 2.0 multi-agent architecture, TB-CSPN deterministic orchestration, Repository Intelligence Graph studies, plus the Anthropic Claude Code Agent-tool pattern). The key takeaway: **the agentic tax concentrates at the orchestrator, and deterministic rule-based coordination can cut API calls ~67% at the cost of adding a control plane**. Phase 1 does not touch the control plane yet; Phase 2 might.
 
 ---
 
