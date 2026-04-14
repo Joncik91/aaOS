@@ -60,6 +60,23 @@ aaOS now supports the [AgentSkills](https://agentskills.io) open standard by Ant
 
 **What this enables:** Any AgentSkills-compatible skill works in aaOS — but under capability enforcement that no other runtime provides. The same skill that has open shell access in Claude Code runs under unforgeable capability tokens in aaOS. Skills become the "driver model" for agent capabilities; the runtime provides the security boundary.
 
+## Self-Reflection, Round 4 *(complete)*
+
+Three earlier self-reflection runs each found the next deepest bug in the runtime (path traversal → missing revocation → unenforced constraints). Run 4 was different: with skill_read instructions finally wired into the Bootstrap manifest, the agent loaded `idea-refine` and `planning-and-task-breakdown` as executable knowledge and produced a feature proposal instead of a bug report — a "Meta-Cognitive Coordination Layer" so Bootstrap learns from past tasks.
+
+**Observed during the run:** 12 of 50 `file_read` attempts failed because children were guessing filenames or calling `file_read` on directories. Not a capability bug — a missing primitive.
+
+**Shipped (incrementally):**
+
+1. **`file_list` tool** — Directory listing (or file metadata), capability-gated by `FileRead` (same glob, same path normalization). Fixes the path-guessing problem. 5 new unit tests.
+2. **Stable Bootstrap ID** — `AgentId::from_uuid()` (kernel-only constructor) + `AgentRegistry::spawn_with_id()` + `AAOS_BOOTSTRAP_ID` env / `/var/lib/aaos/bootstrap_id` file. Makes cross-run memory meaningful for Bootstrap specifically; other agents' IDs remain fresh per-spawn. 1 new test.
+3. **Persistent memory, opt-in** — `AAOS_PERSISTENT_MEMORY=1` bind-mounts host memory dir into the container. `AAOS_RESET_MEMORY=1` wipes DB + ID file on boot. Off by default because persistent memory carries prompt-injection / bad-strategy risk.
+4. **Memory protocol in manifest** — Bootstrap is now told to `memory_query` before decomposing a goal, `memory_store` a compact run summary after completion, with explicit guidance on what NOT to persist (credentials, user content). Free-form summaries, no structured schema yet.
+
+**Not built (deliberately deferred):** The proposal's new `aaos-reflection` crate, `CoordinationPattern` schema with `success_rate`/`usage_count`, `PatternStore` trait, and dedicated reflection service — all were judged premature. Two external reviews (Claude Opus 4.6 and GPT-5.4 via Copilot CLI) independently concluded the design was schema-first on zero data, with multiple trait signatures that wouldn't have compiled. The minimal version above is designed as the empirical ground for a future structured system: run 10-20 goals, observe what Bootstrap actually remembers and retrieves, then design `PatternStore` against real patterns if they emerge.
+
+**Cost so far across all four runs:** ~$0.59. Each run produced either a real bug fix or a design artifact.
+
 ## Phase F: Real Kernel Migration
 
 Move from userspace abstractions on Linux to a real capability-based microkernel.

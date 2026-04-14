@@ -325,3 +325,64 @@ Each run, with the previous fix integrated, found the next deepest issue. All th
 ### The Insight
 
 **A runtime that reads its own code, finds bugs, and proposes fixes is a useful feedback loop — even when it can't compile or test the fixes itself.** The human provides compilation, judgment, and integration. The runtime provides exhaustive reading and adversarial analysis. At ~$0.03 per cycle, this is cheaper than any human code review.
+
+---
+
+## Run 4: The System Asks for a Feature Instead of a Bug
+
+The first time skills were used as executable knowledge, not naming inspiration.
+
+### What Changed
+
+Runs 1-3 saw the skill catalog in their system prompt but spawned child agents named after skills — without ever calling `skill_read` to load the instructions. Before run 4, the Bootstrap manifest was rewritten with explicit `skill_read` examples and a rule ("Before starting work, load relevant skills with `skill_read`"). Run 4 followed it.
+
+Bootstrap loaded `idea-refine` first (the goal was philosophical: "What am I? What should I become? Build it."), then `planning-and-task-breakdown`. It followed the skills' workflows: enter read-only mode, map dependencies, slice vertically, identify risks. The architect child even loaded `idea-refine`'s three reference files (`frameworks.md`, `refinement-criteria.md`, `examples.md`). Deep skill usage, never seen in prior runs.
+
+### Output
+
+Four workspace files totaling 30 KB:
+
+- **`idea.md`** — Bootstrap's own reflection, enumerating 5 possible evolution directions (Autonomous Evolution Engine, Agent Marketplace, Meta-Cognitive Layer, Human-Agent Interface, Multi-Agent Coordination).
+- **`analysis.md`** — "Who am I" analysis from child 1.
+- **`evolution-design.md`** — MVP design by the architect child, picking the Meta-Cognitive Coordination Layer with three phases (Reflective → Predictive → Autonomous) and an explicit "Not Doing" list.
+- **`technical-analysis.md`** — Phase 1 implementation design from child 3: new `aaos-reflection` crate, Rust types for `ReflectionEventKind` / `TaskOutcome` / `TaskMetrics` / `CoordinationPattern`, `PatternStore` trait, SQLite backend, 8-week implementation plan.
+
+Stats: 4 agents total (Bootstrap + 3 children), 19 Bootstrap iterations, ~12 minutes wall time, 1.3 M input tokens / 20 K output, ~$0.48 in DeepSeek credits. Zero budget violations, zero panics.
+
+### What the Reviews Caught
+
+Two independent reviews (Claude Opus 4.6 inline, then GPT-5.4 via Copilot CLI) both concluded: the idea was right, the design was premature.
+
+- **New `aaos-reflection` crate is unjustified.** Phase 1 duplicates existing audit events, existing `SqliteMemoryStore`, and existing `memory_store` / `memory_query` tools. No new crate required.
+- **`CoordinationPattern` schema with `success_rate: f32`, `usage_count: u32`, `last_used: DateTime` is a Phase 2/3 schema pretending to be MVP data.** The system has zero runs of accumulated learning; schema-first on zero data is the same class of error runs 2-3 made (microkernel fixation, `AtomicU32 + Clone`).
+- **`impl Tool for PatternTool` used the wrong signature** — `async fn invoke(&self, input: Value) -> Result<Value>` instead of the actual `async fn invoke(&self, input: Value, ctx: &InvocationContext) -> Result<Value>`. Wouldn't have compiled.
+- **The proposal ignored the real blocker.** Bootstrap gets a fresh `AgentId` every container boot. Without a stable identity, persistent memory is orphaned between runs. The design treated this as trivial; Copilot's grep confirmed `AgentId::new()` in `registry.rs` is the actual hinge.
+- **Memory-as-free-text has less reach than the proposal assumed.** `MemoryRecord` supports `metadata`, but `memory_store` tool always writes empty metadata and `memory_query` returns only content/category/score. "Just use existing memory" is true at the storage layer, partial at the tool layer. The proposal did not mention this.
+
+### What the Reviews Added
+
+- **Security concern absent from the original proposal:** persistent Bootstrap memory = long-lived cognitive state. Prompt injection and bad-strategy persistence become durable, not ephemeral like a single task. Persistent memory should be opt-in, reset-friendly, and scrubbed to orchestration summaries only.
+- **Architecture concern:** a stable `AgentId` for one special agent slightly bends the "IDs are fresh kernel-generated process IDs" model. Long-term a separate "system memory identity" distinct from `AgentId` is probably cleaner.
+
+### What Was Built Instead
+
+A minimal version designed to ground the eventual structured system in real data:
+
+1. `file_list` tool — to fix the observed path-guessing (12 of 50 `file_read` attempts failed because no directory-listing primitive existed).
+2. `AgentId::from_uuid()` (kernel-only) + `AgentRegistry::spawn_with_id()` — stable Bootstrap identity via `AAOS_BOOTSTRAP_ID` env or `/var/lib/aaos/bootstrap_id` file.
+3. Opt-in persistent memory — `AAOS_PERSISTENT_MEMORY=1` bind-mounts host memory dir; `AAOS_RESET_MEMORY=1` wipes DB + ID.
+4. Manifest protocol — Bootstrap told to `memory_query` before planning, `memory_store` a compact summary after, with explicit guidance on what not to persist.
+
+No new crate, no new trait, no new schema. Tests: 262 passing (+7). Deferred work is documented explicitly in the roadmap.
+
+### The Pattern
+
+The runtime's self-reflection shifted from finding bugs (runs 1-3) to proposing features (run 4). The new failure mode is also new: **the system overbuilds**. Faced with the skill catalog and a philosophical prompt, it produced a thoughtful, structurally-sound proposal that was not grounded in observed behavior. External review caught this; without it, we would have implemented the 8-week plan and then discovered in month 3 that most of it wasn't useful.
+
+**The lesson:** agent-proposed designs need the same "observed behavior vs. aspirational architecture" filter that agent-proposed fixes needed in runs 1-3. In both cases the cheapest place to catch a mistake is before any code is written, and the tools are: (1) the human reading the design against the real codebase; (2) an external LLM reviewer with codebase access to cross-check. Both caught issues the original agent missed. Cost of the full review cycle: under $0.01.
+
+### Cost Update
+
+- Runs 1-3 (bug-finding): $0.11 total, 3 real bugs fixed.
+- Run 4 (feature proposal): $0.48.
+- Running total: ~$0.59 for 3 bugs fixed + 1 shipped minimal feature + an observational foundation for whatever empirical pattern-mining work comes next.

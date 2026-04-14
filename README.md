@@ -36,7 +36,7 @@ What's implemented and tested:
 - **Structured IPC** — MCP-native message routing with capability validation, request-response via pending-response map
 - **Self-designing capability** — Agents can read the mounted aaOS source code at `/src/` and produce working Rust implementations. The OS has designed its own budget enforcement system.
 - **Self-auditing security** — The system performed a security audit of itself (1.37M tokens, $0.05), found a real path traversal vulnerability in `glob_matches` that had been present since Phase A, and produced a hardening plan. The vulnerability was fixed based on the audit findings.
-- **Iterative self-improvement** — Three consecutive self-reflection runs, each with a fresh container and zero memory. Each run found the next deepest bug: path traversal → missing revocation → unenforced constraints. Total cost: $0.11 for three real bugs found and fixed.
+- **Iterative self-improvement** — Four self-reflection runs to date. Runs 1-3 (fresh container, zero memory) each found the next deepest bug: path traversal → missing revocation → unenforced constraints. Run 4 loaded skills correctly (first run to use them as executable knowledge, not just naming inspiration) and proposed a Meta-Cognitive Coordination Layer for Bootstrap cross-run learning — shipped as a minimal version (stable Bootstrap ID + opt-in memory volume + query/store protocol) so we can graduate to a grounded schema later. Total cost so far: ~$0.59 across all four runs.
 
 ## Roadmap
 
@@ -72,7 +72,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Orchestration Layer                 |  spawn_agent, capability narrowing
 +---------------------------------------------+
-|        Tool & Service Layer                  |  8 tools, capability-checked, schema-validated
+|        Tool & Service Layer                  |  10 tools, capability-checked, schema-validated
 +---------------------------------------------+
 |        Agent Memory Layer                    |  Context windows, episodic store, embeddings
 +---------------------------------------------+
@@ -86,7 +86,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 - **aaos-core** — Types, traits, capability model, audit events (21 kinds), budget tracking
 - **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management
 - **aaos-ipc** — MCP message router with capability validation, request-response IPC
-- **aaos-tools** — Tool registry, invocation, 9 built-in tools (including memory + skill_read)
+- **aaos-tools** — Tool registry, invocation, 10 built-in tools (including memory + skill_read + file_list)
 - **aaos-llm** — LLM clients (Anthropic + OpenAI-compat), execution loop, inference scheduler
 - **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **agentd** — Daemon binary, Unix socket API, approval queue
@@ -141,6 +141,18 @@ The Bootstrap Agent (DeepSeek Reasoner) analyzes the goal, spawns specialized ch
 
 The source code is mounted read-only at `/src/` inside the container, so agents can read and understand the codebase when given code-related goals.
 
+### Cross-run memory (opt-in)
+
+By default, every container starts with a fresh Bootstrap identity and empty memory — the same behavior the first four self-reflection runs used. To let the Bootstrap Agent accumulate lessons across restarts:
+
+```bash
+AAOS_PERSISTENT_MEMORY=1 DEEPSEEK_API_KEY="sk-..." ./run-aaos.sh "your goal"
+```
+
+This bind-mounts `./memory/` into the container. The Bootstrap ID is persisted at `/var/lib/aaos/bootstrap_id` (overridable via `AAOS_BOOTSTRAP_ID`). The manifest instructs Bootstrap to `memory_query` before decomposing a goal and `memory_store` a compact run summary after completing one. To wipe persistent state, launch once with `AAOS_RESET_MEMORY=1`.
+
+Persistent memory carries real risk: prompt-injected content and bad strategies become durable. The feature is opt-in and reset is one env var away.
+
 To send additional goals to the running container:
 ```bash
 # The container stays alive and accepts goals via Unix socket
@@ -174,6 +186,7 @@ JSON-RPC 2.0 over Unix socket.
 | `echo` | `tool: echo` | Returns input (testing) |
 | `web_fetch` | `WebSearch` | HTTP GET a URL |
 | `file_read` | `FileRead { path_glob }` | Read file, path-checked |
+| `file_list` | `FileRead { path_glob }` | List directory contents — use before guessing filenames |
 | `file_write` | `FileWrite { path_glob }` | Write file, path-checked |
 | `spawn_agent` | `SpawnChild { allowed_agents }` | Spawn child with narrowed capabilities |
 | `memory_store` | `tool: memory_store` | Store a fact/observation/decision/preference |

@@ -43,7 +43,9 @@ Universal tool registry where every capability is:
 - Invoked through capability-checked channels
 - Logged to the audit trail
 
-Built-in tools: `echo`, `web_fetch`, `file_read`, `file_write`, `spawn_agent`, `memory_store`, `memory_query`, `memory_delete`, `skill_read`. External tools integrate via the Tool trait.
+Built-in tools: `echo`, `web_fetch`, `file_read`, `file_list`, `file_write`, `spawn_agent`, `memory_store`, `memory_query`, `memory_delete`, `skill_read`. External tools integrate via the Tool trait.
+
+**`file_list`** — List directory contents (name, kind, size) or return metadata for a single file. Introduced after run 4 analysis showed children were guessing paths and calling `file_read` on directories to explore them. Uses the same `FileRead` capability glob as `file_read`, same lexical path normalization — capability model unchanged.
 
 **AgentSkills Support** — Implements the [AgentSkills](https://agentskills.io) open standard by Anthropic. Skills are folders with `SKILL.md` files containing YAML frontmatter + markdown instructions. `SkillRegistry` discovers skills at startup from `/etc/aaos/skills/` and `AAOS_SKILLS_DIR`. Skill catalog (names + descriptions) injected into agent system prompts (progressive disclosure tier 1). `skill_read` tool serves full instructions and reference files on demand (tiers 2+3). Path traversal protection on reference file reads. 21 production-grade skills bundled from addyosmani/agent-skills.
 
@@ -70,6 +72,8 @@ The system can run autonomously in a Docker container with `agentd` as PID 1:
 - **Bootstrap Agent** — A persistent DeepSeek Reasoner agent that receives goals, decomposes them into agent roles, writes child manifests, spawns children (DeepSeek Chat) with narrowed capabilities, coordinates work, and produces output. Few-shot manifest examples in the system prompt guide reliable YAML generation.
 - **Persistent Goal Queue** — Bootstrap runs as a persistent agent accepting goals via the Unix socket API. Container stays alive between tasks.
 - **Workspace Isolation** — Each goal gets `/data/workspace/{name}/`. Children write intermediate files there. Output goes to `/output/`.
+- **Stable Bootstrap Identity (opt-in)** — Normally every agent gets a fresh unforgeable UUID at spawn. Bootstrap is the exception: its `AgentId` is resolved from `AAOS_BOOTSTRAP_ID` or `/var/lib/aaos/bootstrap_id` so episodic memory accumulates across container restarts. Only the Bootstrap path uses `AgentRegistry::spawn_with_id()`; regular `agent.spawn` RPC is unchanged. Reset via `AAOS_RESET_MEMORY=1`. The `AgentId::from_uuid()` constructor is kernel-only and flagged as such — a concession to persistence that slightly bends the "IDs are fresh kernel-generated process IDs" model. Long-term a separate *system memory identity* distinct from `AgentId` may be cleaner.
+- **Cross-run learning (opt-in, minimal)** — When `AAOS_PERSISTENT_MEMORY=1`, the `run-aaos.sh` launcher bind-mounts the host's `./memory/` into `/var/lib/aaos/memory`, so the SQLite episodic store and the stable Bootstrap ID survive restarts. The Bootstrap manifest instructs the agent to `memory_query` before decomposing a goal and `memory_store` a compact run summary after completion. Deliberately minimal: no new crate, no pattern schema, no reflection service — just existing primitives wired up. The plan is to observe 10-20 runs, then design a structured `PatternStore` only if recurring patterns justify one.
 - **Safety Guardrails** — Agent count limit (100), spawn depth limit (5), parent⊆child capability enforcement, automatic retry of failed children.
 - **StdoutAuditLog** — Audit events streamed as JSON-lines to stdout for `docker logs -f` observability.
 
