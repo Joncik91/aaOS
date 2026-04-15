@@ -734,9 +734,38 @@ impl AgentBackend for NamespacedBackend {
     }
 
     async fn health(&self, handle: &AgentLaunchHandle) -> BackendHealth {
-        match self.sessions.get(&handle.agent_id) {
-            Some(_) => BackendHealth::Healthy,
-            None => BackendHealth::Unknown("no session for this handle".into()),
+        // Check the child process itself — peer-creds validation happened
+        // at accept() time, so the pid on the handle is the authoritative
+        // child. Priority:
+        //   1. waitpid(WNOHANG) to detect terminated state.
+        //   2. /proc/<pid> existence to confirm the process is still alive.
+        //   3. Session presence for "did we ever launch this agent".
+        let Some(state) = handle.state::<NamespacedState>() else {
+            return BackendHealth::Unknown("handle state not NamespacedState".into());
+        };
+        let pid = nix::unistd::Pid::from_raw(state.pid as i32);
+        match nix::sys::wait::waitpid(
+            pid,
+            Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+        ) {
+            Ok(nix::sys::wait::WaitStatus::StillAlive) => BackendHealth::Healthy,
+            Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => BackendHealth::Exited(code),
+            Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
+                BackendHealth::Signaled(sig as i32)
+            }
+            Ok(_) => BackendHealth::Healthy,
+            Err(nix::Error::ECHILD) => {
+                // Process was reaped (e.g. by stop()) or was never our child.
+                // Check /proc to decide between Exited-and-reaped and truly-alive.
+                if std::path::Path::new(&format!("/proc/{}", state.pid)).exists() {
+                    // Still alive but not our child (shouldn't happen in
+                    // practice unless the system reaped via init).
+                    BackendHealth::Disconnected
+                } else {
+                    BackendHealth::Exited(0)
+                }
+            }
+            Err(e) => BackendHealth::Unknown(format!("waitpid: {e}")),
         }
     }
 }

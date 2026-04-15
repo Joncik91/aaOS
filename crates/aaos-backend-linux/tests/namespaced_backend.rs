@@ -1,18 +1,44 @@
 //! Integration tests for [`NamespacedBackend`].
 //!
-//! Marked `#[ignore]` per plan v4 commit-2 guidance: the full clone +
-//! pivot_root + Landlock + seccomp path needs root (or
-//! `CAP_SYS_ADMIN`) and a Linux kernel >= 5.13 with Landlock enabled.
-//! Run on a deb test host with:
+//! Marked `#[ignore]` because the full clone + pivot_root + Landlock +
+//! seccomp path needs Linux 5.13+ with Landlock enabled, unprivileged
+//! user namespaces available, and the `aaos-agent-worker` binary built.
+//! Run on a capable host with:
 //!
 //! ```bash
+//! cargo build -p aaos-backend-linux --bin aaos-agent-worker
 //! cargo test -p aaos-backend-linux --test namespaced_backend -- --ignored
 //! ```
 
 #![cfg(target_os = "linux")]
 
-use aaos_backend_linux::{NamespacedBackend, NamespacedBackendConfig};
-use aaos_core::{AgentBackend, AgentId, AgentLaunchSpec, AgentManifest};
+use aaos_backend_linux::{NamespacedBackend, NamespacedBackendConfig, NamespacedState};
+use aaos_core::{AgentBackend, AgentId, AgentLaunchSpec, AgentManifest, BackendHealth};
+use std::path::{Path, PathBuf};
+
+/// Build a backend config with a session dir in a tempdir and the
+/// worker binary resolved to an absolute path under the workspace's
+/// `target/debug/`. Absolute path is required because the child
+/// changes cwd during pivot_root.
+fn test_config(tmp: &Path) -> NamespacedBackendConfig {
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
+    let workspace_root = Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let worker = workspace_root.join("target/debug/aaos-agent-worker");
+    assert!(
+        worker.exists(),
+        "worker binary missing — run `cargo build -p aaos-backend-linux --bin aaos-agent-worker` first: {}",
+        worker.display()
+    );
+    let mut cfg = NamespacedBackendConfig::default();
+    cfg.session_dir = tmp.join("sessions");
+    cfg.worker_binary = worker;
+    cfg
+}
 
 fn sample_spec() -> AgentLaunchSpec {
     AgentLaunchSpec {
@@ -26,45 +52,90 @@ system_prompt: "integration test"
         )
         .unwrap(),
         capability_handles: vec![],
-        workspace_path: std::path::PathBuf::new(),
+        workspace_path: PathBuf::new(),
         budget_config: None,
     }
 }
 
 #[tokio::test]
-#[ignore = "requires root + Linux >= 5.13 with Landlock; run manually per plan v4"]
+#[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
 async fn launch_reaches_sandboxed_ready() {
-    let backend = NamespacedBackend::new(NamespacedBackendConfig::default())
-        .expect("Landlock supported on this kernel");
+    let tmp = tempfile::tempdir().unwrap();
+    let backend =
+        NamespacedBackend::new(test_config(tmp.path())).expect("Landlock supported on this kernel");
     let handle = backend
         .launch(sample_spec())
         .await
         .expect("worker must reach sandboxed-ready");
+    assert_eq!(handle.backend_kind, "namespaced");
     backend.stop(&handle).await.expect("stop");
 }
 
 #[tokio::test]
-#[ignore = "requires root + Linux >= 5.13 with Landlock; run manually per plan v4"]
+#[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
 async fn stop_is_idempotent() {
-    let backend = NamespacedBackend::new(NamespacedBackendConfig::default()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
     let handle = backend.launch(sample_spec()).await.unwrap();
-    backend.stop(&handle).await.unwrap();
-    backend.stop(&handle).await.unwrap();
+    backend.stop(&handle).await.expect("first stop");
+    backend
+        .stop(&handle)
+        .await
+        .expect("second stop must be a no-op");
 }
 
 #[tokio::test]
-#[ignore = "requires root + Linux >= 5.13 with Landlock; run manually per plan v4"]
-async fn worker_cannot_execve() {
-    // Launch, send a PokeOp::TryExecve over the broker socket,
-    // observe that the worker exits with SIGSYS.
-    //
-    // Concrete implementation of this test needs the broker-side
-    // agent loop to be wired — a follow-up to commit 2.
-}
-
-#[tokio::test]
-#[ignore = "requires root + Linux >= 5.13 with Landlock; run manually per plan v4"]
+#[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
 async fn health_detects_exit() {
-    // Launch, kill the child externally, observe
-    // BackendHealth::Signaled / Exited.
+    // Launch, SIGKILL the child externally, verify health() reports
+    // Signaled or Exited (not Healthy).
+    use nix::sys::signal::{kill, Signal};
+    use nix::unistd::Pid;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
+    let handle = backend.launch(sample_spec()).await.unwrap();
+
+    let state = handle
+        .state::<NamespacedState>()
+        .expect("handle carries NamespacedState");
+    let pid = state.pid;
+
+    // Kill the worker externally.
+    kill(Pid::from_raw(pid as i32), Signal::SIGKILL).expect("can send SIGKILL");
+
+    // Give the parent a moment to reap / detect.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let health = backend.health(&handle).await;
+    match health {
+        BackendHealth::Signaled(_) | BackendHealth::Exited(_) | BackendHealth::Disconnected => {}
+        BackendHealth::Healthy => panic!("health must not report Healthy after SIGKILL"),
+        BackendHealth::Unknown(msg) => panic!("health returned Unknown: {msg}"),
+    }
+
+    // Idempotent cleanup.
+    let _ = backend.stop(&handle).await;
+}
+
+#[tokio::test]
+#[ignore = "scaffold: worker-side TryExecve op not wired yet; placeholder until broker agent-loop lands"]
+async fn worker_cannot_execve() {
+    // This test is a placeholder. The worker today does not accept a
+    // `TryExecve` poke op from the broker, so we cannot yet ask it to
+    // attempt an execve and observe SIGSYS. Wiring the op is a small
+    // follow-up — when it lands, this test fills in:
+    //
+    // 1. Launch worker (sandboxed-ready).
+    // 2. Send PokeOp::TryExecve over the broker socket.
+    // 3. Wait briefly.
+    // 4. Assert health() == Signaled(31) (SIGSYS) — seccomp killed it.
+    //
+    // For now this just documents the intent.
+    let tmp = tempfile::tempdir().unwrap();
+    let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
+    let handle = backend.launch(sample_spec()).await.unwrap();
+    // Sanity: worker spawned and reached sandboxed-ready.
+    assert_eq!(handle.backend_kind, "namespaced");
+    let _ = backend.stop(&handle).await;
 }
