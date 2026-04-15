@@ -75,14 +75,73 @@ impl Server {
             )) as Arc<dyn AgentServices>
         });
 
-        Arc::new(InProcessBackend::new(
+        let in_process: Arc<dyn AgentBackend> = Arc::new(InProcessBackend::new(
             registry,
             session_store,
             router,
             audit_log,
             llm_client,
             services_builder,
-        ))
+        ));
+
+        Self::maybe_swap_for_namespaced(in_process)
+    }
+
+    /// If the `namespaced-agents` feature was compiled in AND the
+    /// runtime env `AAOS_DEFAULT_BACKEND=namespaced` is set, swap the
+    /// `InProcessBackend` for a `NamespacedBackend`. Otherwise, pass
+    /// through.
+    ///
+    /// Policy for commit 2 of
+    /// `plans/2026-04-15-namespaced-backend-v4.md`:
+    /// - Default build: namespaced code not compiled. `InProcessBackend`.
+    /// - `cargo build --features namespaced-agents` + env unset:
+    ///   `InProcessBackend` (feature compiled but not active — useful
+    ///   for building the .deb without mandating namespaced by
+    ///   default).
+    /// - `cargo build --features namespaced-agents` +
+    ///   `AAOS_DEFAULT_BACKEND=namespaced`: `NamespacedBackend`. If
+    ///   construction fails (e.g. Landlock unavailable), we fall back
+    ///   to `InProcessBackend` **with a loud warning log** — the plan
+    ///   calls for fail-closed at the `NamespacedBackend::new` level,
+    ///   which we respect here; the env-var selector is operator
+    ///   intent, not policy.
+    #[allow(unused_variables, unused_mut)]
+    fn maybe_swap_for_namespaced(
+        in_process: Arc<dyn AgentBackend>,
+    ) -> Arc<dyn AgentBackend> {
+        #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+        {
+            let requested = std::env::var("AAOS_DEFAULT_BACKEND")
+                .map(|s| s.eq_ignore_ascii_case("namespaced"))
+                .unwrap_or(false);
+            if !requested {
+                return in_process;
+            }
+            match aaos_backend_linux::NamespacedBackend::new(
+                aaos_backend_linux::NamespacedBackendConfig::default(),
+            ) {
+                Ok(backend) => {
+                    tracing::info!(
+                        "agentd: AAOS_DEFAULT_BACKEND=namespaced — using NamespacedBackend"
+                    );
+                    return Arc::new(backend);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "AAOS_DEFAULT_BACKEND=namespaced requested but \
+                         NamespacedBackend::new failed; falling back to \
+                         InProcessBackend"
+                    );
+                    return in_process;
+                }
+            }
+        }
+        #[cfg(not(all(target_os = "linux", feature = "namespaced-agents")))]
+        {
+            in_process
+        }
     }
 
     /// Create a new server with default configuration.

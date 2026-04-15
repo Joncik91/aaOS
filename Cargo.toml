@@ -6,6 +6,7 @@ members = [
     "crates/aaos-tools",
     "crates/aaos-llm",
     "crates/aaos-memory",
+    "crates/aaos-backend-linux",
     "crates/agentd",
 ]
 resolver = "2"
@@ -38,3 +39,4 @@ aaos-llm = { path = "crates/aaos-llm" }
 aaos-runtime = { path = "crates/aaos-runtime" }
 aaos-ipc = { path = "crates/aaos-ipc" }
 aaos-tools = { path = "crates/aaos-tools" }
+aaos-backend-linux = { path = "crates/aaos-backend-linux" }

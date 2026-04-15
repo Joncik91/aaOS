@@ -33,3 +33,14 @@ scopeguard = { workspace = true }
 dashmap = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aaos-backend-linux = { workspace = true, optional = true }
+
+[features]
+default = []
+# Enable the Linux-namespaced AgentBackend. When set, and when
+# AAOS_DEFAULT_BACKEND=namespaced is exported at runtime, agentd will
+# launch persistent agents through NamespacedBackend instead of
+# InProcessBackend. Default remains InProcessBackend.
+namespaced-agents = ["dep:aaos-backend-linux"]
