@@ -166,6 +166,14 @@ impl CapabilityRegistry {
             invocations_used: entry.token.invocation_count,
         })
     }
+
+    /// Resolve a handle to just its underlying token id. Always compiled;
+    /// needed by the runtime to map a caller-supplied token_id back to the
+    /// handle that issued it (e.g. for revoke flows). Unlike `inspect`, does
+    /// not expose other token fields.
+    pub fn token_id_of(&self, handle: CapabilityHandle) -> Option<uuid::Uuid> {
+        self.table.get(&handle).map(|entry| entry.token.id)
+    }
 }
 
 #[cfg(test)]

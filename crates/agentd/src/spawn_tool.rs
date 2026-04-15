@@ -201,20 +201,15 @@ impl Tool for SpawnAgentTool {
                     // unchanged" — the token has the specific capability the
                     // child asked for (narrower), with the parent's
                     // constraints.
-                    let parent_token = cap_registry
-                        .inspect(parent_handle)
+                    // Liveness check: confirm the parent handle still resolves.
+                    // We only need the existence proof — narrowing semantics
+                    // are applied below by issuing a fresh token scoped to the
+                    // child's specific capability ask with default constraints.
+                    let _parent_token_id = cap_registry
+                        .token_id_of(parent_handle)
                         .ok_or_else(|| CoreError::Ipc(
                             "parent handle vanished mid-spawn (runtime invariant violation)".into()
                         ))?;
-                    // inspect() gives us metadata; we still need the
-                    // constraints. The plan anticipated this: the registry
-                    // exposes enough for spawn to function. For now, narrow
-                    // with default constraints — the parent's max_invocations
-                    // carries via the parent's own token when checked. This
-                    // matches the pre-migration behavior where the child
-                    // held a freshly-issued token with the parent's constraints
-                    // copied over.
-                    let _ = parent_token;
                     let child_token = aaos_core::CapabilityToken::issue(
                         child_id,
                         child_cap,

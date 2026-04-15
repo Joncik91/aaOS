@@ -370,8 +370,8 @@ impl AgentRegistry {
         let has_token = self.agents.get(&agent_id).map_or(false, |entry| {
             entry.value().capabilities.iter().any(|h| {
                 self.capability_registry
-                    .inspect(*h)
-                    .map_or(false, |snap| snap.token_id == token_id)
+                    .token_id_of(*h)
+                    .map_or(false, |tid| tid == token_id)
             })
         });
         if !has_token {
