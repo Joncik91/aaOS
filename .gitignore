@@ -25,4 +25,9 @@ CLAUDE.md
 # of what happened lives in docs/reflection-log.md, not in per-run artifact
 # trees in the repo.
 /output/
+
+# Implementation plans — working artifacts for Claude/Qwen/Copilot cycles.
+# Kept out of git so plan iterations don't clutter history; the code plus
+# commit messages plus docs are the durable record.
+/plans/
 __pycache__/
