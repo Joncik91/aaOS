@@ -119,23 +119,30 @@ async fn health_detects_exit() {
 }
 
 #[tokio::test]
-#[ignore = "scaffold: worker-side TryExecve op not wired yet; placeholder until broker agent-loop lands"]
+#[ignore = "scaffold: needs broker-side persistent stream to send PokeOp::TryExecve"]
 async fn worker_cannot_execve() {
-    // This test is a placeholder. The worker today does not accept a
-    // `TryExecve` poke op from the broker, so we cannot yet ask it to
-    // attempt an execve and observe SIGSYS. Wiring the op is a small
-    // follow-up — when it lands, this test fills in:
+    // Placeholder. The worker already handles `Request::Poke(PokeOp::TryExecve)`
+    // via `handle_poke` in worker.rs — seccomp kills it with SIGSYS when it
+    // calls `execve`. What's missing is on the broker side: after
+    // `run_handshake` returns, the connected `UnixStream` is dropped, so
+    // there's no channel to send the poke through.
     //
-    // 1. Launch worker (sandboxed-ready).
-    // 2. Send PokeOp::TryExecve over the broker socket.
-    // 3. Wait briefly.
-    // 4. Assert health() == Signaled(31) (SIGSYS) — seccomp killed it.
+    // The follow-up to fully wire this test:
     //
-    // For now this just documents the intent.
+    // 1. BrokerSession stores the connected stream after handshake.
+    // 2. NamespacedBackend exposes a `send_poke(agent_id, PokeOp)` method
+    //    that takes the session's stored stream and writes a WireRequest.
+    // 3. This test:
+    //    a. `backend.launch(spec)` to sandboxed-ready.
+    //    b. `backend.send_poke(agent_id, PokeOp::TryExecve)`.
+    //    c. Wait briefly for the child to receive + attempt execve.
+    //    d. Assert `backend.health(&handle) == Signaled(31)` (SIGSYS).
+    //
+    // For now this test launches and stops to prove the end-to-end setup
+    // works, which is independently useful.
     let tmp = tempfile::tempdir().unwrap();
     let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
     let handle = backend.launch(sample_spec()).await.unwrap();
-    // Sanity: worker spawned and reached sandboxed-ready.
     assert_eq!(handle.backend_kind, "namespaced");
     let _ = backend.stop(&handle).await;
 }

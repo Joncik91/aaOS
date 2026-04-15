@@ -73,6 +73,13 @@ Each entry is short by design. If something here grows enough to deserve an impl
 - **Why deferred:** the tracing stream works today; rewiring audit events is a wider change that would invalidate historical fixture files and require schema-versioning in the consumer. The observability redesign explicitly scoped v1 to "dashboard from existing audit JSON only."
 - **Signal to reconsider:** the two-stream parse breaks when we add a new tool, or when we want to archive full tool payloads durably (also see: payload archiver, which was opt-in-but-deferred in the observability plan).
 
+## Persistent broker↔worker stream for post-handshake messaging
+
+- **Idea:** after the `sandboxed-ready` handshake in `NamespacedBackend`, retain the connected `UnixStream` on `BrokerSession` and expose a `send_poke(agent_id, PokeOp)` / eventual `invoke_tool(...)` method on the backend. Today the handshake completes and the stream is dropped, so the broker has no way to reach the running worker.
+- **Where seen:** standard client-session-on-handler pattern — any long-lived RPC framework. The worker-side half already handles `Request::Poke(...)` through its agent loop.
+- **Why deferred:** (1) the worker's agent loop today only exists for poke-style integration tests — production tool-brokering isn't wired yet; (2) keeping the stream alive requires lifting it into a `Mutex<Option<UnixStream>>` on the session and defining who owns writes (currently nothing does). Needs a small design pass on framing + concurrency before implementation.
+- **Signal to reconsider:** (a) the `worker_cannot_execve` integration test needs to be real (currently a launch+stop scaffold), OR (b) the broker starts forwarding real tool invocations — the first workload that isn't "launch + stop" forces this wiring.
+
 ---
 
 ## How to add an entry
