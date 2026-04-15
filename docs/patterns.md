@@ -149,6 +149,8 @@ Rule: **claims in README.md and architecture.md must be defensible when a reader
 
 Derived from a post-Run-10 audit (commit after 2026-04-14) that replaced the seven claims above with honest phrasing and added the gaps to `ideas.md` as deferred hardening items.
 
+**Follow-up — the upgrade cycle worked.** Within two days of the audit, one of the deferred gaps (handle-based capability tokens) was closed (commits `14a8eae` + `18d14f0`). The README's capability-security paragraph was rewritten from *"runtime-issued, narrowed-only tokens"* to *"runtime-issued, handle-opaque tokens... a forged handle either resolves to nothing or to a token owned by a different agent"* — a strictly stronger claim that the code now backs. The HMAC-signing piece is still deferred (it's for cross-process transport, not in-process forgery) and stays named as such in `ideas.md`. That's the pattern in action: audit honestly → document the gap → close it when it matters → upgrade the wording. Don't pre-upgrade.
+
 ## Runtime admission control needs more than one review round
 
 Features that change how agents are admitted or cleaned up (registry reservation, batch spawn, atomic counters) consistently need **three peer-review rounds** to stabilize. Each round catches a different class of issue:
