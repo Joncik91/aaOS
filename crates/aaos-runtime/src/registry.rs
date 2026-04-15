@@ -457,12 +457,14 @@ impl AgentRegistry {
     /// Spawn an agent with a specific ID and pre-computed capability handles.
     /// Used by SpawnAgentTool to insert child agents with narrowed capabilities.
     /// `depth` is the spawn depth of the child (parent_depth + 1 for child agents).
+    /// `parent` is the spawning agent's id (None for top-level spawns).
     pub fn spawn_with_token_handles(
         &self,
         id: AgentId,
         manifest: AgentManifest,
         capabilities: Vec<CapabilityHandle>,
         depth: u32,
+        parent: Option<AgentId>,
     ) -> Result<()> {
         const MAX_SPAWN_DEPTH: u32 = 5;
         if depth > MAX_SPAWN_DEPTH {
@@ -479,6 +481,7 @@ impl AgentRegistry {
 
         let mut process = AgentProcess::new(id, manifest.clone(), capabilities);
         process.depth = depth;
+        process.parent_agent = parent;
         process.transition_to(AgentState::Running)?;
 
         // Wire IPC channels into the process BEFORE publishing it in the
@@ -813,7 +816,7 @@ lifecycle: on-demand
         let id = AgentId::new();
         let manifest = test_manifest("deep-agent");
         // depth 6 exceeds MAX_SPAWN_DEPTH (5)
-        let result = registry.spawn_with_token_handles(id, manifest, vec![], 6);
+        let result = registry.spawn_with_token_handles(id, manifest, vec![], 6, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("spawn depth exceeded"), "unexpected error: {err}");
@@ -826,7 +829,7 @@ lifecycle: on-demand
 
         let id = AgentId::new();
         let manifest = test_manifest("child-agent");
-        registry.spawn_with_token_handles(id, manifest, vec![], 3).unwrap();
+        registry.spawn_with_token_handles(id, manifest, vec![], 3, None).unwrap();
         assert_eq!(registry.get_depth(id).unwrap(), 3);
     }
 
@@ -879,7 +882,7 @@ capabilities:
         let (registry, _log) = test_registry();
         let id = AgentId::new();
         registry
-            .spawn_with_token_handles(id, test_manifest("child"), vec![], 1)
+            .spawn_with_token_handles(id, test_manifest("child"), vec![], 1, None)
             .unwrap();
         assert_eq!(registry.has_stable_identity(id).unwrap(), false);
     }
@@ -944,7 +947,7 @@ capabilities:
 
         let id = AgentId::new();
         registry
-            .spawn_with_token_handles(id, test_manifest("tokens-channels-test"), vec![], 1)
+            .spawn_with_token_handles(id, test_manifest("tokens-channels-test"), vec![], 1, None)
             .unwrap();
         let entry = registry.agents.get(&id).expect("agent in registry");
         assert!(
@@ -965,10 +968,10 @@ capabilities:
         let (registry, _log) = test_registry();
         let id = AgentId::new();
         registry
-            .spawn_with_token_handles(id, test_manifest("first"), vec![], 1)
+            .spawn_with_token_handles(id, test_manifest("first"), vec![], 1, None)
             .expect("first spawn succeeds");
 
-        let second = registry.spawn_with_token_handles(id, test_manifest("duplicate"), vec![], 1);
+        let second = registry.spawn_with_token_handles(id, test_manifest("duplicate"), vec![], 1, None);
         assert!(second.is_err(), "duplicate ID must be rejected");
         let err = second.unwrap_err().to_string();
         assert!(

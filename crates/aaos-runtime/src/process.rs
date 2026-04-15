@@ -67,6 +67,11 @@ pub struct AgentProcess {
     /// to persist across restarts (e.g., Bootstrap). Ephemeral spawns leave
     /// this false; kernel checks gate private memory on this flag.
     pub persistent_identity: bool,
+    /// When this agent was registered. Populated at `AgentProcess::new` time.
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    /// Parent agent id for child spawns (spawn_with_token_handles path).
+    /// None for top-level spawns (bootstrap, API-initiated).
+    pub parent_agent: Option<AgentId>,
 }
 
 impl AgentProcess {
@@ -89,6 +94,8 @@ impl AgentProcess {
             task_handle: None,
             budget_tracker,
             persistent_identity: false,
+            started_at: chrono::Utc::now(),
+            parent_agent: None,
         }
     }
 
@@ -136,6 +143,8 @@ impl AgentProcess {
             model: self.manifest.model.clone(),
             state: self.state,
             capability_count: self.capabilities.len(),
+            started_at: self.started_at,
+            parent_agent: self.parent_agent,
         }
     }
 }
@@ -148,6 +157,8 @@ pub struct AgentInfo {
     pub model: String,
     pub state: AgentState,
     pub capability_count: usize,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub parent_agent: Option<AgentId>,
 }
 
 #[cfg(test)]
@@ -201,6 +212,23 @@ system_prompt: "test"
         let result = process.transition_to(AgentState::Stopped);
         // Starting -> Stopped is valid (failed to start)
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn agent_info_has_started_at_and_parent() {
+        use chrono::Utc;
+        let started = Utc::now();
+        let info = AgentInfo {
+            id: aaos_core::AgentId::new(),
+            name: "child".into(),
+            model: "deepseek-chat".into(),
+            state: AgentState::Running,
+            capability_count: 2,
+            started_at: started,
+            parent_agent: Some(aaos_core::AgentId::new()),
+        };
+        assert_eq!(info.started_at, started);
+        assert!(info.parent_agent.is_some());
     }
 
     #[test]

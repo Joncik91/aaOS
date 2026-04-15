@@ -224,7 +224,7 @@ impl Tool for SpawnAgentTool {
         // Spawn child in registry with the narrowed handles (clone for potential retry).
         let child_handles_for_retry = child_handles.clone();
         self.registry
-            .spawn_with_token_handles(child_id, child_manifest.clone(), child_handles, child_depth)?;
+            .spawn_with_token_handles(child_id, child_manifest.clone(), child_handles, child_depth, Some(ctx.agent_id))?;
 
         // Cleanup guard: ensure child is removed even on error/panic
         let registry_cleanup = self.registry.clone();
@@ -282,6 +282,7 @@ impl Tool for SpawnAgentTool {
                 child_manifest.clone(),
                 child_handles_2,
                 child_depth,
+                Some(ctx.agent_id),
             )?;
 
             let registry_cleanup_2 = self.registry.clone();
