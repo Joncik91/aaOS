@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  purge)
+    # On purge: remove state, then user. Order matters (user must outlive its files).
+    rm -rf /var/lib/aaos
+
+    # Remove user/group. The getent guard handles the "already absent" case;
+    # deluser/delgroup failures beyond that surface as real errors.
+    if getent passwd aaos >/dev/null; then
+      deluser --system aaos
+    fi
+    if getent group aaos >/dev/null; then
+      delgroup --system aaos
+    fi
+    ;;
+  remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    # Non-purge removal: leave state intact. Standard Debian policy.
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

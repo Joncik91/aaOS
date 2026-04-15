@@ -244,7 +244,7 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
     tracing::info!("initial goal delivered to persistent bootstrap agent");
 
     // Step 3: Start the Unix socket listener so additional goals can be sent via agent.run.
-    let socket_path = PathBuf::from("/var/run/agentd.sock");
+    let socket_path = PathBuf::from("/run/agentd/agentd.sock");
     tracing::info!(socket = %socket_path.display(), "starting Unix socket listener for additional goals");
     server.listen(&socket_path).await?;
 

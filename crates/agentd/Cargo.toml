@@ -44,3 +44,32 @@ default = []
 # launch persistent agents through NamespacedBackend instead of
 # InProcessBackend. Default remains InProcessBackend.
 namespaced-agents = ["dep:aaos-backend-linux"]
+
+# ----------------------------------------------------------------------------
+# Debian packaging metadata (consumed by `cargo deb`).
+# Produces `target/debian/aaos_<version>_<arch>.deb`.
+# ----------------------------------------------------------------------------
+[package.metadata.deb]
+name = "aaos"
+maintainer = "Jounes <jounes.ds@gmail.com>"
+copyright = "2026, Jounes <jounes.ds@gmail.com>"
+license-file = ["../../LICENSE", "0"]
+extended-description = """
+aaOS is a capability-enforced agent runtime. agentd manages agent lifecycles,
+enforces capability tokens at tool-invocation boundaries, and routes IPC between
+agents. This package installs the daemon plus the default bootstrap manifest.
+"""
+depends = "$auto, systemd, ca-certificates"
+section = "admin"
+priority = "optional"
+assets = [
+  ["../../target/release/agentd", "usr/bin/", "755"],
+  ["../../target/release/aaos-agent-worker", "usr/bin/", "755"],
+  ["../../manifests/bootstrap.yaml", "etc/aaos/manifests/", "644"],
+  ["../../packaging/agentd.service", "lib/systemd/system/", "644"],
+  ["../../README.md", "usr/share/doc/aaos/", "644"],
+]
+conf-files = ["/etc/aaos/manifests/bootstrap.yaml"]
+maintainer-scripts = "../../packaging/debian/"
+systemd-units = { unit-name = "agentd", enable = false, start = false }
+

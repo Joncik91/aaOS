@@ -1,0 +1,31 @@
+[Unit]
+Description=aaOS agent daemon
+Documentation=https://github.com/jounes/aaOS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aaos
+Group=aaos
+ExecStart=/usr/bin/agentd run --socket /run/agentd/agentd.sock
+Restart=on-failure
+RestartSec=5s
+StateDirectory=aaos
+StateDirectoryMode=0750
+RuntimeDirectory=agentd
+RuntimeDirectoryMode=0750
+EnvironmentFile=-/etc/default/aaos
+
+# Basic hardening. Landlock/seccomp profiles come in Phase F-b.
+# ProtectSystem=full (not strict) for F-a: write-path audit deferred to F-b.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

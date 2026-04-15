@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+  configure)
+    # Create aaos system user if missing. State dirs come from systemd's
+    # StateDirectory= at service start — we don't duplicate that here.
+    if ! getent passwd aaos >/dev/null; then
+      adduser --system --group --home /var/lib/aaos \
+              --no-create-home --shell /usr/sbin/nologin aaos
+    fi
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

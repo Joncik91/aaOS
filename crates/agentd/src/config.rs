@@ -18,7 +18,7 @@ pub enum Command {
         #[arg(short, long, default_value = "/etc/agentd/config.yaml")]
         config: PathBuf,
         /// Unix socket path for the API
-        #[arg(short, long, default_value = "/var/run/agentd.sock")]
+        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
         socket: PathBuf,
     },
     /// Spawn an agent from a manifest file
@@ -26,13 +26,13 @@ pub enum Command {
         /// Path to the agent manifest YAML file
         manifest: PathBuf,
         /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/var/run/agentd.sock")]
+        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
         socket: PathBuf,
     },
     /// List running agents
     List {
         /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/var/run/agentd.sock")]
+        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
         socket: PathBuf,
     },
     /// Get status of a specific agent
@@ -40,7 +40,7 @@ pub enum Command {
         /// Agent ID
         agent_id: String,
         /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/var/run/agentd.sock")]
+        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
         socket: PathBuf,
     },
     /// Stop an agent
@@ -48,7 +48,7 @@ pub enum Command {
         /// Agent ID
         agent_id: String,
         /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/var/run/agentd.sock")]
+        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
         socket: PathBuf,
     },
 }
@@ -64,7 +64,7 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            socket_path: PathBuf::from("/var/run/agentd.sock"),
+            socket_path: PathBuf::from("/run/agentd/agentd.sock"),
             log_level: "info".to_string(),
         }
     }

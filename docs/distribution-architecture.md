@@ -33,7 +33,7 @@ The derivative curates which of Debian's primitives are exposed, wraps them in t
 
 ### Agent runtime layer — aaOS native
 
-- `agentd.service` — the runtime daemon. Listens on a Unix socket (`/var/run/agentd.sock`) for goal submissions. Spawns agents, enforces capabilities, routes IPC, logs to journald.
+- `agentd.service` — the runtime daemon. Listens on a Unix socket (`/run/agentd/agentd.sock`) for goal submissions. Spawns agents, enforces capabilities, routes IPC, logs to journald.
 - `/etc/aaos/manifests/` — agent manifest library. Bootstrap manifest ships with the package; operators drop additional manifests here.
 - `/etc/aaos/skills/` — AgentSkills bundle. 21 skills ship by default, extensible.
 - `/var/lib/aaos/memory/` — persistent memory for agents with stable identity.
