@@ -181,3 +181,32 @@ Phase A's path-traversal fix blocked `..` traversal via lexical normalization. C
 The fix wasn't buggy; the *specification* was incomplete. A fresh adversarial reviewer with full code access catches this kind of gap better than the original author, whose mental model is anchored to the original threat statement.
 
 **Consequence:** re-audit security-critical code *periodically* against a fresh threat model, not just against the original spec. The cost is small; the payoff is catching class-of-bug extensions before they're exploited.
+
+## Prove substrate-agnostic abstractions with a second implementation
+
+`AgentServices` was documented as substrate-agnostic from early in the
+project. With exactly one implementation (`InProcessAgentServices`), that
+claim was unfalsifiable — the trait could have any number of hidden
+assumptions about in-process semantics and no one would know. The same
+was true of `CapabilityToken` as "an opaque handle model" when nothing
+in the code forced opacity.
+
+Both were proven only when a genuinely different second implementation
+forced the trait to bend:
+- The handle-based token migration (commits `14a8eae`, `18d14f0`) made
+  `CapabilityToken` mutable state registry-owned instead of agent-owned.
+  Until a caller actually held `Vec<CapabilityHandle>` and had to ask the
+  registry for permits, the token model was theory.
+- The `NamespacedBackend` scaffolding (commits `a84cd98`, `a73e062`)
+  made `AgentServices` bend to a real cross-process boundary with its
+  own threat model, readiness semantics, and failure modes. Each piece
+  that had to stretch — opaque handle data, serializable launch spec,
+  self-applied sandbox inside the worker — was a place the original
+  trait had quietly assumed the in-process case.
+
+Rule: before committing to a distribution or product shape that relies
+on an abstraction being substrate-agnostic, ship a second backend. It
+doesn't have to be production-ready — the scaffolding alone reveals
+whether the trait was honest. Peer review of the design catches the
+architectural mistakes; the second implementation catches the silent
+assumptions no review can see.

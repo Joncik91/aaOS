@@ -109,6 +109,45 @@ Key properties:
 - **Revocable** — Revocation flips `revoked_at` on the registry-held token; subsequent `authorize_and_record` calls return `CapabilityDenied::Revoked`. `AgentRegistry::revoke_capability()` and `revoke_all_capabilities()` delegate to the registry. `CapabilityRevoked` audit event schema unchanged.
 - **Audited** — Every grant, denial, and revocation is logged. Durability depends on the configured audit backend.
 - **Scope of enforcement** — Bundled tools (in `aaos-tools`) check via the registry at the call boundary. Third-party tool plugins must also route through the registry — the runtime hands them the handle, not the token, so direct inspection isn't possible without a registry reference. The registry's mutation API (`insert`, `narrow`, `revoke`, `remove_agent`) is marked `pub` with `RUNTIME-INTERNAL` rustdoc warnings for cross-crate accessibility from `aaos-runtime`; discipline is naming-convention-enforced rather than visibility-enforced because `pub(crate)` can't cross crate boundaries.
+- **Kernel-level enforcement (namespaced backend only)** — When an agent runs under `NamespacedBackend`, the worker subprocess applies Landlock + seccomp (after `PR_SET_NO_NEW_PRIVS`) before entering the agent loop, and all tool invocations route through a peer-creds-authenticated Unix socket to the broker in `agentd`. The worker holds no `CapabilityHandle` values at all. This closes the in-process memory-attack threat class entirely for those agents. In-process backend agents continue to rely on handle opacity + registry discipline. Scaffolding is landed; the kernel launch path is pending manual verification on a Linux 5.13+ host (see the Agent Backends section below).
+
+## Agent Backends
+
+`AgentServices` is the agent-facing ABI; `AgentBackend` is the lower-level
+"how do I actually run an agent's execution context" contract. Two backends
+exist today, with a clean path to more:
+
+- **`InProcessBackend`** (`crates/aaos-runtime/src/backend_in_process.rs`) —
+  Today's default. Spawns a tokio task running `persistent_agent_loop` in
+  the same process as `agentd`. Low overhead, trusts the process boundary.
+- **`NamespacedBackend`** (`crates/aaos-backend-linux/src/lib.rs`) — Opt-in
+  via `namespaced-agents` feature and `AAOS_DEFAULT_BACKEND=namespaced` env
+  var. Scaffolding landed (handshake protocol, peer-creds session binding,
+  Landlock + seccomp compilers, worker binary, fail-closed Landlock probe).
+  The `clone() + uid_map + pivot_root + exec` launch path is pinned by a
+  unit test but not yet functional; completion requires manual verification
+  on a Linux 5.13+ host with root or user-namespace privileges.
+
+The opaque `AgentLaunchHandle::state: Arc<dyn Any>` pattern means future
+backends (Phase G MicroVM via Firecracker/Kata, a possible seL4 backend)
+require zero changes to `aaos-core` — only a new crate implementing the
+trait.
+
+### Capability enforcement on the namespaced backend
+
+Worker subprocess applies confinement AFTER `execve`, in this order:
+1. `prctl(PR_SET_NO_NEW_PRIVS, 1)` — required for unprivileged Landlock
+   and seccomp to take effect.
+2. Build Landlock ruleset from policy description received over broker
+   socket, then `landlock_restrict_self()`.
+3. Build seccomp-BPF allowlist (runtime + broker IPC only; denies
+   execve, ptrace, direct network, mount operations, privilege changes),
+   then `seccomp(SECCOMP_SET_MODE_FILTER)`.
+4. Send `sandboxed-ready` ack.
+
+The parent's `launch()` returns `Ok(handle)` only after receiving
+`sandboxed-ready` — confirming the subprocess is actually confined before
+any agent-visible work begins.
 
 ## Audit Trail
 

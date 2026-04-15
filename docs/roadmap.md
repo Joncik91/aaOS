@@ -101,9 +101,20 @@ Build aaOS as a Linux distribution where the primary workload is an agent runtim
 4. Minimal Debian-based image with `agentd` preinstalled and configured.
 5. Typed MCP wrappers for ~30 common Linux tools.
 
+**Progress:** Second `AgentBackend` implementation (`NamespacedBackend`)
+landed as scaffolding in commits `a84cd98` + `a73e062`. Handshake protocol,
+Landlock + seccomp compilation, broker session with peer-creds, fail-closed
+missing-Landlock detection all working and unit-tested. Kernel launch
+mechanics (clone + uid_map + pivot_root + exec) pending manual verification
+on a root-privileged Linux 5.13+ host — the path is pinned by a unit test
+that asserts `CloneFailed` so a future completion can't land silently. The
+`.deb` ships once the launch path is verified; until then the distribution
+defaults to `InProcessBackend` with `NamespacedBackend` as an opt-in
+feature flag.
+
 ## Phase G: Isolation Ladder *(research branch)*
 
-`AgentServices` becomes a substrate-agnostic ABI with multiple enforcement backends. The same agent manifest runs on different isolation levels depending on threat model:
+With two backend implementations already proving `AgentServices` is substrate-agnostic, Phase G adds a third: MicroVM-per-agent via Firecracker or Kata. The same agent manifest runs on different isolation levels depending on threat model:
 
 - **Level 1 — Process** (current): Linux process with seccomp+Landlock. Low overhead, appropriate for trusted workloads.
 - **Level 2 — MicroVM**: Firecracker / Kata / gVisor per agent (or per swarm). Hardware-virtualized isolation; what AWS Lambda and Fly.io use. Strong tenant isolation without writing a kernel.
