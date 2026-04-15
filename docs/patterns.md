@@ -284,3 +284,31 @@ the work it implies.
 Derived from the Phase F reframe commit — the two-week slide from
 "microkernel" → "agent-native Linux distribution" → "Debian
 derivative" tracked a scope calibration, not a direction change.
+
+## Build with `--release` somewhere in CI, not just locally
+
+Local dev builds run in debug mode. `#[cfg(any(test, debug_assertions))]`
+is a common and valid gate for inspection helpers, test fixtures, and
+anything that shouldn't ship. The trap: production code that calls
+those helpers compiles fine in debug and breaks the first time anyone
+runs `cargo build --release`.
+
+We hit this during Phase F-a packaging: two callers
+(`revoke_capability` in `aaos-runtime`, spawn narrowing in `agentd`)
+used `CapabilityRegistry::inspect`, which is debug-only for
+no-token-leak reasons. All unit tests passed for weeks. The first
+release build — inside `cargo deb` on a Debian 13 VM — refused to
+compile. Fix was a one-line addition (`token_id_of()`, always
+compiled, narrower surface) plus two caller swaps, but the latency
+was wrong: the first release build should happen in CI, not in a
+downstream packaging step on a cloud VM.
+
+**Rule.** At least one CI job should invoke `cargo build --release`
+on the main binaries. This catches `cfg(debug_assertions)` leaks,
+dead-code-elimination surprises, and inlining-dependent bugs before
+they reach packaging. The cost is one extra cargo invocation per CI
+run; the savings is never debugging "why does the `.deb` pipeline
+refuse to compile" at release time.
+
+Derived from commit `8d45691` — release-build fix for the
+`CapabilityRegistry::inspect` gate.

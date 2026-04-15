@@ -58,7 +58,7 @@ What's implemented and tested:
       |
  [Self-Reflection]  System reads own code, proposes features      ✅ Done  <-- you are here
       |
- [Debian Derivative]  .deb package + Debian 13 image, Landlock  Next
+ [Debian Derivative]  .deb shipped ✅ · Debian 13 image (F-b) Next
       |
  [Isolation Ladder]  MicroVM-per-agent via Firecracker/Kata    Research
       |
