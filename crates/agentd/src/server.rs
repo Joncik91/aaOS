@@ -14,6 +14,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
 use crate::api::{JsonRpcResponse, INTERNAL_ERROR, METHOD_NOT_FOUND};
+use crate::broadcast_audit::BroadcastAuditLog;
 
 /// The core daemon server holding all subsystems.
 #[allow(dead_code)]
@@ -24,6 +25,11 @@ pub struct Server {
     pub router: Arc<MessageRouter>,
     pub validator: Arc<SchemaValidator>,
     pub audit_log: Arc<dyn AuditLog>,
+    /// Concrete handle to the broadcast fan-out sink underlying `audit_log`.
+    /// Streaming JSON-RPC handlers call `.subscribe()` on this to receive
+    /// live audit events. `audit_log` above is the same object as a
+    /// trait-object alias.
+    pub broadcast_audit: Arc<BroadcastAuditLog>,
     pub approval_queue: Arc<crate::approval::ApprovalQueue>,
     pub llm_client: Option<Arc<dyn LlmClient>>,
     pub session_store: Arc<dyn aaos_runtime::SessionStore>,
@@ -146,7 +152,9 @@ impl Server {
 
     /// Create a new server with default configuration.
     pub fn new() -> Self {
-        let audit_log: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
+        let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
         let approval_queue = Arc::new(crate::approval::ApprovalQueue::new());
         let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
         let tool_registry = Arc::new(ToolRegistry::new());
@@ -225,6 +233,7 @@ impl Server {
             router,
             validator,
             audit_log,
+            broadcast_audit,
             approval_queue,
             llm_client: None,
             session_store,
@@ -277,6 +286,12 @@ impl Server {
         llm_client: Arc<dyn LlmClient>,
         audit_log: Arc<dyn AuditLog>,
     ) -> Self {
+        // Wrap whatever audit sink the caller provided (e.g. StdoutAuditLog
+        // for bootstrap container mode) with a BroadcastAuditLog so
+        // streaming handlers can still subscribe. The original sink stays
+        // the inner; everything recorded flows through unchanged.
+        let broadcast_audit = Arc::new(BroadcastAuditLog::new(audit_log, 256));
+        let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
         let approval_queue = Arc::new(crate::approval::ApprovalQueue::new());
         let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
         let tool_registry = Arc::new(ToolRegistry::new());
@@ -377,6 +392,7 @@ impl Server {
             router,
             validator,
             audit_log,
+            broadcast_audit,
             approval_queue,
             llm_client: Some(llm_client),
             session_store,
@@ -394,7 +410,9 @@ impl Server {
         memory_store: Arc<dyn aaos_memory::MemoryStore>,
         embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
     ) -> Self {
-        let audit_log: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
+        let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
         let approval_queue = Arc::new(crate::approval::ApprovalQueue::new());
         let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
         let tool_registry = Arc::new(ToolRegistry::new());
@@ -479,6 +497,7 @@ impl Server {
             router,
             validator,
             audit_log,
+            broadcast_audit,
             approval_queue,
             llm_client: Some(llm_client),
             session_store,
