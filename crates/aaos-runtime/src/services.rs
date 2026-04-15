@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use aaos_core::{
-    AgentId, AgentServices, ApprovalResult, ApprovalService, AuditEvent, AuditEventKind, AuditLog,
-    Capability, CoreError, Result, TokenUsage, ToolDefinition,
+    AgentBackend, AgentId, AgentServices, ApprovalResult, ApprovalService, AuditEvent,
+    AuditEventKind, AuditLog, Capability, CoreError, Result, TokenUsage, ToolDefinition,
 };
 use aaos_ipc::{McpMessage, MessageRouter};
 use aaos_tools::{ToolInvocation, ToolRegistry};
@@ -15,7 +15,15 @@ use crate::registry::AgentRegistry;
 
 /// In-process implementation of AgentServices.
 /// Delegates to existing registry and tool subsystems with the same
-/// capability checks and audit logging that the future socket implementation will use.
+/// capability checks and audit logging that the future socket
+/// implementation will use.
+///
+/// Holds an optional `backend: Arc<dyn AgentBackend>` handle. Commit 1
+/// of the namespaced-backend migration introduces this field so that
+/// future trait methods on `AgentServices` (e.g. `spawn_agent`) can
+/// delegate through the backend without another surgery. Today no
+/// method on this struct touches the field; existing behavior is
+/// strictly preserved.
 pub struct InProcessAgentServices {
     registry: Arc<AgentRegistry>,
     tool_invocation: Arc<ToolInvocation>,
@@ -23,6 +31,7 @@ pub struct InProcessAgentServices {
     audit_log: Arc<dyn AuditLog>,
     router: Arc<MessageRouter>,
     approval_service: Arc<dyn ApprovalService>,
+    backend: Option<Arc<dyn AgentBackend>>,
 }
 
 impl InProcessAgentServices {
@@ -41,7 +50,22 @@ impl InProcessAgentServices {
             audit_log,
             router,
             approval_service,
+            backend: None,
         }
+    }
+
+    /// Attach a backend so future spawn-delegation code paths have
+    /// something to call. Strictly additive in commit 1 of the
+    /// namespaced-backend refactor — no current method reads this
+    /// field.
+    pub fn with_backend(mut self, backend: Arc<dyn AgentBackend>) -> Self {
+        self.backend = Some(backend);
+        self
+    }
+
+    /// Accessor for the configured backend, if any.
+    pub fn backend(&self) -> Option<&Arc<dyn AgentBackend>> {
+        self.backend.as_ref()
     }
 }
 

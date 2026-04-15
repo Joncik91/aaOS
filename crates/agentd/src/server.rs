@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use aaos_core::{AgentManifest, AgentServices, ApprovalService, AuditLog, InMemoryAuditLog};
+use aaos_core::{
+    AgentBackend, AgentLaunchSpec, AgentManifest, AgentServices, ApprovalService, AuditLog,
+    InMemoryAuditLog,
+};
 use aaos_ipc::{MessageRouter, SchemaValidator};
 use aaos_llm::{AgentExecutor, ExecutorConfig, LlmClient};
-use aaos_runtime::{AgentRegistry, AgentState, InProcessAgentServices};
+use aaos_runtime::{AgentRegistry, AgentState, InProcessAgentServices, InProcessBackend};
 use aaos_tools::{EchoTool, ToolInvocation, ToolRegistry};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -27,9 +30,61 @@ pub struct Server {
     pub memory_store: Arc<dyn aaos_memory::MemoryStore>,
     pub embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
     pub skill_registry: Arc<aaos_tools::SkillRegistry>,
+    /// Substrate that actually launches agent processes. Today always
+    /// `InProcessBackend`; a later commit introduces
+    /// `NamespacedBackend` behind the same trait.
+    pub backend: Arc<dyn AgentBackend>,
 }
 
 impl Server {
+    /// Build an `InProcessBackend` from the pieces the server already
+    /// assembled. Centralizes the `services_builder` closure so the
+    /// three server constructors don't each re-derive it. Every
+    /// agent launched through this backend sees an
+    /// `InProcessAgentServices` wired with the same subsystems as
+    /// today's inline construction, plus a self-referential handle to
+    /// the backend (so future `spawn_agent` calls on the trait can
+    /// delegate without additional wiring).
+    fn build_in_process_backend(
+        registry: Arc<AgentRegistry>,
+        session_store: Arc<dyn aaos_runtime::SessionStore>,
+        router: Arc<MessageRouter>,
+        audit_log: Arc<dyn AuditLog>,
+        tool_invocation: Arc<ToolInvocation>,
+        tool_registry: Arc<ToolRegistry>,
+        approval_queue: Arc<crate::approval::ApprovalQueue>,
+        llm_client: Option<Arc<dyn LlmClient>>,
+    ) -> Arc<dyn AgentBackend> {
+        let registry_b = registry.clone();
+        let tool_invocation_b = tool_invocation.clone();
+        let tool_registry_b = tool_registry.clone();
+        let audit_log_b = audit_log.clone();
+        let router_b = router.clone();
+        let approval_b = approval_queue.clone();
+
+        let services_builder: Arc<
+            dyn Fn() -> Arc<dyn AgentServices> + Send + Sync,
+        > = Arc::new(move || {
+            Arc::new(InProcessAgentServices::new(
+                registry_b.clone(),
+                tool_invocation_b.clone(),
+                tool_registry_b.clone(),
+                audit_log_b.clone(),
+                router_b.clone(),
+                approval_b.clone() as Arc<dyn ApprovalService>,
+            )) as Arc<dyn AgentServices>
+        });
+
+        Arc::new(InProcessBackend::new(
+            registry,
+            session_store,
+            router,
+            audit_log,
+            llm_client,
+            services_builder,
+        ))
+    }
+
     /// Create a new server with default configuration.
     pub fn new() -> Self {
         let audit_log: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
@@ -93,6 +148,17 @@ impl Server {
         let session_store: Arc<dyn aaos_runtime::SessionStore> =
             Arc::new(aaos_runtime::InMemorySessionStore::new());
 
+        let backend = Self::build_in_process_backend(
+            registry.clone(),
+            session_store.clone(),
+            router.clone(),
+            audit_log.clone(),
+            tool_invocation.clone(),
+            tool_registry.clone(),
+            approval_queue.clone(),
+            None,
+        );
+
         Self {
             registry,
             tool_registry,
@@ -106,6 +172,7 @@ impl Server {
             memory_store,
             embedding_source,
             skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
+            backend,
         }
     }
 
@@ -129,7 +196,19 @@ impl Server {
         server.tool_registry.register(Arc::new(
             crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, server.registry.clone()),
         ));
-        server.llm_client = Some(llm_client);
+        server.llm_client = Some(llm_client.clone());
+        // Rebuild the backend with the LLM client so persistent
+        // agents can launch through it.
+        server.backend = Self::build_in_process_backend(
+            server.registry.clone(),
+            server.session_store.clone(),
+            server.router.clone(),
+            server.audit_log.clone(),
+            server.tool_invocation.clone(),
+            server.tool_registry.clone(),
+            server.approval_queue.clone(),
+            Some(llm_client),
+        );
         server
     }
 
@@ -221,6 +300,17 @@ impl Server {
             crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, registry.clone()),
         ));
 
+        let backend = Self::build_in_process_backend(
+            registry.clone(),
+            session_store.clone(),
+            router.clone(),
+            audit_log.clone(),
+            tool_invocation.clone(),
+            tool_registry.clone(),
+            approval_queue.clone(),
+            Some(llm_client.clone()),
+        );
+
         Self {
             registry,
             tool_registry,
@@ -234,6 +324,7 @@ impl Server {
             memory_store,
             embedding_source,
             skill_registry,
+            backend,
         }
     }
 
@@ -311,6 +402,17 @@ impl Server {
             crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, registry.clone()),
         ));
 
+        let backend = Self::build_in_process_backend(
+            registry.clone(),
+            session_store.clone(),
+            router.clone(),
+            audit_log.clone(),
+            tool_invocation.clone(),
+            tool_registry.clone(),
+            approval_queue.clone(),
+            Some(llm_client.clone()),
+        );
+
         Self {
             registry,
             tool_registry,
@@ -324,6 +426,7 @@ impl Server {
             memory_store,
             embedding_source,
             skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
+            backend,
         }
     }
 
@@ -434,51 +537,40 @@ impl Server {
         };
 
         // For persistent agents: start the background message loop
+        // through the configured backend. This used to inline the
+        // executor + ContextManager construction here; the refactor in
+        // commit 1 of `plans/2026-04-15-namespaced-backend-v4.md`
+        // moved it into `InProcessBackend::launch`.
         if is_persistent {
-            if let Some(llm) = &self.llm_client {
-                let services: Arc<dyn AgentServices> = Arc::new(InProcessAgentServices::new(
-                    self.registry.clone(),
-                    self.tool_invocation.clone(),
-                    self.tool_registry.clone(),
-                    self.audit_log.clone(),
-                    self.router.clone(),
-                    self.approval_queue.clone() as Arc<dyn ApprovalService>,
-                ));
-                let executor = AgentExecutor::new(
-                    llm.clone(),
-                    services,
-                    ExecutorConfig::default(),
+            if self.llm_client.is_none() {
+                return JsonRpcResponse::error(
+                    id,
+                    INTERNAL_ERROR,
+                    "persistent agents require an LLM client",
                 );
+            }
 
-                // Construct ContextManager for summarization support
-                let model_for_summarization = manifest.memory.summarization_model.clone()
-                    .unwrap_or_else(|| "claude-haiku-4-5-20251001".to_string());
-                let threshold = manifest.memory.summarization_threshold.unwrap_or(0.7);
-                let model_max = llm.max_context_tokens(&manifest.model);
-                let budget = match aaos_core::TokenBudget::from_config(
-                    &manifest.memory.context_window, model_max,
-                ) {
-                    Ok(b) => b,
-                    Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR,
-                        format!("invalid context_window: {e}")),
-                };
-                let context_manager = Some(Arc::new(aaos_runtime::ContextManager::new(
-                    llm.clone(), budget, model_for_summarization, threshold,
-                )));
+            let caps = match self.registry.get_token_handles(agent_id) {
+                Ok(c) => c,
+                Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
+            };
+            let budget_config = manifest.budget_config;
+            let spec = AgentLaunchSpec {
+                agent_id,
+                manifest: manifest.clone(),
+                capability_handles: caps,
+                // No per-agent workspace in the in-process path; kept
+                // as a field on the spec for future backends.
+                workspace_path: std::path::PathBuf::new(),
+                budget_config,
+            };
 
-                if let Err(e) = self.registry.start_persistent_loop(
-                    agent_id,
-                    executor,
-                    self.session_store.clone(),
-                    self.router.clone(),
-                    context_manager,
-                ) {
-                    return JsonRpcResponse::error(id, INTERNAL_ERROR,
-                        format!("failed to start persistent loop: {e}"));
-                }
-            } else {
-                return JsonRpcResponse::error(id, INTERNAL_ERROR,
-                    "persistent agents require an LLM client");
+            if let Err(e) = self.backend.launch(spec).await {
+                return JsonRpcResponse::error(
+                    id,
+                    INTERNAL_ERROR,
+                    format!("failed to launch persistent agent: {e}"),
+                );
             }
         }
 

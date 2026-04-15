@@ -310,6 +310,16 @@ impl AgentRegistry {
         Ok(())
     }
 
+    /// Internal accessor for the `InProcessBackend`, which needs mutable
+    /// access to the agent table to pull channels and plug in the
+    /// JoinHandle it spawned. Kept `pub(crate)` to avoid leaking the
+    /// internal DashMap shape to downstream crates — backends outside
+    /// `aaos-runtime` must use `start_persistent_loop` or the public
+    /// lifecycle API.
+    pub(crate) fn agents_table(&self) -> &DashMap<AgentId, crate::process::AgentProcess> {
+        &self.agents
+    }
+
     /// Current number of agents in the registry, as tracked by the
     /// admission-control counter. Exposed for tests and observability.
     /// Steady-state invariant: `active_count() == list().len()`.
