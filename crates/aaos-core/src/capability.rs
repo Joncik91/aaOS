@@ -4,6 +4,43 @@ use uuid::Uuid;
 
 use crate::agent_id::AgentId;
 
+/// An opaque handle that refers to a capability token held by the runtime.
+///
+/// Agents and tool implementations receive handles, not tokens. Only the
+/// runtime (specifically `CapabilityRegistry::resolve()`) can produce a
+/// `&CapabilityToken` from a handle. A tool implementation cannot construct
+/// a valid handle that maps to a useful token, because the inner u64 is an
+/// index into a runtime-held table — a forged handle either resolves to
+/// `None` (no such index) or to a token issued for a different agent.
+///
+/// Not cryptographic. Still vulnerable to attackers who can read the
+/// runtime's capability table directly (e.g. /proc/<pid>/mem on the host).
+/// Full HMAC-signed tokens are a separate, deferred hardening item tracked
+/// in docs/ideas.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CapabilityHandle(pub u64);
+
+/// Why an authorization failed. Included so tools can log or return a
+/// specific denial reason without holding a token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapabilityDenied {
+    UnknownHandle,
+    WrongAgent,
+    NotPermitted,
+    Exhausted,
+    Revoked,
+}
+
+/// Snapshot of a capability token's state for debugging and testing.
+/// Does NOT expose the token itself — only fields relevant for inspection.
+#[derive(Debug, Clone)]
+pub struct CapabilitySnapshot {
+    pub token_id: Uuid,
+    pub agent_id: AgentId,
+    pub revoked: bool,
+    pub invocations_used: u64,
+}
+
 /// A specific permission that can be granted to an agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
