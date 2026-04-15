@@ -55,6 +55,10 @@ mod linux_impl {
             libc::SYS_gettid, libc::SYS_getpid, libc::SYS_tgkill,
             libc::SYS_sched_yield, libc::SYS_restart_syscall,
             libc::SYS_nanosleep, libc::SYS_prctl,
+            // seccomp() must be allowed by the allowlist filter so the
+            // subsequent kill-on-dangerous filter can be installed on top.
+            // The kill filter itself denies future seccomp() invocations.
+            libc::SYS_seccomp,
             libc::SYS_getrandom,
             libc::SYS_getuid, libc::SYS_geteuid,
             libc::SYS_getgid, libc::SYS_getegid,
