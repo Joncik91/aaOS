@@ -238,3 +238,49 @@ builds don't write to /tmp on every spawn.
 
 Derived from the `NamespacedBackend::clone_and_launch_worker` bring-up
 (commits `1d6ec97`, `67c7fc3`).
+
+## Label your scope honestly — "distribution" isn't "derivative" isn't "package"
+
+Phase F was called "an agent-native Linux distribution" for two weeks
+before a direct user question — *"can't we just take a simple linux
+distro and build aaOS in as the orchestrator?"* — forced the
+calibration. The label had been sliding between "a `.deb` package"
+and "a full distribution maintained from scratch," which are
+fundamentally different scopes.
+
+Three scope tiers, each with a real staffing implication:
+
+- **A true Linux distribution** (Debian, Ubuntu, Red Hat, Alpine):
+  requires release engineering, CVE tracking, kernel maintenance,
+  apt/yum/apk repos, security response, hardware-compatibility
+  testing. Work that teams of dozens do on full-time salary. Calling
+  your solo project "a distribution" when you mean "an image" sets
+  expectations you cannot meet and plans you cannot execute.
+- **A derivative** (Raspberry Pi OS, Home Assistant OS, DietPi,
+  Tailscale's prebuilt images): inherits upstream's kernel, repos,
+  security response, and release cadence. Ships a customized install
+  — preinstalled packages, opinionated defaults, maybe a custom motd
+  or branded wallpaper. Solo-maintainer-sized. The maintainer's work
+  is confined to the derivative-specific layer; the base is
+  upstream's problem.
+- **A package** (nginx, redis, tailscale-client): a service
+  installable on any compatible base distro. Session-sized. The
+  maintainer ships a `.deb` / `.rpm` / tarball and the base OS
+  handles everything else.
+
+Mixing the labels misleads your own planning more than it misleads
+anyone else. The architect thinks "distribution" and quietly starts
+assuming the team will need to track kernel CVEs; the planner
+allocates time for "image maintenance" that evaporates on closer
+inspection because the derivative inherits all of that.
+
+**Rule.** Say "derivative" when you mean derivative. Say "package"
+when you mean package. If you genuinely need the scope of a real
+distribution, say "distribution" clearly and accept what it means:
+multiple maintainers, a CVE process, a release engineer, an apt-repo
+infrastructure. Don't borrow the word for ambition without borrowing
+the work it implies.
+
+Derived from the Phase F reframe commit — the two-week slide from
+"microkernel" → "agent-native Linux distribution" → "Debian
+derivative" tracked a scope calibration, not a direction change.

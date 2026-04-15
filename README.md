@@ -2,7 +2,7 @@
 
 **An agent-first runtime where AI agents are native processes, capabilities replace permissions, and the system is designed for autonomy — not human interaction.**
 
-**The long-term vision:** An agent-native Linux distribution — think CoreOS for agents. Upstream kernel, curated userland, `agentd` as a first-class service, capability tokens enforced via Linux primitives (namespaces, seccomp-BPF, Landlock, cgroups v2). The `AgentServices` trait is a substrate-agnostic ABI: process-backed today, MicroVM-per-agent (Firecracker/Kata/gVisor) later for harder tenant isolation, microkernel (seL4/Redox) only if a customer demands formally verified boundaries. The programming model is the product; the substrate is replaceable.
+**The long-term vision:** A Debian derivative where aaOS runs as the system orchestrator — think Home Assistant OS or Raspberry Pi OS for agents. Debian 13 base, aaOS preinstalled, `NamespacedBackend` as the default agent backend under the `namespaced-agents` feature, Landlock + seccomp enforcing capability tokens at the kernel layer. Shipped as a `.deb` you can install on your own Debian, or as bootable ISO / cloud snapshots. Debian provides the kernel, apt repos, and security updates — we provide the agent runtime and the opinionated defaults. The `AgentServices` trait is a substrate-agnostic ABI: process-backed today, MicroVM-per-agent (Firecracker/Kata/gVisor) later for harder tenant isolation, microkernel (seL4/Redox) only if a customer demands formally verified boundaries. The programming model is the product; the substrate is replaceable.
 
 **What exists today:** A working agent runtime on Linux. 7 Rust crates, ~13,000 lines, 220+ tests. Runs autonomously in Docker — a Bootstrap Agent receives a goal, spawns specialized child agents, and produces output with zero human intervention. The system has designed its own features and audited its own security — both for pennies.
 
@@ -25,7 +25,7 @@ What's implemented and tested:
 - **Persistent goal queue** — The Bootstrap Agent runs as a persistent process, accepting goals via Unix socket. Container stays alive between tasks.
 - **Capability-based security** — Runtime-issued, handle-opaque tokens. Agents and tools hold `CapabilityHandle` values; the underlying `CapabilityToken` lives in a runtime-owned `CapabilityRegistry` and is never exposed to non-runtime code. Zero-capability default for agents. Two-level enforcement inside bundled tools (tool access + resource path). Parent agents can only delegate capabilities they hold — "you can only give what you have." Path canonicalization (filesystem-resolved, including symlinks) prevents traversal and symlink-bypass attacks. Child tokens inherit parent constraints. Tokens are revocable at runtime. **Scope of enforcement:** bundled tools check capabilities at their call boundary via the registry. Third-party tool plugins must also route through the registry — the runtime provides handles, not tokens, so direct inspection isn't possible without a registry reference. HMAC signing for cross-process/cross-host transport remains a deferred hardening item.
 - **Agent orchestration** — Parent spawns children with narrowed capabilities. Spawn depth limit (5), agent count limit (100). Failed children are retried once automatically. Parallel spawning via `spawn_agents` batch tool runs up to 3 independent children concurrently (tunable via `AAOS_SPAWN_AGENTS_BATCH_CAP`) — wall-clock time is the slowest child, not the sum.
-- **Pluggable agent backend** — `AgentBackend` trait abstracts the "how do I actually run an agent's execution context" contract behind `AgentServices`. Two implementations today: `InProcessBackend` (the default — a tokio task in `agentd`) and `NamespacedBackend` (opt-in under the `namespaced-agents` feature — scaffolding for Linux-namespaced worker subprocesses with Landlock + seccomp; the kernel launch mechanics are pending manual verification on a Linux 5.13+ host with root privileges, so today's distribution defaults to in-process). Future backends (MicroVM, microkernel) need a new crate, not changes to `aaos-core`.
+- **Pluggable agent backend** — `AgentBackend` trait abstracts the "how do I actually run an agent's execution context" contract behind `AgentServices`. Two implementations today: `InProcessBackend` (the default — a tokio task in `agentd`) and `NamespacedBackend` (opt-in under the `namespaced-agents` feature — scaffolding for Linux-namespaced worker subprocesses with Landlock + seccomp; the kernel launch mechanics are pending manual verification on a Linux 5.13+ host with root privileges, so today's shipped default is in-process). Future backends (MicroVM, microkernel) need a new crate, not changes to `aaos-core`.
 - **Persistent agents** — Long-running agents with background message loops, request-response IPC via `send_and_wait()`, conversation persistence in JSONL
 - **Managed context windows** — Runtime transparently summarizes old messages via LLM when the context fills, archives originals to disk. Agents see coherent conversations without hitting token limits.
 - **Episodic memory** — Per-agent persistent memory via `memory_store`/`memory_query`/`memory_delete` tools. Semantic search via cosine similarity over embeddings. SQLite-backed for persistence across container restarts (`AAOS_MEMORY_DB`), falls back to in-memory if unset.
@@ -58,7 +58,7 @@ What's implemented and tested:
       |
  [Self-Reflection]  System reads own code, proposes features      ✅ Done  <-- you are here
       |
- [Agent-Native Linux]  Distribution, systemd service, Landlock  Next
+ [Debian Derivative]  .deb package + Debian 13 image, Landlock  Next
       |
  [Isolation Ladder]  MicroVM-per-agent via Firecracker/Kata    Research
       |
@@ -83,7 +83,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Agent Runtime Core                  |  Process model, registry, tokens, IPC router
 +---------------------------------------------+
-|       Linux + Docker                         |  Host OS today; target is a hardened Linux distribution (Phase F)
+|       Linux + Docker                         |  Host OS today; Phase F ships as a Debian `.deb` + derivative image (upstream Debian 13 + preinstall)
 +---------------------------------------------+
 ```
 
@@ -219,7 +219,7 @@ aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthrop
 2. **Capability-Based Security** — Agents start with zero capabilities. Runtime-issued, handle-opaque tokens replace permissions. Agents and tool implementations hold `CapabilityHandle` values; the underlying `CapabilityToken` and its mutable state (invocation counts, revocation) live inside a runtime-owned `CapabilityRegistry` and are never exposed to non-runtime code. A forged handle either resolves to nothing (unknown index) or to a token owned by a different agent (cross-agent leak protection). Still not cryptographically unforgeable — attackers with Rust-level code execution inside `agentd` can construct or mutate handles. HMAC signing for cross-process/cross-host transport is a deferred hardening item. On the Linux-namespaced backend, agents run in isolated subprocesses with Landlock and seccomp applied before the agent loop begins — closing an additional threat class of in-process memory attacks on the capability table, because the worker holds no `CapabilityHandle` values at all and all tool invocations route through a peer-creds-authenticated broker socket. (Scaffolding landed; kernel launch mechanics pending manual verification.)
 3. **Structured Communication** — Schema-validated MCP messages (required-field + basic-type checking), not raw byte pipes. Full JSON Schema validation is a deferred hardening item.
 4. **Observable by Default** — Every tool invocation and agent lifecycle event produces an audit event. Durability depends on the configured backend (`StdoutAuditLog`, `InMemoryAuditLog`, or external sink).
-5. **Substrate-Agnostic Abstractions** — `AgentServices` is an ABI, not a kernel API. Today: Linux processes with capability wrappers. Next: hardened Linux distribution. Later: MicroVM-per-agent if tenant isolation demands it. Microkernel only if a customer demands formally-verified boundaries.
+5. **Substrate-Agnostic Abstractions** — `AgentServices` is an ABI, not a kernel API. Today: Linux processes with capability wrappers. Next: Debian derivative with `NamespacedBackend` by default. Later: MicroVM-per-agent if tenant isolation demands it. Microkernel only if a customer demands formally-verified boundaries.
 
 ## Documentation
 
@@ -229,7 +229,7 @@ aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthrop
 - [Self-Reflection Log](docs/reflection/README.md) — Runs where aaOS reads its own code and proposes changes (per-run entries under `docs/reflection/`)
 - [Patterns](docs/patterns.md) — Cross-cutting lessons distilled from the retrospective and reflection log
 - [Ideas](docs/ideas.md) — Things we considered and deferred, with the signal that would prompt reconsideration
-- [Distribution Architecture](docs/distribution-architecture.md) — The agent-native Linux distribution target: components, capability enforcement via Linux primitives, packaging, migration from today's Docker-only deployment
+- [Distribution Architecture](docs/distribution-architecture.md) — The Debian-derivative target: components, capability enforcement via Linux primitives, `.deb` packaging, image build, migration from today's Docker-only deployment
 
 ## License
 

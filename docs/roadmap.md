@@ -76,40 +76,59 @@ Full chronological detail per run lives in [`reflection/`](reflection/README.md)
 
 **What's deferred pending more data:** the structured `PatternStore`, new `aaos-reflection` crate, and `CoordinationPattern` schema are still not warranted. The minimal protocol (stable Bootstrap ID + opt-in persistent memory + query-before/store-after in the manifest) is the empirical foundation. If 10-20 runs surface recurring patterns worth indexing formally, the structured system gets designed against real data — not speculation.
 
-## Phase F: Agent-Native Linux Distribution *(next)*
+## Phase F: Debian Derivative *(next)*
 
-Full component and migration sketch in [`distribution-architecture.md`](distribution-architecture.md). Short version below.
+Full component sketch in [`distribution-architecture.md`](distribution-architecture.md). Short version below.
 
-Build aaOS as a Linux distribution where the primary workload is an agent runtime — like CoreOS was container-native Linux and Bottlerocket is Kubernetes-native Linux. Upstream kernel (no fork), curated userland, `agentd` as a first-class service, capability enforcement mapped onto Linux primitives that already exist.
+**Scope framing up front.** Phase F is a **Debian derivative**, not a from-scratch distribution. Upstream Debian 13 + our `.deb` preinstalled + opinionated systemd/config defaults, built via Packer, shipped as bootable ISO + cloud snapshots. We inherit Debian's kernel, apt repos, CVE response, and release engineering — we maintain only the aaOS-specific layers. Scope model: Home Assistant OS, Raspberry Pi OS, DietPi, Tailscale's prebuilt images. Not Fedora CoreOS, Bottlerocket, or Talos (those are full distributions built and released by teams of dozens). A solo maintainer can run a derivative. A solo maintainer cannot run a distribution.
 
-**Why this, not a microkernel fork.** aaOS's differentiation is capability semantics, delegation, auditability, and policy compilation — not owning a kernel. A microkernel migration pushes the "it ships" date years out while losing the Linux ecosystem (GPU drivers, package management, every tool an agent might call through typed wrappers). A hardened Linux appliance puts the capability model in real users' hands within quarters, not years.
+**Why this shape, not a microkernel fork.** aaOS's differentiation is capability semantics, delegation, auditability, and policy compilation — not owning a kernel. A microkernel migration pushes the "it ships" date years out while losing the Linux ecosystem (GPU drivers, package management, every tool an agent might call through typed wrappers). A Debian derivative puts the capability model in real users' hands within quarters, not years.
 
-**What changes (concrete).**
-- **`agentd` as a systemd service** (not PID 1 — that branding costs more edge-case burden than it's worth).
-- **Capability tokens stay the policy model.** Enforcement gets a defense-in-depth backstop via Linux primitives — capabilities are still issued, narrowed, audited, and checked by `agentd`.
-- **Namespaces** for per-agent isolation (mount, pid, net, user, cgroup). Replaces Docker-as-only-substrate.
-- **Seccomp-BPF** as a damage-limiter, not the model. Syscall allowlists per agent derived from manifest capabilities.
+Phase F splits into two explicit milestones.
+
+### Phase F-a: `agentd` as a Debian package
+
+The `.deb` itself — installable on any Debian 13 host.
+
+**Deliverable:** `apt install ./aaos_*.deb` on a fresh Debian 13 host brings up `agentd.service` and the system is ready to accept goals.
+
+**Contents.**
+- `/usr/bin/agentd` — the daemon binary.
+- `/usr/bin/aaos-agent-worker` — the namespaced worker binary (Phase F-a ships both; the feature flag decides whether it's used).
+- `/etc/aaos/` — config layout (`config.yaml`, `manifests/`, `skills/`, `wrappers/`).
+- `/var/lib/aaos/` — data dirs (`memory/`, `sessions/`, `workspace/`).
+- `/lib/systemd/system/agentd.service` — the service unit.
+- `debian/` — metadata for `cargo-deb` or `dpkg-deb` builds (control, postinst, postrm, conffiles).
+
+**What stays the same.** The `AgentServices` trait. The `Tool` trait. The manifest format. The runtime API methods. Packaging is a distribution concern; the programming model is the product.
+
+### Phase F-b: Debian-derivative reference image
+
+A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the aaOS `.deb`, enables the service, and bakes opinionated defaults.
+
+**Deliverable.** Bootable ISO + cloud snapshots (Debian publishes official images on AWS, DigitalOcean, Hetzner — our derivative ships on the same targets).
+
+**Opinionated defaults baked into the image.**
+- `AAOS_DEFAULT_BACKEND=namespaced` when the host kernel supports unprivileged user namespaces + Landlock (Linux 5.13+).
+- `NamespacedBackend` Landlock-backed by default, seccomp stacked on top, cgroups v2 quotas per agent.
+- Desktop meta-packages stripped (no X11, no Wayland, no LibreOffice — headless appliance).
+- Custom motd pointing at the socket, the journal, and the docs URL.
+- journald as the default audit sink.
+
+**What the derivative does not do.** We do not maintain our own apt repos. We do not track CVEs. We do not maintain the kernel. We do not run a release-engineering cadence. Upstream Debian does all of that; the derivative pulls from `deb.debian.org` like every other Debian install. Our work is confined to the `.deb` (Phase F-a) and the Packer pipeline + default config (Phase F-b).
+
+**Isolation layers used by the derivative.**
+- **Namespaces** for per-agent isolation (mount, pid, net, user, cgroup).
+- **Seccomp-BPF** as a damage-limiter. Syscall allowlists per agent derived from manifest capabilities.
 - **Landlock** (Linux 5.13+) for filesystem capability enforcement at the kernel layer. Path-glob capabilities compile to Landlock rulesets.
 - **cgroups v2** for CPU/memory/I/O quotas per agent — resource budgets become first-class.
 - **Typed MCP wrappers for Linux tools.** `grep`, `jq`, `git`, `cargo`, `gcc`, `ffmpeg`, `pandoc` — each exposed as a tool with a declared capability. Full POSIX ecosystem for agents, every call capability-checked at the wrapper boundary.
 
-**Deliverables.**
-- Debian/Ubuntu package: `apt install aaos`.
-- ISO for bare-metal installs.
-- Cloud images (AMI, GCE, Azure).
-- Nix expression for reproducible builds.
-- Reference hardware: NUCs, Raspberry Pi 5, cloud VMs.
+Capability tokens stay the policy model; Linux primitives are the defense-in-depth backstop. `agentd` still runs as a systemd service (not PID 1 — that branding costs more edge-case burden than it's worth).
 
-**What stays the same.** The `AgentServices` trait. The `Tool` trait. The manifest format. The runtime API methods. The whole agent programming model. Distribution is the *substrate*; the programming model is the product.
+### Progress
 
-**Migration path from today.** Phase by phase, no big-bang rewrite:
-1. `agentd.service` systemd unit on any Linux — today's binary, zero change.
-2. Per-agent seccomp profiles auto-generated from capability manifests.
-3. Landlock + cgroup v2 integration.
-4. Minimal Debian-based image with `agentd` preinstalled and configured.
-5. Typed MCP wrappers for ~30 common Linux tools.
-
-**Progress:** Second `AgentBackend` implementation (`NamespacedBackend`)
+Second `AgentBackend` implementation (`NamespacedBackend`)
 landed across commits `a84cd98` + `a73e062` (scaffolding) + `1d6ec97` +
 `67c7fc3` (kernel launch mechanics). Handshake protocol, Landlock +
 seccomp compilation, broker session with peer-creds, fail-closed
@@ -128,9 +147,12 @@ namespaces and the worker binary built):
 - `worker_cannot_execve` — placeholder (broker-side `TryExecve` poke
   op not wired yet; scaffolded to launch + stop).
 
-Next: .deb packaging. The distribution ships with `NamespacedBackend`
-as an opt-in feature flag initially; default stays `InProcessBackend`
-until there's CI coverage of the feature-on build on target distros.
+Next: Phase F-a .deb packaging. The `.deb` ships with
+`NamespacedBackend` available under the `namespaced-agents` feature;
+default stays `InProcessBackend` on the package install until there's
+CI coverage of the feature-on build on Debian 13. Phase F-b flips the
+default to `namespaced` in the image config once the feature-on build
+is CI-green.
 
 ## Phase G: Isolation Ladder *(research branch)*
 
