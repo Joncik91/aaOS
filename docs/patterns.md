@@ -139,6 +139,16 @@ None of these were "the finding is wrong." All were "the proposed fix has a subt
 
 **Consequence:** self-reflection produces findings; external review is still needed to produce safe fixes. The two roles are not interchangeable, and the review is cheap compared to debugging a regression later.
 
+## Public claims should match the code the reader finds
+
+Docs can overclaim without anyone noticing — the README said "unforgeable tokens replace permissions" but `CapabilityToken` is a plain `#[derive(Serialize, Deserialize)]` Rust struct. Technically "only the runtime issues them," but *unforgeable* is a specific term in capability-security literature that implies cryptographic or type-system guarantees aaOS does not provide. A security-focused reader reading the code after reading the README would lose trust in the whole project.
+
+The audit surfaced seven overclaims: "unforgeable tokens," "runtime guarantee" of filesystem isolation, "zero-permission default" (agents vs the runtime itself), "typed MCP messages" (schema validation is partial), "every action logged as a runtime guarantee" (durability depends on backend), "inference is a schedulable resource" (concurrency-limited, not scheduled), and "self-designing capability" (drafting, not designing).
+
+Rule: **claims in README.md and architecture.md must be defensible when a reader does `grep` against the source the next minute**. Not aspirational. Aspirational claims belong in `roadmap.md` or `ideas.md` with the concrete gap named. If the code gets stronger later, upgrade the wording; don't pre-upgrade it and hope.
+
+Derived from a post-Run-10 audit (commit after 2026-04-14) that replaced the seven claims above with honest phrasing and added the gaps to `ideas.md` as deferred hardening items.
+
 ## Runtime admission control needs more than one review round
 
 Features that change how agents are admitted or cleaned up (registry reservation, batch spawn, atomic counters) consistently need **three peer-review rounds** to stabilize. Each round catches a different class of issue:

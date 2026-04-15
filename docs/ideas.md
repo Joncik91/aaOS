@@ -45,6 +45,20 @@ Each entry is short by design. If something here grows enough to deserve an impl
 - **Why deferred:** Copilot review flagged this as "too broad — same-turn tool calls can be semantically dependent even when they look independent." Safer shape is tool-level opt-in via explicit batch tools (we did this: `file_read_many`). Generic parallelism would need a per-tool `parallel_safe` classification first.
 - **Signal to reconsider:** multiple concrete tools are all worth running in parallel AND the per-tool classification work has been done.
 
+## Cryptographically unforgeable capability tokens
+
+- **Idea:** today's `CapabilityToken` is a plain Rust struct. Agents can't construct one because their only interface is LLM tool-call sequences, but any Rust-level code inside `agentd` (a compromised tool, a memory-corruption bug) can fabricate valid-looking tokens. Close this by making tokens opaque handles into a runtime-owned table (agents hold a `CapabilityHandle(u64)` that indexes into a sealed `HashMap` only the kernel can mutate), OR by HMAC-signing `(agent_id, capability, constraints)` with a runtime-only secret.
+- **Where seen:** capability-safe languages (E, Monte), seL4's endpoint caps, Genode's capability model. The handle-into-sealed-table pattern is the realistic version of the same idea in Rust.
+- **Why deferred:** the current attack surface where forgery matters — cross-process transport, third-party plugin tools running in the same address space, multi-tenant deployments — does not exist yet. For a single-tenant Docker deployment with bundled-only tools, the in-process honor system is the same trust boundary as the token issuer. The wording in README/architecture now reflects this honestly.
+- **Signal to reconsider:** (a) third-party tool plugins land that run in the same process, OR (b) tokens ever cross process boundaries (multi-host agent swarms, MicroVM backend from Phase G), OR (c) a security-focused customer names it as a gating requirement.
+
+## Full JSON Schema validation for MCP messages
+
+- **Idea:** `aaos-ipc::validator` currently checks required-field presence and basic type (string/object/array/etc). Full JSON Schema — `pattern`, `enum`, `minimum`/`maximum`, `properties` recursion, `$ref`, `oneOf`/`anyOf` — is not implemented.
+- **Where seen:** standard `jsonschema` crates (`jsonschema`, `valico`, `schemars`). The MCP spec itself uses draft-2020-12 JSON Schema.
+- **Why deferred:** bundled tools define their own input schemas and parse within their `invoke()` bodies; invalid input surfaces as a typed `CoreError::InvalidManifest` or similar. The validator layer is belt-and-braces. Cost of adding full validation: one dependency, modest compile-time hit, some refactoring of the validator interface.
+- **Signal to reconsider:** third-party tools start shipping with rich schemas we'd like to enforce centrally, OR a bug lands where malformed input crashes a tool and a validator would have caught it upstream.
+
 ## TOCTOU hardening for path capability checks (openat + O_NOFOLLOW)
 
 - **Idea:** capability checks resolve symlinks at check time (Fix 4 from Run 9, commit `45418cc`), but the actual file open happens later. An attacker who can swap a symlink between check and open can still redirect the read/write. Stronger guarantee: open the file with `openat(AT_FDCWD, path, O_NOFOLLOW)` in the tool itself and compare the resulting fd's `fstat` device/inode against a canonicalized grant, so no second filesystem lookup happens.
