@@ -16,6 +16,10 @@ use tokio::net::UnixListener;
 use crate::api::{JsonRpcResponse, INTERNAL_ERROR, METHOD_NOT_FOUND};
 use crate::broadcast_audit::BroadcastAuditLog;
 
+/// Methods dispatched through the streaming path (connection stays open for
+/// multi-frame NDJSON responses instead of a single JSON-RPC reply).
+const STREAMING_METHODS: &[&str] = &["agent.submit_streaming", "agent.logs_streaming"];
+
 /// The core daemon server holding all subsystems.
 #[allow(dead_code)]
 pub struct Server {
@@ -987,6 +991,242 @@ impl Server {
         }
     }
 
+    /// Dispatch a streaming JSON-RPC method. Owns the connection writer for the
+    /// remainder of the connection; emits NDJSON frames terminated by an `end`
+    /// frame. The caller closes the connection when this returns.
+    async fn handle_streaming<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        request: &crate::api::JsonRpcRequest,
+        writer: &mut W,
+    ) {
+        match request.method.as_str() {
+            "agent.submit_streaming" => {
+                self.handle_submit_streaming(&request.params, writer).await
+            }
+            "agent.logs_streaming" => {
+                // Implemented in Task 3. Stub the streaming shape so clients
+                // get a well-formed end frame instead of a hang.
+                let err = json!({
+                    "kind": "end",
+                    "exit_code": 1,
+                    "error": "agent.logs_streaming not yet implemented",
+                });
+                let _ = write_ndjson(writer, &err).await;
+            }
+            other => {
+                let err = json!({
+                    "kind": "end",
+                    "exit_code": 1,
+                    "error": format!("unknown streaming method: {other}"),
+                });
+                let _ = write_ndjson(writer, &err).await;
+            }
+        }
+    }
+
+    /// agent.submit_streaming — deliver a goal to Bootstrap, then forward every
+    /// audit event in Bootstrap's subtree as NDJSON frames until Bootstrap
+    /// reaches a terminal state. UsageReported events are aggregated, not
+    /// forwarded. The final frame is `{"kind":"end",...}` with exit code +
+    /// aggregated token usage + wall-clock elapsed.
+    async fn handle_submit_streaming<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        params: &serde_json::Value,
+        writer: &mut W,
+    ) {
+        use aaos_core::AuditEventKind;
+        use tokio::sync::broadcast::error::RecvError;
+
+        let goal = match params.get("goal").and_then(|g| g.as_str()) {
+            Some(s) => s.to_string(),
+            None => {
+                let err = json!({
+                    "kind": "end",
+                    "exit_code": 2,
+                    "error": "missing 'goal' parameter",
+                });
+                let _ = write_ndjson(writer, &err).await;
+                return;
+            }
+        };
+
+        // Subscribe BEFORE routing the goal so we don't miss the first events
+        // Bootstrap emits in response.
+        let mut rx = self.broadcast_audit.subscribe();
+
+        // Ensure Bootstrap is running (idempotent).
+        let bootstrap_id = match self.ensure_bootstrap_running().await {
+            Ok(id) => id,
+            Err(e) => {
+                let err = json!({
+                    "kind": "end",
+                    "exit_code": 3,
+                    "error": format!("failed to start bootstrap: {e}"),
+                });
+                let _ = write_ndjson(writer, &err).await;
+                return;
+            }
+        };
+
+        // Deliver the goal to Bootstrap via the router — same path as
+        // `agent.run` takes for persistent agents.
+        if let Err(e) = self.route_goal_to(bootstrap_id, &goal).await {
+            let err = json!({
+                "kind": "end",
+                "exit_code": 3,
+                "error": format!("failed to route goal: {e}"),
+            });
+            let _ = write_ndjson(writer, &err).await;
+            return;
+        }
+
+        let started = std::time::Instant::now();
+        let mut input_tokens: u64 = 0;
+        let mut output_tokens: u64 = 0;
+        let mut exit_code: i32 = 0;
+
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if !self.event_in_subtree(event.agent_id, bootstrap_id) {
+                        continue;
+                    }
+                    // Aggregate usage; never forward.
+                    if let AuditEventKind::UsageReported {
+                        input_tokens: i,
+                        output_tokens: o,
+                    } = &event.event
+                    {
+                        input_tokens = input_tokens.saturating_add(*i);
+                        output_tokens = output_tokens.saturating_add(*o);
+                        continue;
+                    }
+
+                    let frame =
+                        serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+                    let frame = json!({ "kind": "event", "event": frame });
+                    if write_ndjson(writer, &frame).await.is_err() {
+                        return;
+                    }
+
+                    // Only Bootstrap's own terminal events close the stream.
+                    // Child failures don't escalate — Bootstrap decides.
+                    if event.agent_id == bootstrap_id {
+                        match &event.event {
+                            AuditEventKind::AgentExecutionCompleted { .. } => break,
+                            AuditEventKind::AgentLoopStopped { reason, .. } => {
+                                if reason == "error" || reason == "budget_exceeded" {
+                                    exit_code = 1;
+                                }
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    let frame = json!({ "kind": "lag", "missed": n });
+                    let _ = write_ndjson(writer, &frame).await;
+                }
+                Err(RecvError::Closed) => break,
+            }
+        }
+
+        let end = json!({
+            "kind": "end",
+            "exit_code": exit_code,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        });
+        let _ = write_ndjson(writer, &end).await;
+    }
+
+    /// Walk from `event_agent` upward via `parent_agent` until root. Returns
+    /// true if any ancestor (or the node itself) is `bootstrap`.
+    fn event_in_subtree(
+        &self,
+        event_agent: aaos_core::AgentId,
+        bootstrap: aaos_core::AgentId,
+    ) -> bool {
+        let mut cur = Some(event_agent);
+        // Guard against pathological cycles (shouldn't happen, but a bad
+        // parent_agent link would otherwise spin forever).
+        for _ in 0..1024 {
+            let Some(id) = cur else { return false };
+            if id == bootstrap {
+                return true;
+            }
+            cur = self
+                .registry
+                .get_info(id)
+                .ok()
+                .and_then(|info| info.parent_agent);
+        }
+        false
+    }
+
+    /// Ensure a Bootstrap agent is running. If one is already in the registry
+    /// (by manifest name "bootstrap", in Running state), return its id.
+    /// Otherwise load `/etc/aaos/manifests/bootstrap.yaml` and spawn it.
+    async fn ensure_bootstrap_running(&self) -> anyhow::Result<aaos_core::AgentId> {
+        for info in self.registry.list() {
+            if info.name == "bootstrap" && info.state == AgentState::Running {
+                return Ok(info.id);
+            }
+        }
+
+        // Test-only override so the streaming-test harness can point at a
+        // pre-seeded bootstrap manifest without needing a file at the
+        // production install path.
+        let manifest_path = std::env::var("AAOS_BOOTSTRAP_MANIFEST_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/etc/aaos/manifests/bootstrap.yaml"));
+
+        // Read the YAML so we can reuse `spawn_from_yaml_with_id`, which
+        // handles the full spawn-and-launch path for persistent agents
+        // (identical to what `handle_agent_spawn` does for user-submitted
+        // manifests). Using a fresh UUID here — if a stable-ID policy is
+        // needed later it can flow in via env (matches main.rs's
+        // load_or_create_bootstrap_id behavior).
+        let yaml = std::fs::read_to_string(&manifest_path).map_err(|e| {
+            anyhow::anyhow!(
+                "cannot read bootstrap manifest at {}: {}",
+                manifest_path.display(),
+                e
+            )
+        })?;
+
+        let id = aaos_core::AgentId::new();
+        let resp = self
+            .spawn_from_yaml_with_id(&yaml, serde_json::Value::Null, Some(id))
+            .await;
+        if let Some(err) = resp.error {
+            return Err(anyhow::anyhow!("spawn bootstrap failed: {}", err.message));
+        }
+        Ok(id)
+    }
+
+    /// Deliver a goal message to an already-running agent via the router.
+    /// Mirrors the persistent-agent branch of `handle_agent_run`.
+    async fn route_goal_to(
+        &self,
+        target: aaos_core::AgentId,
+        goal: &str,
+    ) -> anyhow::Result<()> {
+        let msg = aaos_ipc::McpMessage::new(
+            target,
+            target,
+            "agent.run",
+            json!({ "message": goal }),
+        );
+        self.router
+            .route(msg)
+            .await
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(())
+    }
+
     /// Start listening on a Unix socket.
     pub async fn listen(self: Arc<Self>, socket_path: &Path) -> anyhow::Result<()> {
         // Remove stale socket
@@ -1008,19 +1248,33 @@ impl Server {
                     match reader.read_line(&mut line).await {
                         Ok(0) => break, // Connection closed
                         Ok(_) => {
-                            let response =
-                                match serde_json::from_str::<crate::api::JsonRpcRequest>(&line) {
-                                    Ok(request) => server.handle_request(&request).await,
-                                    Err(e) => JsonRpcResponse::error(
+                            match serde_json::from_str::<crate::api::JsonRpcRequest>(&line) {
+                                Ok(request) => {
+                                    if STREAMING_METHODS.contains(&request.method.as_str()) {
+                                        // Streaming handler owns the writer for the rest of
+                                        // this connection. After it returns, we close.
+                                        server.handle_streaming(&request, &mut writer).await;
+                                        break;
+                                    }
+                                    let response = server.handle_request(&request).await;
+                                    let mut resp_bytes = serde_json::to_vec(&response).unwrap();
+                                    resp_bytes.push(b'\n');
+                                    if writer.write_all(&resp_bytes).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    let response = JsonRpcResponse::error(
                                         serde_json::Value::Null,
                                         crate::api::PARSE_ERROR,
                                         e.to_string(),
-                                    ),
-                                };
-                            let mut resp_bytes = serde_json::to_vec(&response).unwrap();
-                            resp_bytes.push(b'\n');
-                            if writer.write_all(&resp_bytes).await.is_err() {
-                                break;
+                                    );
+                                    let mut resp_bytes = serde_json::to_vec(&response).unwrap();
+                                    resp_bytes.push(b'\n');
+                                    if writer.write_all(&resp_bytes).await.is_err() {
+                                        break;
+                                    }
+                                }
                             }
                         }
                         Err(_) => break,
@@ -1184,6 +1438,23 @@ capabilities:
         }
     }
 
+    /// LLM client that never returns — its `complete` future hangs forever.
+    /// Used by `submit_streaming_writes_events_then_end_frame` to pin a
+    /// persistent agent into an idle state so directly-injected audit
+    /// events are the only signal reaching the streaming handler.
+    struct HangingLlm;
+
+    #[async_trait]
+    impl LlmClient for HangingLlm {
+        fn max_context_tokens(&self, _model: &str) -> u32 {
+            200_000
+        }
+
+        async fn complete(&self, _req: CompletionRequest) -> LlmResult<CompletionResponse> {
+            std::future::pending().await
+        }
+    }
+
     #[tokio::test]
     async fn agent_spawn_and_run() {
         let server = Server::with_llm_client(MockLlm::text("I'm alive!"));
@@ -1256,6 +1527,170 @@ system_prompt: "You are helpful."
     }
 
     #[tokio::test]
+    async fn submit_streaming_writes_events_then_end_frame() {
+        use std::time::Duration;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixStream;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("agentd.sock");
+        let manifest_path = tmp.path().join("bootstrap.yaml");
+        std::fs::write(
+            &manifest_path,
+            r#"
+name: bootstrap
+model: claude-haiku-4-5-20251001
+system_prompt: "bootstrap test"
+lifecycle: persistent
+"#,
+        )
+        .unwrap();
+
+        // Point ensure_bootstrap_running at our temp manifest.
+        // SAFETY: test-only, and each test runs in its own tokio runtime but
+        // the env var is process-global. The code reads it once per call so
+        // races are benign.
+        std::env::set_var(
+            "AAOS_BOOTSTRAP_MANIFEST_PATH",
+            manifest_path.to_string_lossy().to_string(),
+        );
+
+        // Use a hanging LLM client so the persistent bootstrap agent launches
+        // but never actually completes execution on its own. That gives our
+        // directly-injected audit events deterministic ordering — only they
+        // reach the subscriber, never racing against a real AgentExecutionCompleted
+        // emitted by the agent loop.
+        let hanging: Arc<dyn LlmClient> = Arc::new(HangingLlm);
+        let server = Arc::new(Server::with_llm_client(hanging));
+        let audit = server.broadcast_audit.clone();
+
+        let server_for_listen = server.clone();
+        let socket_path_for_listen = socket_path.clone();
+        let listener_task = tokio::spawn(async move {
+            let _ = server_for_listen.listen(&socket_path_for_listen).await;
+        });
+
+        // Wait for socket to appear.
+        for _ in 0..50 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "agent.submit_streaming",
+            "params": { "goal": "test goal" }
+        });
+        let mut line = serde_json::to_vec(&req).unwrap();
+        line.push(b'\n');
+        client.write_all(&line).await.unwrap();
+        client.flush().await.unwrap();
+
+        // Give the server a moment to subscribe and ensure_bootstrap_running,
+        // then emit audit events tagged with the real bootstrap id.
+        let registry = server.registry.clone();
+        let emitter = tokio::spawn(async move {
+            // Poll the registry for the bootstrap agent the server just spawned.
+            let bid = {
+                let mut found = None;
+                for _ in 0..100 {
+                    if let Some(info) = registry
+                        .list()
+                        .into_iter()
+                        .find(|i| i.name == "bootstrap")
+                    {
+                        found = Some(info.id);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                found.expect("bootstrap agent registered")
+            };
+
+            // Small extra delay so the server's subscribe() is definitely live.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            use aaos_core::{AuditEvent, AuditEventKind, AuditLog};
+            audit.record(AuditEvent::new(
+                bid,
+                AuditEventKind::ToolInvoked {
+                    tool: "file_write".into(),
+                    input_hash: "h".into(),
+                },
+            ));
+            audit.record(AuditEvent::new(
+                bid,
+                AuditEventKind::UsageReported {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                },
+            ));
+            audit.record(AuditEvent::new(
+                bid,
+                AuditEventKind::AgentExecutionCompleted {
+                    stop_reason: "done".into(),
+                    total_iterations: 1,
+                },
+            ));
+        });
+
+        let (reader, _writer) = client.split();
+        let mut lines = BufReader::new(reader).lines();
+        let mut frames: Vec<serde_json::Value> = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Ok(Some(text)) = lines.next_line().await {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let is_end =
+                        v.get("kind").and_then(|k| k.as_str()) == Some("end");
+                    frames.push(v);
+                    if is_end {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("should receive end frame within 5s");
+
+        emitter.await.unwrap();
+        listener_task.abort();
+
+        // Clean up env var so other tests aren't affected.
+        std::env::remove_var("AAOS_BOOTSTRAP_MANIFEST_PATH");
+
+        let end = frames.last().unwrap();
+        assert_eq!(end["kind"], "end");
+        assert_eq!(end["exit_code"], 0);
+        assert_eq!(end["input_tokens"], 100);
+        assert_eq!(end["output_tokens"], 50);
+        assert!(end.get("elapsed_ms").is_some(), "elapsed_ms present");
+
+        // UsageReported is aggregated, not forwarded.
+        let has_usage = frames.iter().any(|f| {
+            f.get("event")
+                .and_then(|e| e.get("event"))
+                .and_then(|inner| inner.get("kind"))
+                .and_then(|k| k.as_str())
+                == Some("usage_reported")
+        });
+        assert!(!has_usage, "UsageReported should be aggregated, not forwarded");
+
+        // ToolInvoked should be forwarded as an event frame.
+        let has_tool = frames.iter().any(|f| {
+            f.get("event")
+                .and_then(|e| e.get("event"))
+                .and_then(|inner| inner.get("kind"))
+                .and_then(|k| k.as_str())
+                == Some("tool_invoked")
+        });
+        assert!(has_tool, "ToolInvoked should be forwarded");
+    }
+
+    #[tokio::test]
     async fn persistent_agent_run_returns_trace_id() {
         let server = Server::with_llm_client(MockLlm::text("Persistent response"));
         let manifest = r#"
@@ -1282,6 +1717,18 @@ lifecycle: persistent
         assert!(result.get("trace_id").is_some());
         assert_eq!(result["status"], "delivered");
     }
+}
+
+/// Write one NDJSON frame (JSON value + `\n`) to the connection writer.
+async fn write_ndjson<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame: &serde_json::Value,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut line = serde_json::to_vec(frame).unwrap_or_else(|_| b"null".to_vec());
+    line.push(b'\n');
+    writer.write_all(&line).await?;
+    writer.flush().await
 }
 
 /// Discover skills from standard AgentSkills paths + AAOS_SKILLS_DIR env var.

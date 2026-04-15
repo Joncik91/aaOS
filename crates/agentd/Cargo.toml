@@ -34,6 +34,9 @@ dashmap = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 
+[dev-dependencies]
+tempfile = "3"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 aaos-backend-linux = { workspace = true, optional = true }
 
