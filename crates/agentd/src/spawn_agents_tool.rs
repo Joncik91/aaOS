@@ -1,7 +1,7 @@
 //! Batch version of SpawnAgentTool. Spawns up to N children concurrently
 //! and collects their results.
 //!
-//! Design (see /tmp/run11-partB-v3.md or docs/reflection-log.md Run 11 entry):
+//! Design (see `docs/reflection/2026-04-14-run-11-prep-docs-masking-parallelism.md`):
 //! - **Best-effort batch semantics.** Preflight reserves N slots in the
 //!   registry's active_count atomically. If fewer than N slots are available,
 //!   the whole call errors without spawning anything. Once all slots are
