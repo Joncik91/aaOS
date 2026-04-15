@@ -210,3 +210,31 @@ doesn't have to be production-ready — the scaffolding alone reveals
 whether the trait was honest. Peer review of the design catches the
 architectural mistakes; the second implementation catches the silent
 assumptions no review can see.
+
+## Kernel-boundary bring-up needs opt-in per-step diagnostics
+
+Bringing up `clone() + pivot_root + execve + Landlock + seccomp` inside
+a user namespace failed in three different ways across three iterations:
+the bind-mount source path was relative and silently mounted nothing,
+`SYS_seccomp` wasn't in the allowlist so the second stacked filter
+couldn't install, and the worker binary path didn't exist at the default
+location. From the parent's perspective each of these produced the same
+symptom: *"worker did not reach sandboxed-ready within 5000ms"*. No
+signal on which step failed.
+
+Adding a `/tmp/aaos-child-debug-<ppid>.log` that the child appends to
+after each of its ~10 setup steps turned every failure into a single-line
+diagnosis. The bring-up went from "bisect the 400-line child function"
+to "check the last line in the log." Left the instrumentation in behind
+an opt-in env var (`AAOS_NAMESPACED_CHILD_DEBUG=/path/to/log`) so future
+debugging on different kernel versions or distros doesn't need to
+re-add it.
+
+Rule: for any syscall-dense bring-up against the kernel, add step-by-step
+diagnostics before the first test run — not after the third failure.
+The cost is a few lines of append-to-log; the payoff is not guessing
+which of ten things broke. Make the diagnostics opt-in so production
+builds don't write to /tmp on every spawn.
+
+Derived from the `NamespacedBackend::clone_and_launch_worker` bring-up
+(commits `1d6ec97`, `67c7fc3`).

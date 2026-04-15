@@ -102,19 +102,27 @@ Build aaOS as a Linux distribution where the primary workload is an agent runtim
 5. Typed MCP wrappers for ~30 common Linux tools.
 
 **Progress:** Second `AgentBackend` implementation (`NamespacedBackend`)
-landed as scaffolding in commits `a84cd98` + `a73e062`. Handshake protocol,
-Landlock + seccomp compilation, broker session with peer-creds, fail-closed
-missing-Landlock detection all working and unit-tested. Kernel launch
-mechanics (clone + uid_map + pivot_root + exec) pending manual verification
-on a root-privileged Linux 5.13+ host — the path is pinned by a unit test
-that asserts `CloneFailed` so a future completion can't land silently.
-Isolated dev VM provisioned for this work (Debian 13, kernel 6.12.43,
-Landlock + unprivileged user namespaces available). Stub-finish
-implementation queued: plan + peer review → sub-agent implementation →
-integration-test un-ignore → `/proc/<pid>/status` verification → .deb
-packaging. The `.deb` ships once the launch path is verified; until then
-the distribution defaults to `InProcessBackend` with `NamespacedBackend`
-as an opt-in feature flag.
+landed across commits `a84cd98` + `a73e062` (scaffolding) + `1d6ec97` +
+`67c7fc3` (kernel launch mechanics). Handshake protocol, Landlock +
+seccomp compilation, broker session with peer-creds, fail-closed
+missing-Landlock detection all working and unit-tested. The full
+`clone() + uid_map + pivot_root + execve` path is implemented and
+verified end-to-end on Debian 13 / kernel 6.12.43: spawned workers
+show `Seccomp: 2` and `NoNewPrivs: 1` in `/proc/<pid>/status`.
+
+Four integration tests in `tests/namespaced_backend.rs` pass under
+`--ignored` on a capable host (Linux 5.13+ with unprivileged user
+namespaces and the worker binary built):
+
+- `launch_reaches_sandboxed_ready` — end-to-end spawn + confinement.
+- `stop_is_idempotent` — second stop is a no-op.
+- `health_detects_exit` — SIGKILL detection via real `waitpid` check.
+- `worker_cannot_execve` — placeholder (broker-side `TryExecve` poke
+  op not wired yet; scaffolded to launch + stop).
+
+Next: .deb packaging. The distribution ships with `NamespacedBackend`
+as an opt-in feature flag initially; default stays `InProcessBackend`
+until there's CI coverage of the feature-on build on target distros.
 
 ## Phase G: Isolation Ladder *(research branch)*
 

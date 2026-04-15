@@ -24,7 +24,7 @@ Chronological, oldest first:
 - [`2026-04-14-run-9-adversarial-bug-hunt.md`](2026-04-14-run-9-adversarial-bug-hunt.md) — Run 9: adversarial bug-hunt prompt found seven real bugs including the symlink bypass of the Phase-A path-traversal fix. Eight commits, five Copilot-pushback revisions.
 - [`2026-04-14-run-10-persistent-memory.md`](2026-04-14-run-10-persistent-memory.md) — Run 10: persistent memory carried forward from Run 9; found a `spawn_with_tokens` gap in Run 9's Fix 1. Crossed $1.00 cumulative dashboard spend across ten runs.
 - [`2026-04-14-run-11-prep-docs-masking-parallelism.md`](2026-04-14-run-11-prep-docs-masking-parallelism.md) — Run 11 prep: docs masking at container launch + `spawn_agents` batch tool (three Copilot review rounds, best-effort semantics). Commits `73b3653`, `04dc0c7`.
-- [`2026-04-15-namespaced-backend-and-droplet-prep.md`](2026-04-15-namespaced-backend-and-droplet-prep.md) — Handle-token migration (`14a8eae`/`18d14f0`/`3c82f6e`) and namespaced-backend scaffolding (`a84cd98`/`a73e062`/`8a70a1a`, four Copilot rounds, PARTIAL commit 2 with honest disclosure). Isolated dev VM queued for the stubbed clone+exec finish.
+- [`2026-04-15-namespaced-backend-and-droplet-prep.md`](2026-04-15-namespaced-backend-and-droplet-prep.md) — Handle-token migration (`14a8eae`/`18d14f0`/`3c82f6e`) and namespaced-backend scaffolding + finish (`a84cd98`/`a73e062`/`8a70a1a` scaffold, `1d6ec97`/`67c7fc3` kernel launch mechanics). Four Copilot rounds on the plan; isolated cloud dev VM for the clone+exec bring-up. End-to-end confirmed on Debian 13 / kernel 6.12.43: `Seccomp: 2` + `NoNewPrivs: 1` in `/proc/<pid>/status`; 4 integration tests green under `--ignored`.
 
 ## Supporting
 
