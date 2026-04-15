@@ -1,13 +1,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
-use aaos_core::{
-    AgentId, Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken,
-    Constraints,
-};
 use chrono::Utc;
 use dashmap::DashMap;
 use uuid::Uuid;
+
+use crate::agent_id::AgentId;
+use crate::capability::{Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken, Constraints};
 
 /// Runtime-owned table of issued capability tokens. Agents and tools hold
 /// `CapabilityHandle` values; the underlying `CapabilityToken` and its
@@ -31,17 +29,25 @@ impl CapabilityRegistry {
     }
 
     // ------- Issuance (runtime-only; used by AgentRegistry) -------
+    //
+    // The methods below are marked `pub` for cross-crate callability from
+    // `aaos-runtime`'s `AgentRegistry`, not because tool code should call them.
+    // Rustdoc on each method names them as runtime-internal. Tool code should
+    // only call `permits()` and `authorize_and_record()` — the read-only
+    // authorization surface.
 
-    /// Issue a handle for a token. Called from AgentRegistry::issue_capabilities.
-    pub(crate) fn insert(&self, agent_id: AgentId, token: CapabilityToken) -> CapabilityHandle {
+    /// RUNTIME-INTERNAL. Issue a handle for a token. Called from
+    /// `AgentRegistry::issue_capabilities`. Tool code must not call this.
+    pub fn insert(&self, agent_id: AgentId, token: CapabilityToken) -> CapabilityHandle {
         let h = CapabilityHandle(self.next_id.fetch_add(1, Ordering::AcqRel));
         self.table.insert(h, OwnedEntry { agent_id, token });
         h
     }
 
-    /// Narrow: produce a new handle for a narrowed copy of the parent's token,
-    /// owned by the child agent.
-    pub(crate) fn narrow(
+    /// RUNTIME-INTERNAL. Narrow: produce a new handle for a narrowed copy of
+    /// the parent's token, owned by the child agent. Called from
+    /// `SpawnAgentTool`. Tool code other than spawn must not call this.
+    pub fn narrow(
         &self,
         parent_handle: CapabilityHandle,
         parent_agent: AgentId,
@@ -112,9 +118,10 @@ impl CapabilityRegistry {
 
     // ------- Mutation (runtime-only) -------
 
-    /// Revoke by token_id (the UUID on CapabilityToken). Matches the current
-    /// AgentRegistry::revoke_capability signature.
-    pub(crate) fn revoke(&self, token_id: Uuid) -> bool {
+    /// RUNTIME-INTERNAL. Revoke by token_id (the UUID on CapabilityToken).
+    /// Matches the current `AgentRegistry::revoke_capability` signature. Tool
+    /// code must not call this.
+    pub fn revoke(&self, token_id: Uuid) -> bool {
         let mut revoked = false;
         for mut entry in self.table.iter_mut() {
             if entry.token.id == token_id && entry.token.revoked_at.is_none() {
@@ -125,9 +132,9 @@ impl CapabilityRegistry {
         revoked
     }
 
-    /// Revoke every token owned by the given agent. Used on capability-wipe
-    /// and (optionally) on agent removal.
-    pub(crate) fn revoke_all_for_agent(&self, agent_id: AgentId) -> usize {
+    /// RUNTIME-INTERNAL. Revoke every token owned by the given agent. Used
+    /// on capability-wipe and on agent removal. Tool code must not call this.
+    pub fn revoke_all_for_agent(&self, agent_id: AgentId) -> usize {
         let mut count = 0;
         for mut entry in self.table.iter_mut() {
             if entry.agent_id == agent_id && entry.token.revoked_at.is_none() {
@@ -138,10 +145,10 @@ impl CapabilityRegistry {
         count
     }
 
-    /// Remove all handles belonging to an agent. Called from
-    /// AgentRegistry::remove_agent, AFTER audit events for any revocations
-    /// have been recorded.
-    pub(crate) fn remove_agent(&self, agent_id: AgentId) {
+    /// RUNTIME-INTERNAL. Remove all handles belonging to an agent. Called
+    /// from `AgentRegistry::remove_agent` after audit events for any
+    /// revocations have been recorded. Tool code must not call this.
+    pub fn remove_agent(&self, agent_id: AgentId) {
         self.table.retain(|_, entry| entry.agent_id != agent_id);
     }
 
@@ -167,10 +174,7 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Barrier;
 
-    fn test_agent(name: &str) -> AgentId {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    fn test_agent(_name: &str) -> AgentId {
         AgentId::new()
     }
 

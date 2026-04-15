@@ -73,6 +73,7 @@ impl Server {
         let tool_invocation = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
+            registry.capability_registry().clone(),
         ));
 
         // Create message router with capability checking via the registry
@@ -178,6 +179,7 @@ impl Server {
         let tool_invocation = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
+            registry.capability_registry().clone(),
         ));
 
         let registry_clone = registry.clone();
@@ -276,6 +278,7 @@ impl Server {
         let tool_invocation = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
+            registry.capability_registry().clone(),
         ));
 
         let registry_clone = registry.clone();

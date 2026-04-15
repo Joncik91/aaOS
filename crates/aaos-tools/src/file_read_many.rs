@@ -84,10 +84,12 @@ impl Tool for FileReadManyTool {
         // denial doesn't short-circuit the batch.
         let tokens = ctx.tokens.clone();
         let agent_id = ctx.agent_id;
+        let registry = ctx.capability_registry.clone();
         let mut set = tokio::task::JoinSet::new();
         for (idx, path_str) in path_strings.iter().cloned().enumerate() {
             let tokens = tokens.clone();
-            set.spawn(async move { (idx, read_one(path_str, &tokens, agent_id).await) });
+            let registry = registry.clone();
+            set.spawn(async move { (idx, read_one(path_str, &tokens, &registry, agent_id).await) });
         }
 
         // Collect results, then sort back to request order — JoinSet completes
@@ -116,13 +118,20 @@ impl Tool for FileReadManyTool {
     }
 }
 
-async fn read_one(path_str: String, tokens: &[aaos_core::CapabilityToken], agent_id: aaos_core::AgentId) -> Value {
+async fn read_one(
+    path_str: String,
+    tokens: &[aaos_core::CapabilityHandle],
+    registry: &aaos_core::CapabilityRegistry,
+    agent_id: aaos_core::AgentId,
+) -> Value {
     // Capability check
     let requested = Capability::FileRead {
         path_glob: path_str.clone(),
     };
-    if !tokens.iter().any(|t| t.permits(&requested)) {
-        let _ = agent_id; // agent_id included for symmetry with single-file error shape
+    if !tokens
+        .iter()
+        .any(|h| registry.permits(*h, agent_id, &requested))
+    {
         return json!({
             "path": path_str,
             "error": "capability_denied",
@@ -180,8 +189,9 @@ async fn read_one(path_str: String, tokens: &[aaos_core::CapabilityToken], agent
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aaos_core::{AgentId, CapabilityToken, Constraints};
+    use aaos_core::{AgentId, CapabilityRegistry, CapabilityToken, Constraints};
     use std::io::Write;
+    use std::sync::Arc;
     use tempfile::NamedTempFile;
 
     fn ctx_with_read(glob: &str) -> InvocationContext {
@@ -193,9 +203,12 @@ mod tests {
             },
             Constraints::default(),
         );
+        let registry = Arc::new(CapabilityRegistry::new());
+        let handle = registry.insert(agent_id, token);
         InvocationContext {
             agent_id,
-            tokens: vec![token],
+            tokens: vec![handle],
+            capability_registry: registry,
         }
     }
 

@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use aaos_core::{AgentId, AgentManifest, BudgetTracker, CapabilityToken};
+use aaos_core::{AgentId, AgentManifest, BudgetTracker, CapabilityHandle};
 use tokio::sync::mpsc;
 
 /// The state of an agent process.
@@ -55,7 +55,7 @@ pub struct AgentProcess {
     pub id: AgentId,
     pub manifest: AgentManifest,
     pub state: AgentState,
-    pub capabilities: Vec<CapabilityToken>,
+    pub capabilities: Vec<CapabilityHandle>,
     pub depth: u32,
     pub command_tx: mpsc::Sender<AgentCommand>,
     command_rx: Option<mpsc::Receiver<AgentCommand>>,
@@ -71,7 +71,7 @@ pub struct AgentProcess {
 
 impl AgentProcess {
     /// Create a new agent process in the Starting state.
-    pub fn new(id: AgentId, manifest: AgentManifest, capabilities: Vec<CapabilityToken>) -> Self {
+    pub fn new(id: AgentId, manifest: AgentManifest, capabilities: Vec<CapabilityHandle>) -> Self {
         let (command_tx, command_rx) = mpsc::channel(32);
         let budget_tracker = manifest
             .budget_config
@@ -117,10 +117,15 @@ impl AgentProcess {
     }
 
     /// Check if the agent holds a token that permits the requested capability.
-    pub fn has_capability(&self, requested: &aaos_core::Capability) -> bool {
+    /// Requires the capability registry to resolve handles to tokens.
+    pub fn has_capability(
+        &self,
+        requested: &aaos_core::Capability,
+        capability_registry: &aaos_core::CapabilityRegistry,
+    ) -> bool {
         self.capabilities
             .iter()
-            .any(|token| token.permits(requested))
+            .any(|h| capability_registry.permits(*h, self.id, requested))
     }
 
     /// Get a summary of this agent for API responses.
@@ -148,7 +153,8 @@ pub struct AgentInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aaos_core::{Capability, Constraints};
+    use aaos_core::{Capability, CapabilityRegistry, CapabilityToken, Constraints};
+    use std::sync::Arc;
 
     fn test_manifest() -> AgentManifest {
         AgentManifest::from_yaml(
@@ -201,11 +207,16 @@ system_prompt: "test"
     fn capability_check() {
         let id = AgentId::new();
         let token = CapabilityToken::issue(id, Capability::WebSearch, Constraints::default());
-        let process = AgentProcess::new(id, test_manifest(), vec![token]);
+        let registry = CapabilityRegistry::new();
+        let handle = registry.insert(id, token);
+        let process = AgentProcess::new(id, test_manifest(), vec![handle]);
 
-        assert!(process.has_capability(&Capability::WebSearch));
-        assert!(!process.has_capability(&Capability::FileRead {
-            path_glob: "/tmp/*".into()
-        }));
+        assert!(process.has_capability(&Capability::WebSearch, &registry));
+        assert!(!process.has_capability(
+            &Capability::FileRead {
+                path_glob: "/tmp/*".into()
+            },
+            &registry
+        ));
     }
 }

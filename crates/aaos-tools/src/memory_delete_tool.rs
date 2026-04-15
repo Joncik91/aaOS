@@ -94,6 +94,7 @@ mod tests {
         let ctx = InvocationContext {
             agent_id: AgentId::new(),
             tokens: vec![],
+            capability_registry: Arc::new(aaos_core::CapabilityRegistry::new()),
         };
         (delete_tool, store_tool, ctx, audit)
     }

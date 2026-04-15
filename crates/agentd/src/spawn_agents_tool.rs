@@ -158,6 +158,7 @@ impl Tool for SpawnAgentsTool {
             let single = self.single.clone();
             let ctx_agent_id = ctx.agent_id;
             let ctx_tokens = ctx.tokens.clone();
+            let ctx_cap_registry = ctx.capability_registry.clone();
 
             set.spawn(async move {
                 // Translate the batch-item shape into the single-child input shape.
@@ -178,6 +179,7 @@ impl Tool for SpawnAgentsTool {
                 let child_ctx = InvocationContext {
                     agent_id: ctx_agent_id,
                     tokens: ctx_tokens,
+                    capability_registry: ctx_cap_registry,
                 };
 
                 let result = single.invoke(single_input, &child_ctx).await;

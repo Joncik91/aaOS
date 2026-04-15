@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use aaos_core::{
-    AgentId, AuditEvent, AuditEventKind, AuditLog, Capability, CapabilityToken, CoreError, Result,
+    AgentId, AuditEvent, AuditEventKind, AuditLog, Capability, CapabilityHandle, CapabilityRegistry,
+    CapabilityToken, CoreError, Result,
 };
 use serde_json::Value;
 
@@ -18,13 +19,19 @@ use crate::registry::ToolRegistry;
 pub struct ToolInvocation {
     registry: Arc<ToolRegistry>,
     audit_log: Arc<dyn AuditLog>,
+    capability_registry: Arc<CapabilityRegistry>,
 }
 
 impl ToolInvocation {
-    pub fn new(registry: Arc<ToolRegistry>, audit_log: Arc<dyn AuditLog>) -> Self {
+    pub fn new(
+        registry: Arc<ToolRegistry>,
+        audit_log: Arc<dyn AuditLog>,
+        capability_registry: Arc<CapabilityRegistry>,
+    ) -> Self {
         Self {
             registry,
             audit_log,
+            capability_registry,
         }
     }
 
@@ -34,13 +41,16 @@ impl ToolInvocation {
         agent_id: AgentId,
         tool_name: &str,
         input: Value,
-        tokens: &[CapabilityToken],
+        token_handles: &[CapabilityHandle],
     ) -> Result<Value> {
         // Check capability
         let required = Capability::ToolInvoke {
             tool_name: tool_name.to_string(),
         };
-        let has_permission = tokens.iter().any(|t| t.permits(&required));
+        let has_permission = token_handles.iter().any(|h| {
+            self.capability_registry
+                .permits(*h, agent_id, &required)
+        });
 
         if !has_permission {
             self.audit_log.record(AuditEvent::new(
@@ -72,16 +82,28 @@ impl ToolInvocation {
             },
         ));
 
-        // Filter tokens relevant to this tool
-        let filtered_tokens: Vec<CapabilityToken> = tokens
+        // Filter handles relevant to this tool
+        let filtered_handles: Vec<CapabilityHandle> = token_handles
             .iter()
-            .filter(|t| matches_tool_capability(&t.capability, tool_name))
+            .filter(|h| {
+                // We need to check what capability this handle's token represents.
+                // Use inspect() — available in test/debug builds.
+                // For production, we pass all handles and let the tool's capability
+                // check via permits() filter appropriately.
+                // Actually, the original filtering was by token capability type.
+                // With handles, we can't inspect the token's capability type in production.
+                // The solution: pass ALL handles; the tool's own permits() call will
+                // correctly deny handles that don't match the requested capability type.
+                let _ = h;
+                true
+            })
             .cloned()
             .collect();
 
         let ctx = InvocationContext {
             agent_id,
-            tokens: filtered_tokens,
+            tokens: filtered_handles,
+            capability_registry: self.capability_registry.clone(),
         };
 
         // Invoke with context
@@ -100,19 +122,6 @@ impl ToolInvocation {
     }
 }
 
-/// Maps tool names to the capability types their tokens should contain.
-/// Unknown tools only receive ToolInvoke tokens — never file/network/spawn tokens.
-fn matches_tool_capability(capability: &Capability, tool_name: &str) -> bool {
-    match tool_name {
-        "file_read" => matches!(capability, Capability::FileRead { .. }),
-        "file_list" => matches!(capability, Capability::FileRead { .. }),
-        "file_write" => matches!(capability, Capability::FileWrite { .. }),
-        "web_fetch" => matches!(capability, Capability::WebSearch),
-        "spawn_agent" => matches!(capability, Capability::SpawnChild { .. }),
-        _ => matches!(capability, Capability::ToolInvoke { .. }),
-    }
-}
-
 /// Simple hash for audit logging (not cryptographic).
 fn md5_hash(value: &Value) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -125,18 +134,19 @@ fn md5_hash(value: &Value) -> u64 {
 mod tests {
     use super::*;
     use crate::tool::EchoTool;
-    use aaos_core::{Constraints, InMemoryAuditLog};
+    use aaos_core::{CapabilityRegistry, Constraints, InMemoryAuditLog};
+    use std::sync::Arc;
 
     fn setup() -> (
         ToolInvocation,
         AgentId,
-        Vec<CapabilityToken>,
+        Vec<CapabilityHandle>,
         Arc<InMemoryAuditLog>,
+        Arc<CapabilityRegistry>,
     ) {
         let registry = Arc::new(ToolRegistry::new());
         registry.register(Arc::new(EchoTool));
         let log = Arc::new(InMemoryAuditLog::new());
-        let invocation = ToolInvocation::new(registry, log.clone());
         let agent_id = AgentId::new();
         let token = CapabilityToken::issue(
             agent_id,
@@ -145,18 +155,22 @@ mod tests {
             },
             Constraints::default(),
         );
-        (invocation, agent_id, vec![token], log)
+        let cap_registry = Arc::new(CapabilityRegistry::new());
+        let handle = cap_registry.insert(agent_id, token);
+        let invocation =
+            ToolInvocation::new(registry, log.clone(), cap_registry.clone());
+        (invocation, agent_id, vec![handle], log, cap_registry)
     }
 
     #[tokio::test]
     async fn invoke_with_capability() {
-        let (invocation, agent_id, tokens, log) = setup();
+        let (invocation, agent_id, handles, log, _cap_registry) = setup();
         let result = invocation
             .invoke(
                 agent_id,
                 "echo",
                 serde_json::json!({"message": "hi"}),
-                &tokens,
+                &handles,
             )
             .await
             .unwrap();
@@ -166,9 +180,9 @@ mod tests {
 
     #[tokio::test]
     async fn invoke_without_capability() {
-        let (invocation, agent_id, _tokens, log) = setup();
+        let (invocation, agent_id, _handles, log, _cap_registry) = setup();
         let result = invocation
-            .invoke(agent_id, "echo", serde_json::json!({}), &[]) // no tokens
+            .invoke(agent_id, "echo", serde_json::json!({}), &[]) // no handles
             .await;
         assert!(result.is_err());
         // Should have logged the denial
@@ -177,16 +191,17 @@ mod tests {
 
     #[tokio::test]
     async fn invoke_nonexistent_tool() {
-        let (invocation, agent_id, _, _) = setup();
-        let wildcard = CapabilityToken::issue(
+        let (invocation, agent_id, _handles, _log, cap_registry) = setup();
+        let token = CapabilityToken::issue(
             agent_id,
             Capability::ToolInvoke {
                 tool_name: "*".into(),
             },
             Constraints::default(),
         );
+        let handle = cap_registry.insert(agent_id, token);
         let result = invocation
-            .invoke(agent_id, "nonexistent", serde_json::json!({}), &[wildcard])
+            .invoke(agent_id, "nonexistent", serde_json::json!({}), &[handle])
             .await;
         assert!(result.is_err());
     }

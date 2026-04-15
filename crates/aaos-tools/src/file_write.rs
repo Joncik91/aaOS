@@ -57,7 +57,10 @@ impl Tool for FileWriteTool {
         let requested = Capability::FileWrite {
             path_glob: path_str.to_string(),
         };
-        let allowed = ctx.tokens.iter().any(|t| t.permits(&requested));
+        let allowed = ctx
+            .tokens
+            .iter()
+            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
@@ -105,7 +108,8 @@ impl Tool for FileWriteTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aaos_core::{AgentId, CapabilityToken, Constraints};
+    use aaos_core::{AgentId, CapabilityRegistry, CapabilityToken, Constraints};
+    use std::sync::Arc;
 
     fn ctx_with_write(glob: &str) -> InvocationContext {
         let agent_id = AgentId::new();
@@ -116,9 +120,12 @@ mod tests {
             },
             Constraints::default(),
         );
+        let registry = Arc::new(CapabilityRegistry::new());
+        let handle = registry.insert(agent_id, token);
         InvocationContext {
             agent_id,
-            tokens: vec![token],
+            tokens: vec![handle],
+            capability_registry: registry,
         }
     }
 

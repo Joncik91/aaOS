@@ -14,7 +14,6 @@ use aaos_tools::{ToolInvocation, ToolRegistry};
 use crate::registry::AgentRegistry;
 
 /// In-process implementation of AgentServices.
-///
 /// Delegates to existing registry and tool subsystems with the same
 /// capability checks and audit logging that the future socket implementation will use.
 pub struct InProcessAgentServices {
@@ -98,9 +97,9 @@ impl AgentServices for InProcessAgentServices {
             }
         }
 
-        let tokens = self.registry.get_tokens(agent_id)?;
+        let handles = self.registry.get_token_handles(agent_id)?;
         self.tool_invocation
-            .invoke(agent_id, tool, input, &tokens)
+            .invoke(agent_id, tool, input, &handles)
             .await
     }
 
@@ -157,7 +156,8 @@ impl AgentServices for InProcessAgentServices {
     }
 
     async fn list_tools(&self, agent_id: AgentId) -> Result<Vec<ToolDefinition>> {
-        let tokens = self.registry.get_tokens(agent_id)?;
+        let handles = self.registry.get_token_handles(agent_id)?;
+        let cap_registry = self.registry.capability_registry();
         let all_tools = self.tool_registry.list();
 
         let filtered = all_tools
@@ -166,7 +166,9 @@ impl AgentServices for InProcessAgentServices {
                 let required = Capability::ToolInvoke {
                     tool_name: tool_def.name.clone(),
                 };
-                tokens.iter().any(|t| t.permits(&required))
+                handles
+                    .iter()
+                    .any(|h| cap_registry.permits(*h, agent_id, &required))
             })
             .collect();
 
@@ -181,11 +183,14 @@ impl AgentServices for InProcessAgentServices {
         params: Value,
         timeout: Duration,
     ) -> Result<Value> {
-        let tokens = self.registry.get_tokens(agent_id)?;
+        let handles = self.registry.get_token_handles(agent_id)?;
         let required = Capability::MessageSend {
             target_agents: vec![recipient.to_string()],
         };
-        if !tokens.iter().any(|t| t.permits(&required)) {
+        if !handles
+            .iter()
+            .any(|h| self.registry.capability_registry().permits(*h, agent_id, &required))
+        {
             return Err(CoreError::CapabilityDenied {
                 agent_id,
                 capability: required,
@@ -240,6 +245,7 @@ mod tests {
         let tool_invocation = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
+            registry.capability_registry().clone(),
         ));
 
         let manifest = AgentManifest::from_yaml(
@@ -343,6 +349,7 @@ capabilities:
         let tool_invocation = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
+            registry.capability_registry().clone(),
         ));
 
         let manifest = AgentManifest::from_yaml(

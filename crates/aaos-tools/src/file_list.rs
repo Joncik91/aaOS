@@ -38,7 +38,10 @@ impl Tool for FileListTool {
         let requested = Capability::FileRead {
             path_glob: path_str.to_string(),
         };
-        let allowed = ctx.tokens.iter().any(|t| t.permits(&requested));
+        let allowed = ctx
+            .tokens
+            .iter()
+            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
@@ -116,7 +119,8 @@ impl Tool for FileListTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aaos_core::{AgentId, CapabilityToken, Constraints};
+    use aaos_core::{AgentId, CapabilityRegistry, CapabilityToken, Constraints};
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     fn ctx_with_read(path_glob: &str) -> InvocationContext {
@@ -128,9 +132,12 @@ mod tests {
             },
             Constraints::default(),
         );
+        let registry = Arc::new(CapabilityRegistry::new());
+        let handle = registry.insert(agent_id, token);
         InvocationContext {
             agent_id,
-            tokens: vec![token],
+            tokens: vec![handle],
+            capability_registry: registry,
         }
     }
 

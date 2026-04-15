@@ -160,6 +160,7 @@ mod tests {
         InvocationContext {
             agent_id: aaos_core::AgentId::new(),
             tokens: vec![],
+            capability_registry: std::sync::Arc::new(aaos_core::CapabilityRegistry::new()),
         }
     }
 
