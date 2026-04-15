@@ -2,7 +2,7 @@
 
 This document is the chronological build history of aaOS, phase by phase, verified against git commit timestamps and content. It stops at the end of Phase E + the AgentSkills integration — everything that constitutes "the runtime is feature-complete for its current goal."
 
-Self-reflection runs (the system reading its own code, finding bugs, proposing features) are captured separately in [`reflection-log.md`](reflection-log.md) as an ongoing log. Cross-cutting lessons distilled from both the build history and the reflection log live in [`patterns.md`](patterns.md).
+Self-reflection runs (the system reading its own code, finding bugs, proposing features) are captured separately in [`reflection/`](reflection/README.md) as an ongoing log. Cross-cutting lessons distilled from both the build history and the reflection log live in [`patterns.md`](patterns.md).
 
 ---
 
@@ -166,7 +166,7 @@ A `SqliteMemoryStore` was added later (commit `b8b7af4`, 2026-04-13 21:11) for p
 - **"The only thing that matters is to see visually if it works as designed."** The human clarified that engineering correctness was delegated to the model + peer review; the human's validation criterion was observing the system work end-to-end.
 - **Cumulative E2E testing.** The human insisted on a Phase A + B + C1 test, not just isolated C1 — same pattern as Phase B.
 
-Phase C added **multi-model peer review of design specs** as a first-class step. Routing architecture decisions through Copilot produced concrete recommendations (skip LanceDB, use Ollama) that the primary Claude session would not have generated alone. Cost per review was described at the time as "~$0.02" — see the cost-bookkeeping note at the top of `reflection-log.md` about per-run cost estimates.
+Phase C added **multi-model peer review of design specs** as a first-class step. Routing architecture decisions through Copilot produced concrete recommendations (skip LanceDB, use Ollama) that the primary Claude session would not have generated alone. Cost per review was described at the time as "~$0.02" — see [`reflection/cost-bookkeeping.md`](reflection/cost-bookkeeping.md) about per-run cost estimates.
 
 ---
 
@@ -188,7 +188,7 @@ Three OS-level features landed this phase:
 
 Plus safety guardrails: agent count limit (100), spawn depth limit (5), `StdoutAuditLog` for observability via `docker logs -f`.
 
-First successful run: goal "fetch HN and summarize the top 5 stories" → Bootstrap Agent spawned a Fetcher agent (Haiku) that called `web_fetch`, spawned a Writer agent (Haiku) that called `file_write`, and produced `/output/summary.txt`. The capability system worked as designed — the Bootstrap Agent couldn't read `/output/*` even though its child wrote there. Wall time ~75 seconds. Cost was recorded at the time as ~$0.03 against Anthropic, though per-run cost figures from this period are token-math estimates — the authoritative cumulative figures are in `reflection-log.md`.
+First successful run: goal "fetch HN and summarize the top 5 stories" → Bootstrap Agent spawned a Fetcher agent (Haiku) that called `web_fetch`, spawned a Writer agent (Haiku) that called `file_write`, and produced `/output/summary.txt`. The capability system worked as designed — the Bootstrap Agent couldn't read `/output/*` even though its child wrote there. Wall time ~75 seconds. Cost was recorded at the time as ~$0.03 against Anthropic, though per-run cost figures from this period are token-math estimates — the authoritative cumulative figures are in [`reflection/cost-bookkeeping.md`](reflection/cost-bookkeeping.md).
 
 ### What the Model Got Wrong
 
@@ -212,13 +212,13 @@ At the end of April 13 (after Phase E + skills + revocation + constraints + Boot
 
 ### E1: OpenAI-Compatible LLM Client (commit `f6b62a6`)
 
-**Why this existed.** Running autonomous agents against Anthropic's API was tolerable for demos but expensive for long-running fleets. DeepSeek's reasoner is cheaper, and offers context caching that further discounts cache-hit input tokens to roughly 10% of the normal rate (a detail that broke naive token-math cost estimates in earlier versions of this retrospective — see the cost note in `reflection-log.md`). The roadmap had Phase E as "inference scheduling" with an implicit assumption of local models (Ollama, vLLM); the human rejected the local-model premise in favor of cheap cloud APIs.
+**Why this existed.** Running autonomous agents against Anthropic's API was tolerable for demos but expensive for long-running fleets. DeepSeek's reasoner is cheaper, and offers context caching that further discounts cache-hit input tokens to roughly 10% of the normal rate (a detail that broke naive token-math cost estimates in earlier versions of this retrospective — see the cost note in [`reflection/cost-bookkeeping.md`](reflection/cost-bookkeeping.md)). The roadmap had Phase E as "inference scheduling" with an implicit assumption of local models (Ollama, vLLM); the human rejected the local-model premise in favor of cheap cloud APIs.
 
 **What was built.** `OpenAiCompatibleClient` in `aaos-llm` implements the `LlmClient` trait for any provider that speaks the OpenAI Chat Completions format. Request translation (system-as-first-message, tool_calls as function format, `role:"tool"` for results). Response translation (`choices[0].message`, finish_reason mapping, prompt_tokens/completion_tokens). `OpenAiCompatConfig::deepseek_from_env()` constructor. 15 unit tests. The daemon checks `DEEPSEEK_API_KEY` first, falls back to `ANTHROPIC_API_KEY`.
 
 Bootstrap switched from Claude Sonnet to DeepSeek Reasoner. Worker children switched from Haiku to DeepSeek Chat. The rest of the runtime didn't change — the `LlmClient` trait was the clean abstraction Phase A had built.
 
-**Self-designing demo.** With the new client online, the human gave Bootstrap the goal: "Read the aaOS architecture and roadmap, then design the next phase of inference scheduling." Bootstrap produced three spec files autonomously. That demo is documented in full in `reflection-log.md` under the rubric of earlier self-designing runs.
+**Self-designing demo.** With the new client online, the human gave Bootstrap the goal: "Read the aaOS architecture and roadmap, then design the next phase of inference scheduling." Bootstrap produced three spec files autonomously. That demo is documented in full in [`reflection/`](reflection/README.md) under the rubric of earlier self-designing runs.
 
 ### E2: Inference Scheduling (commit `1739b34`)
 
@@ -230,7 +230,7 @@ Per-agent token budgets declared in manifests (`budget_config: { max_tokens, res
 
 ### Security Self-Audit and Follow-On Fixes
 
-Commit `82d19e9` (2026-04-13 20:52) — "security: fix 4 vulnerabilities found by self-audit" — marks the integration point for the security self-audit. The audit itself was a runtime agent run; the details of what the runtime found and how it was judged are in `reflection-log.md`. The four vulnerabilities fixed in-code were: path traversal in `glob_matches`, unknown tools receiving all capability tokens, child tokens ignoring parent constraints, and no path canonicalization in file tools.
+Commit `82d19e9` (2026-04-13 20:52) — "security: fix 4 vulnerabilities found by self-audit" — marks the integration point for the security self-audit. The audit itself was a runtime agent run; the details of what the runtime found and how it was judged are in [`reflection/2026-04-13-run-1-security-self-audit.md`](reflection/2026-04-13-run-1-security-self-audit.md). The four vulnerabilities fixed in-code were: path traversal in `glob_matches`, unknown tools receiving all capability tokens, child tokens ignoring parent constraints, and no path canonicalization in file tools.
 
 ### AgentSkills Integration
 
@@ -240,7 +240,7 @@ The "named agents after skills but never actually loaded them" bug — discovere
 
 ### Capability Revocation and Constraint Enforcement
 
-Commits `f1732d9` (revocation, 22:07) and `f106d97` (max_invocations enforcement, 22:34). Both landed as integrations of findings from self-reflection runs. See `reflection-log.md` for the run-level detail of how those findings came about.
+Commits `f1732d9` (revocation, 22:07) and `f106d97` (max_invocations enforcement, 22:34). Both landed as integrations of findings from self-reflection runs. See [`reflection/`](reflection/README.md) for the run-level detail of how those findings came about.
 
 ---
 
@@ -254,6 +254,6 @@ The build process itself went through phases:
 - **Phase B:** Added subagent-driven development and multi-model peer review.
 - **Phase C:** Formalized the multi-model peer review step with alternative-evaluation prompts.
 - **Phase D:** Shifted from "human specifies, model implements" to "human casts vision, model + reviewers converge on scope." Peer review filtered by human judgment against the vision.
-- **Phase E and after:** The runtime started reading its own code. Self-reflection runs begin — documented in `reflection-log.md`.
+- **Phase E and after:** The runtime started reading its own code. Self-reflection runs begin — documented in [`reflection/`](reflection/README.md).
 
-The remaining chronicle — Runs 1 through 5, what they found, what shipped, what we corrected about our own cost estimates along the way — lives in [`reflection-log.md`](reflection-log.md). Cross-cutting lessons that apply beyond any single run or phase are in [`patterns.md`](patterns.md).
+The remaining chronicle — Runs 1 through 5, what they found, what shipped, what we corrected about our own cost estimates along the way — lives in [`reflection/`](reflection/README.md). Cross-cutting lessons that apply beyond any single run or phase are in [`patterns.md`](patterns.md).

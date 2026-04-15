@@ -64,7 +64,7 @@ aaOS now supports the [AgentSkills](https://agentskills.io) open standard by Ant
 
 The runtime has begun reading its own code, finding bugs, and proposing features. Seven runs to date — runs 1-3 produced real bug fixes (path traversal, capability revocation, constraint enforcement), run 4 produced a feature proposal (Meta-Cognitive Coordination Layer) shipped as a minimal version after external review, run 5 exercised the persistent-memory protocol end-to-end and produced three manifest-only tuning fixes, run 6 surfaced two kernel-level gaps in the Run-5 manifest tuning (soft rules aren't enforcement; no structured child-to-child data channel) that shipped as kernel fixes `505f559` and `5feedbe`, and run 7 validated those fixes against real behavior with a four-agent chain producing a grounded error-handling unification proposal.
 
-Full chronological detail per run lives in [`reflection-log.md`](reflection-log.md). Cross-cutting lessons distilled from the runs (LLM calendar estimates aren't real, cost from token-math ≠ dashboard, skill adherence evolves, prompts persuade but only the kernel enforces, structured handoff beats opaque prompts) are in [`patterns.md`](patterns.md).
+Full chronological detail per run lives in [`reflection/`](reflection/README.md). Cross-cutting lessons distilled from the runs (LLM calendar estimates aren't real, cost from token-math ≠ dashboard, skill adherence evolves, prompts persuade but only the kernel enforces, structured handoff beats opaque prompts) are in [`patterns.md`](patterns.md).
 
 **What's deferred pending more data:** the structured `PatternStore`, new `aaos-reflection` crate, and `CoordinationPattern` schema are still not warranted. The minimal protocol (stable Bootstrap ID + opt-in persistent memory + query-before/store-after in the manifest) is the empirical foundation. If 10-20 runs surface recurring patterns worth indexing formally, the structured system gets designed against real data — not speculation.
 
@@ -107,10 +107,14 @@ Landlock + seccomp compilation, broker session with peer-creds, fail-closed
 missing-Landlock detection all working and unit-tested. Kernel launch
 mechanics (clone + uid_map + pivot_root + exec) pending manual verification
 on a root-privileged Linux 5.13+ host — the path is pinned by a unit test
-that asserts `CloneFailed` so a future completion can't land silently. The
-`.deb` ships once the launch path is verified; until then the distribution
-defaults to `InProcessBackend` with `NamespacedBackend` as an opt-in
-feature flag.
+that asserts `CloneFailed` so a future completion can't land silently.
+Isolated dev VM provisioned for this work (Debian 13, kernel 6.12.43,
+Landlock + unprivileged user namespaces available). Stub-finish
+implementation queued: plan + peer review → sub-agent implementation →
+integration-test un-ignore → `/proc/<pid>/status` verification → .deb
+packaging. The `.deb` ships once the launch path is verified; until then
+the distribution defaults to `InProcessBackend` with `NamespacedBackend`
+as an opt-in feature flag.
 
 ## Phase G: Isolation Ladder *(research branch)*
 

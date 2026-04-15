@@ -1,6 +1,6 @@
 # Patterns
 
-Cross-cutting lessons distilled from the aaOS build history and the self-reflection log. Each one comes from observed failure or success, not speculation. Kept short — anything longer belongs in [`retrospective.md`](retrospective.md) (build history) or [`reflection-log.md`](reflection-log.md) (per-run detail).
+Cross-cutting lessons distilled from the aaOS build history and the self-reflection log. Each one comes from observed failure or success, not speculation. Kept short — anything longer belongs in [`retrospective.md`](retrospective.md) (build history) or [`reflection/`](reflection/README.md) (per-run detail).
 
 ---
 

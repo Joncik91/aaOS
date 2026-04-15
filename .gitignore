@@ -22,7 +22,7 @@ CLAUDE.md
 /memory/
 
 # Agent output from runs. Each run's workspace files land here; evidence
-# of what happened lives in docs/reflection-log.md, not in per-run artifact
+# of what happened lives in docs/reflection/, not in per-run artifact
 # trees in the repo.
 /output/
 
