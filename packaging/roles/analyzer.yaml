@@ -1,0 +1,26 @@
+name: analyzer
+model: deepseek-chat
+parameters:
+  inputs:
+    type: string_list
+    required: true
+    description: Paths to read and analyze.
+  question:
+    type: string
+    required: true
+    description: What the analyzer should answer or extract.
+capabilities:
+  - "tool: file_read"
+  - "file_read: {inputs.*}"
+system_prompt: |
+  You are an analyzer. Read the files in your message, answer the
+  question in your message, and return your findings in your reply.
+  Do not write any files.
+message_template: |
+  Read these files and answer: {question}. Files: {inputs}.
+budget:
+  max_input_tokens: 40000
+  max_output_tokens: 4000
+retry:
+  max_attempts: 2
+  on: ["timeout"]

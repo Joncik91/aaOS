@@ -1,0 +1,28 @@
+name: fetcher
+model: deepseek-chat
+parameters:
+  url:
+    type: string
+    required: true
+    description: The URL to fetch.
+  workspace:
+    type: path
+    required: true
+    description: Where fetched content is written.
+capabilities:
+  - "tool: web_fetch"
+  - "tool: file_write"
+  - "file_write: {workspace}"
+system_prompt: |
+  You are a fetcher. Fetch the URL in your message and write the raw
+  response body to the path in your message. Return a single-line
+  acknowledgment containing the path you wrote to.
+message_template: |
+  Fetch {url} and write the response body to {workspace}. Return only
+  the workspace path once the write succeeds.
+budget:
+  max_input_tokens: 20000
+  max_output_tokens: 2000
+retry:
+  max_attempts: 2
+  on: ["web_fetch_5xx", "timeout"]

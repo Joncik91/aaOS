@@ -73,8 +73,18 @@ assets = [
   ["../../packaging/agentd.service", "lib/systemd/system/", "644"],
   ["../../README.md", "usr/share/doc/aaos/", "644"],
   ["../../packaging/agentd.1.gz", "usr/share/man/man1/", "644"],
+  ["../../packaging/roles/fetcher.yaml", "etc/aaos/roles/", "644"],
+  ["../../packaging/roles/writer.yaml", "etc/aaos/roles/", "644"],
+  ["../../packaging/roles/analyzer.yaml", "etc/aaos/roles/", "644"],
+  ["../../packaging/roles/generalist.yaml", "etc/aaos/roles/", "644"],
 ]
-conf-files = ["/etc/aaos/manifests/bootstrap.yaml"]
+conf-files = [
+  "/etc/aaos/manifests/bootstrap.yaml",
+  "/etc/aaos/roles/fetcher.yaml",
+  "/etc/aaos/roles/writer.yaml",
+  "/etc/aaos/roles/analyzer.yaml",
+  "/etc/aaos/roles/generalist.yaml",
+]
 maintainer-scripts = "../../packaging/debian/"
 systemd-units = { unit-name = "agentd", enable = false, start = false }
 

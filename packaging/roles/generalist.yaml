@@ -1,0 +1,32 @@
+name: generalist
+model: deepseek-chat
+parameters:
+  task_description:
+    type: string
+    required: true
+    description: Free-form description of the goal.
+capabilities:
+  - web_search
+  - "file_read: /data/*"
+  - "file_read: /src/*"
+  - "file_write: /data/*"
+  - "file_write: /output/*"
+  - "tool: web_fetch"
+  - "tool: file_read"
+  - "tool: file_read_many"
+  - "tool: file_list"
+  - "tool: file_write"
+  - "tool: echo"
+  - "tool: memory_query"
+system_prompt: |
+  You are a generalist agent. Complete the task in your message using
+  whatever tools are available to you. If you cannot, explain why
+  clearly in your reply.
+message_template: |
+  {task_description}
+budget:
+  max_input_tokens: 100000
+  max_output_tokens: 10000
+retry:
+  max_attempts: 1
+  on: []
