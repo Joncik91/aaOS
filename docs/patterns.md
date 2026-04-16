@@ -339,3 +339,46 @@ that the test suite passes.
 
 Derived from commit `5e01acc` — socket chmod fix caught on the
 Debian 13 droplet during the Task 18 end-to-end run.
+
+## A manifest change without a matching end-to-end run is a silent
+## regression waiting to fire
+
+Capability declarations in manifests are data. The runtime parses them,
+the capability check evaluates them, and neither touches the LLM. A
+typo or a missing feature in either layer sits invisible until a real
+agent — in a real run — tries to exercise it.
+
+The default `bootstrap.yaml` was changed to use `spawn_child: [*]` at
+some point. The parser turned it into `Capability::SpawnChild {
+allowed_agents: vec!["*"] }`. The check in `capability.rs` asked "does
+the allowed_agents vec contain the concrete child name?" which the
+literal string `"*"` never does. So every `spawn_agent` call with a
+child name not explicitly enumerated failed with `CapabilityDenied`.
+Bootstrap silently fell back to its own leaf tools. The bug hid for
+weeks across 11 reflection runs because:
+
+- Earlier manifests enumerated names explicitly (`[fetcher, writer,
+  analyzer]`).
+- The manifest change that introduced `[*]` shipped alongside Run 11
+  prep — but **Run 11 was never actually executed**. The manifest went
+  live without an end-to-end exercise.
+- Local dev tests used pre-declared names and never hit the wildcard
+  path.
+- Unit tests for `permits()` covered `ToolInvoke` wildcard but not
+  `SpawnChild` — a mirror-test was missing.
+
+**Rule.** Any manifest change that introduces a new capability shape
+(wildcard, new path-glob pattern, new allowed_agents structure) needs
+either (a) a unit test that exercises the new shape through `permits()`,
+or (b) an end-to-end run with an LLM that's free to pick names not in
+the manifest's example block. Shipping a manifest change without one of
+those is how silent regressions reach production.
+
+**Adjacent rule.** When a reflection run is planned but not executed
+(Run 11 in this case), treat every change that shipped "for that run"
+as unverified. Don't let "the prep is done" act as a substitute for "the
+run actually happened."
+
+Derived from commit `8b06004` — SpawnChild wildcard permission fix
+caught by an operator asking "why does it never spawn children?" when
+the behavior didn't match the reflection-run evidence.
