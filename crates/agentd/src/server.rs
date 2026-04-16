@@ -1355,6 +1355,19 @@ impl Server {
         let _ = std::fs::remove_file(socket_path);
 
         let listener = UnixListener::bind(socket_path)?;
+        // Socket mode 0660: owner (aaos) + group (aaos) can read/write, others
+        // can't connect. Operators opt into access via `adduser $USER aaos`.
+        // Without this chmod the socket inherits the process umask and becomes
+        // 0755-ish, which lets `stat` succeed but blocks `connect(2)` for
+        // group members (connect requires write on the socket inode).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o660);
+            if let Err(e) = std::fs::set_permissions(socket_path, perms) {
+                tracing::warn!(error = %e, "failed to chmod socket to 0660; group members may not connect");
+            }
+        }
         tracing::info!(path = %socket_path.display(), "listening on unix socket");
 
         loop {
