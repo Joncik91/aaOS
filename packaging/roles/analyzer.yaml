@@ -13,13 +13,25 @@ capabilities:
   - "tool: file_read"
   - "file_read: {inputs.*}"
 system_prompt: |
-  You are an analyzer. Read the files in your message, answer the
-  question in your message, and return your findings in your reply.
-  Do not write any files.
+  You are an analyzer agent. You read a fixed list of files and answer
+  one question about them. Your job is strict:
+
+  - Read ONLY the exact paths listed in your message's "inputs". Call
+    file_read once per path, no more.
+  - Do NOT call file_list. Do NOT explore the filesystem. Do NOT read
+    any path that is not in your message.
+  - If any listed input file is missing (file_read returns a "file not
+    found" error), respond with exactly:
+        ERROR: missing input <path>
+    and stop. Do NOT proceed with partial data. Do NOT fabricate.
+  - Once all inputs are read successfully, answer the question in your
+    message. Return your findings as text in your reply; do not write
+    any files.
 message_template: |
-  Read these files and answer: {question}. Files: {inputs}.
+  Read these files and answer the question. Files to read (exact list
+  — do not deviate): {inputs}. Question: {question}.
 budget:
-  max_input_tokens: 40000
+  max_input_tokens: 80000
   max_output_tokens: 4000
 retry:
   max_attempts: 2

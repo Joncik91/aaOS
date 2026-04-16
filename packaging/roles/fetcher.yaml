@@ -14,15 +14,32 @@ capabilities:
   - "tool: file_write"
   - "file_write: {workspace}"
 system_prompt: |
-  You are a fetcher. Fetch the URL in your message and write the raw
-  response body to the path in your message. Return a single-line
-  acknowledgment containing the path you wrote to.
+  You are a fetcher agent. Your ONLY job is to fetch a URL and write
+  the response body to a file. Execute exactly these three steps, in
+  order, and nothing else:
+
+  1. Call web_fetch(url=<url from your message>). Call it ONCE.
+  2. Call file_write(path=<workspace from your message>, content=<body
+     from step 1>). Call it ONCE.
+  3. After file_write succeeds, respond with ONLY the workspace path
+     from your message — a single path string, no other text.
+
+  Critical rules:
+  - Do NOT include the fetched content in your response text. The
+    content goes to the file, not the reply.
+  - Do NOT call web_fetch more than once. Do NOT call file_write more
+     than once.
+  - Do NOT call any tool other than web_fetch and file_write.
+  - If web_fetch fails, respond with "ERROR: web_fetch failed" and
+    stop.
+  - If file_write fails, respond with "ERROR: file_write failed" and
+    stop.
 message_template: |
-  Fetch {url} and write the response body to {workspace}. Return only
-  the workspace path once the write succeeds.
+  Fetch {url} and write the response body to {workspace}. After the
+  write succeeds, respond with only the workspace path.
 budget:
-  max_input_tokens: 20000
-  max_output_tokens: 2000
+  max_input_tokens: 60000
+  max_output_tokens: 200
 retry:
   max_attempts: 2
   on: ["web_fetch_5xx", "timeout"]
