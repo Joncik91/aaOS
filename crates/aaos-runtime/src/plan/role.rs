@@ -110,6 +110,46 @@ impl Role {
             ))
         }
     }
+
+    /// Produce the child agent's first message by substituting `{param}`
+    /// tokens in `message_template`. String-list params render as comma-space
+    /// separated values.
+    pub fn render_message(&self, params: &serde_json::Value) -> String {
+        let mut out = self.message_template.clone();
+        if let Some(obj) = params.as_object() {
+            for (name, value) in obj {
+                let token = format!("{{{name}}}");
+                let rendered = render_value(value);
+                out = out.replace(&token, &rendered);
+            }
+        }
+        out
+    }
+
+    /// Produce the YAML manifest string for instantiating a child of this role
+    /// with the given params. Path-sensitive capability patterns (`{workspace}`,
+    /// `{output}`) are substituted; anything else is emitted verbatim. The
+    /// result is parseable via `AgentManifest::from_yaml`.
+    pub fn render_manifest(&self, params: &serde_json::Value) -> String {
+        let caps: Vec<String> = self
+            .capabilities
+            .iter()
+            .map(|c| substitute_tokens(c, params))
+            .collect();
+
+        let caps_yaml: String = caps
+            .iter()
+            .map(|c| format!("  - \"{}\"\n", c.replace('"', "\\\"")))
+            .collect();
+
+        format!(
+            "name: {name}\nmodel: {model}\nsystem_prompt: |\n{prompt}\ncapabilities:\n{caps}",
+            name = self.name,
+            model = self.model,
+            prompt = indent(&self.system_prompt, "  "),
+            caps = caps_yaml,
+        )
+    }
 }
 
 /// In-memory catalog of loaded roles, keyed by role name.
@@ -187,6 +227,37 @@ pub enum RoleCatalogError {
     Io(String),
     #[error("role parse error: {0}")]
     Parse(String),
+}
+
+fn render_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .map(render_value)
+            .collect::<Vec<_>>()
+            .join(", "),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn substitute_tokens(template: &str, params: &serde_json::Value) -> String {
+    let mut out = template.to_string();
+    if let Some(obj) = params.as_object() {
+        for (name, value) in obj {
+            let token = format!("{{{name}}}");
+            out = out.replace(&token, &render_value(value));
+        }
+    }
+    out
+}
+
+fn indent(s: &str, prefix: &str) -> String {
+    s.lines()
+        .map(|l| format!("{prefix}{l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -353,5 +424,87 @@ retry: { max_attempts: 1, on: [] }
         r.validate_params(&json!({"inputs": ["/a", "/b"]})).unwrap();
         assert!(r.validate_params(&json!({"inputs": "single"})).is_err());
         assert!(r.validate_params(&json!({"inputs": [1, 2]})).is_err());
+    }
+
+    #[test]
+    fn render_message_substitutes_string_params() {
+        let r = fetcher_role();
+        let params = json!({"url": "https://x.com", "workspace": "/tmp/x.html"});
+        let m = r.render_message(&params);
+        assert!(m.contains("https://x.com"));
+        assert!(m.contains("/tmp/x.html"));
+    }
+
+    #[test]
+    fn render_message_formats_string_list_as_comma_sep() {
+        let r: Role = serde_yaml::from_str(
+            r#"
+name: writer
+model: deepseek-chat
+parameters:
+  inputs:
+    type: string_list
+    required: true
+    description: inputs
+  output:
+    type: path
+    required: true
+    description: out
+  title:
+    type: string
+    required: true
+    description: title
+capabilities: []
+system_prompt: "x"
+message_template: "title={title} out={output} inputs={inputs}"
+budget: { max_input_tokens: 1000, max_output_tokens: 500 }
+retry: { max_attempts: 1, on: [] }
+"#,
+        )
+        .unwrap();
+        let params = json!({
+            "inputs": ["/a.html", "/b.html"],
+            "output": "/out.md",
+            "title": "Report"
+        });
+        let m = r.render_message(&params);
+        assert!(m.contains("title=Report"));
+        assert!(m.contains("out=/out.md"));
+        assert!(m.contains("/a.html, /b.html"), "got: {}", m);
+    }
+
+    #[test]
+    fn render_manifest_produces_parseable_agent_manifest() {
+        let r: Role = serde_yaml::from_str(
+            r#"
+name: fetcher
+model: deepseek-chat
+parameters:
+  url:
+    type: string
+    required: true
+    description: url
+  workspace:
+    type: path
+    required: true
+    description: ws
+capabilities:
+  - "tool: web_fetch"
+  - "file_write: {workspace}"
+system_prompt: "fetcher prompt"
+message_template: "fetch {url} to {workspace}"
+budget: { max_input_tokens: 1000, max_output_tokens: 500 }
+retry: { max_attempts: 1, on: [] }
+"#,
+        )
+        .unwrap();
+        let params = json!({"url": "https://x.com", "workspace": "/tmp/x.html"});
+        let yaml = r.render_manifest(&params);
+        let manifest = aaos_core::AgentManifest::from_yaml(&yaml).unwrap();
+        assert_eq!(manifest.name, "fetcher");
+        assert_eq!(manifest.capabilities.len(), 2);
+        // Ensure that {workspace} was substituted correctly
+        assert!(yaml.contains("/tmp/x.html"));
+        assert!(!yaml.contains("{workspace}"), "yaml: {}", yaml);
     }
 }
