@@ -149,7 +149,7 @@ sudo systemctl enable --now agentd
 agentd submit "fetch HN top 5 stories and write a summary"
 ```
 
-The CLI streams audit events live as Bootstrap spawns child agents, runs tools, and produces output. `agentd list`, `agentd status <id>`, `agentd stop <id>`, and `agentd logs <id>` complete the operator surface; `man agentd` covers the full CLI reference.
+The CLI streams audit events live as the planner decomposes the goal and the PlanExecutor walks the resulting DAG — fetchers run in parallel, writers read their outputs. `agentd list`, `agentd status <id>`, `agentd stop <id>`, `agentd logs <id>`, and `agentd roles list` complete the operator surface; `man agentd` covers the full CLI reference.
 
 **Building the .deb from source** (Debian 13 host with `cargo`, `cargo-deb`, and `pandoc`):
 

@@ -20,6 +20,12 @@ agentd — aaOS agent daemon and operator CLI
 
 **agentd logs** [**-v**|**--verbose**] [**--socket** *PATH*] *AGENT_ID*
 
+**agentd roles list** [**--dir** *PATH*]
+
+**agentd roles show** [**--dir** *PATH*] *NAME*
+
+**agentd roles validate** *PATH*
+
 # DESCRIPTION
 
 **agentd** is both the aaOS daemon and the operator CLI that drives it. The **run** subcommand starts the daemon, which binds a Unix socket for JSON-RPC API calls. The other subcommands connect to that socket as clients.
@@ -53,6 +59,14 @@ Terminate a running agent. *AGENT_ID* may be any unique prefix.
 ## logs *AGENT_ID*
 
 Attach to a running agent's live audit stream. Same event filter as **submit** (verbose flag toggles between operator view and raw NDJSON). Ctrl-C detaches cleanly; the agent keeps running.
+
+## roles
+
+Inspect the role catalog at */etc/aaos/roles/*. Three subcommands:
+
+- **list** — tabulate loaded roles and their parameter schemas.
+- **show** *NAME* — print a role's full YAML definition.
+- **validate** *PATH* — parse a role YAML without installing it; reports schema issues.
 
 # EXIT CODES
 
