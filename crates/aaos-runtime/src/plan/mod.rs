@@ -9,12 +9,14 @@
 pub mod role;
 pub mod placeholders;
 pub mod planner;
+pub mod executor;
 
 pub use role::{
     ParameterSchema, ParameterType, Role, RoleBudget, RoleCatalog, RoleCatalogError, RoleRetry,
 };
 pub use placeholders::Substitutions;
 pub use planner::{validate_plan_structure, Planner, PlannerError};
+pub use executor::{ExecutorError, PlanExecutor};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
