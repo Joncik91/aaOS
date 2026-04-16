@@ -1,3 +1,4 @@
+pub mod plan;
 pub mod backend_in_process;
 pub mod context;
 pub mod handoff;
@@ -21,3 +22,4 @@ pub use persistent::persistent_agent_loop;
 pub use supervisor::{RestartPolicy, SupervisedAgent, SupervisorConfig};
 // Re-export from aaos-core for convenience
 pub use aaos_core::CapabilityRegistry;
+pub use plan::{Role, RoleCatalog};
