@@ -16,7 +16,7 @@ This document is a sketch, not a plan. It names components and how they'd intera
 
 **Linux is the substrate. Agents are the primary workload. Everything else exists to serve that.**
 
-The derivative curates which of Debian's primitives are exposed, wraps them in typed tools with capability checks at the call boundary, and ships a cohesive image where the default shell experience is *"tell an agent what you want."*
+The derivative curates which of Debian's primitives are exposed, wraps them in typed tools with capability checks at the call boundary, and ships a cohesive image where the default shell experience is *"tell an agent what you want."* That experience is concrete today: `agentd submit "<goal>"` streams live audit events from Bootstrap as it decomposes the goal and runs child agents.
 
 ## Components
 
@@ -33,7 +33,8 @@ The derivative curates which of Debian's primitives are exposed, wraps them in t
 
 ### Agent runtime layer — aaOS native
 
-- `agentd.service` — the runtime daemon. Listens on a Unix socket (`/run/agentd/agentd.sock`) for goal submissions. Spawns agents, enforces capabilities, routes IPC, logs to journald.
+- `agentd.service` — the runtime daemon. Listens on a Unix socket (`/run/agentd/agentd.sock`, mode 0660, owned `aaos:aaos`) for goal submissions. Spawns agents, enforces capabilities, routes IPC, logs to journald.
+- `agentd` operator CLI — same binary as the daemon. Subcommands `submit | list | status | stop | logs` connect to the socket. Non-root operators join the `aaos` system group (`sudo adduser $USER aaos`) to get socket access. Ships with an `agentd(1)` man page.
 - `/etc/aaos/manifests/` — agent manifest library. Bootstrap manifest ships with the package; operators drop additional manifests here.
 - `/etc/aaos/skills/` — AgentSkills bundle. 21 skills ship by default, extensible.
 - `/var/lib/aaos/memory/` — persistent memory for agents with stable identity.

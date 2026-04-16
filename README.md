@@ -216,10 +216,14 @@ JSON-RPC 2.0 over Unix socket.
 | `agent.status` | Get status of a specific agent |
 | `agent.run` | Run an existing agent with a message |
 | `agent.spawn_and_run` | Spawn and run in one call |
+| `agent.submit_streaming` | Send a goal to Bootstrap; stream audit events as NDJSON until `end` frame |
+| `agent.logs_streaming` | Attach to a specific agent's audit stream as NDJSON; no end frame unless the agent terminates |
 | `tool.list` | List registered tools |
 | `tool.invoke` | Invoke a tool on behalf of an agent |
 | `approval.list` | List pending approval requests |
 | `approval.respond` | Approve or deny a pending request |
+
+The operator CLI (`agentd submit|list|status|stop|logs`) uses `submit_streaming` and `logs_streaming` under the hood; see `man agentd` for the operator surface.
 
 ## Tools
 

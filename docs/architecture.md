@@ -82,12 +82,17 @@ The system can run autonomously in a Docker container with `agentd` as PID 1:
 - **Stable-identity gate on private memory** — `SpawnAgentTool` refuses any child manifest that declares `tool: memory_store`, and `AgentRegistry::spawn_with_tokens` defensively rejects the capability. `AgentProcess.persistent_identity` (runtime-owned, set only by `spawn_with_id`) marks agents with stable identity; only those may hold private memory. Introduced after run 6 observed Bootstrap granting children `memory_store` despite manifest prose forbidding it — "prompts persuade, only the kernel enforces."
 - **Structured child-to-child handoff** — `spawn_agent` tool accepts an optional `prior_findings: string` field (≤ 32 KB). The `aaos-runtime::handoff` module wraps it with kernel-authored BEGIN/END delimiters, a timestamp, the parent agent name, and a prompt-injection warning. The parent LLM cannot remove the wrapping. Introduced after run 6 observed a `proposal-writer` confabulating when no structured channel existed for the prior `code-analyzer`'s output. Caveat: this is parent-provided continuity, not cryptographic provenance — a future handoff-handle design would verify findings against the audit log.
 - **StdoutAuditLog** — Audit events streamed as JSON-lines to stdout for `docker logs -f` observability.
+- **BroadcastAuditLog** — Fan-out wrapper over an inner `AuditLog`. Every recorded event goes to the inner sink AND to any subscribers (tokio `broadcast::channel`). The daemon's streaming JSON-RPC methods (`agent.submit_streaming`, `agent.logs_streaming`) subscribe and forward filtered events over the client's Unix socket as NDJSON frames.
 
 ### 7. Human Supervision Layer
 
-Read-only observation of the autonomous system. Deliberately last — the system must be functional without it.
+Read-only observation plus an operator surface for driving the daemon. Deliberately last — the system must be functional without it.
 
-**Status:** `StdoutAuditLog` provides JSON-lines observability. Verbose executor logging streams full agent thoughts, tool calls with arguments, and tool results. Live dashboard script (`tools/dashboard.py`) for terminal-based monitoring. `run-aaos.sh` launcher auto-opens dashboard in a separate terminal. Web dashboard is future work.
+**Status:**
+- `StdoutAuditLog` provides JSON-lines observability; `journalctl -u agentd` is the default operator query path once installed as a `.deb`.
+- Verbose executor logging streams full agent thoughts, tool calls with arguments, and tool results.
+- **Operator CLI** (`agentd submit|list|status|stop|logs`). Same binary as the daemon; subcommands connect to `/run/agentd/agentd.sock` over Unix-socket JSON-RPC. Operators join the `aaos` system group (created by the `.deb`'s `postinst`) to get socket access. `agentd submit` streams live audit events filtered to Bootstrap's goal tree; `agentd logs <id>` attaches to a single agent's stream. Ctrl-C detaches without killing the agent.
+- Legacy tooling: `tools/dashboard.py` and `run-aaos.sh` still work for the Docker deployment path. Web dashboard remains future work.
 
 ## Capability Security Model
 
