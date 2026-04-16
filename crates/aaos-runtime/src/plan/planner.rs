@@ -1,0 +1,347 @@
+//! Planner: turns a goal into a Plan via one LLM call.
+//!
+//! The Planner is intentionally single-turn and structured-output-only. When
+//! a subtask in the emitted Plan fails in a "correctable" way (unknown role,
+//! missing param, malformed structure), the PlanExecutor calls `replan()` to
+//! re-invoke with the failure reason, up to 3 times total.
+
+use std::sync::Arc;
+
+use aaos_core::AgentId;
+use aaos_llm::{CompletionRequest, ContentBlock, LlmClient, Message};
+
+use crate::plan::{Plan, RoleCatalog};
+
+pub struct Planner {
+    llm: Arc<dyn LlmClient>,
+    model: String,
+}
+
+impl Planner {
+    pub fn new(llm: Arc<dyn LlmClient>, model: String) -> Self {
+        Self { llm, model }
+    }
+
+    /// Produce an initial Plan for the goal. Returns the parsed Plan after
+    /// structural validation. Malformed LLM output surfaces as
+    /// PlannerError::Malformed; the caller (PlanExecutor) decides whether to
+    /// retry, fall back to the generalist role, or give up.
+    pub async fn plan(
+        &self,
+        goal: &str,
+        catalog: &RoleCatalog,
+    ) -> Result<Plan, PlannerError> {
+        let prompt = self.build_prompt(goal, catalog, None, None);
+        self.call_and_parse(&prompt, catalog).await
+    }
+
+    /// Ask the planner to revise. `previous` is the Plan that failed,
+    /// `failure_reason` is a human-friendly description of why.
+    pub async fn replan(
+        &self,
+        goal: &str,
+        catalog: &RoleCatalog,
+        previous: &Plan,
+        failure_reason: &str,
+    ) -> Result<Plan, PlannerError> {
+        let prompt = self.build_prompt(goal, catalog, Some(previous), Some(failure_reason));
+        self.call_and_parse(&prompt, catalog).await
+    }
+
+    fn build_prompt(
+        &self,
+        goal: &str,
+        catalog: &RoleCatalog,
+        previous: Option<&Plan>,
+        failure_reason: Option<&str>,
+    ) -> String {
+        let mut role_lines = String::new();
+        for name in catalog.names() {
+            let r = catalog.get(name).unwrap();
+            let params: Vec<String> = r
+                .parameters
+                .iter()
+                .map(|(k, s)| {
+                    if s.required {
+                        k.clone()
+                    } else {
+                        format!("{k}?")
+                    }
+                })
+                .collect();
+            role_lines.push_str(&format!(
+                "  {name}: {desc} Params: [{params}].\n",
+                desc = r.system_prompt.lines().next().unwrap_or(""),
+                params = params.join(", ")
+            ));
+        }
+
+        let mut prompt = format!(
+            "You produce a Plan for an agent runtime. Output ONLY valid JSON.\n\
+             \n\
+             Plan JSON schema:\n\
+             {{\n\
+             \t\"subtasks\": [ {{\"id\": string, \"role\": string, \"params\": object, \"depends_on\": [string]}} ],\n\
+             \t\"final_output\": string (path)\n\
+             }}\n\
+             \n\
+             Use these path templates: {{run}} for the run's workspace root.\n\
+             Independent subtasks have empty depends_on and run in parallel.\n\
+             \n\
+             ROLE CATALOG:\n\
+             {roles}\n\
+             GOAL: {goal}\n\n",
+            roles = role_lines,
+            goal = goal,
+        );
+
+        if let (Some(prev), Some(reason)) = (previous, failure_reason) {
+            prompt.push_str("PREVIOUS PLAN FAILED. Revise.\n");
+            prompt.push_str(&format!(
+                "Previous plan: {}\n",
+                serde_json::to_string(prev).unwrap()
+            ));
+            prompt.push_str(&format!("Failure reason: {}\n\n", reason));
+        }
+
+        prompt.push_str("Emit ONLY the Plan JSON, nothing else.");
+        prompt
+    }
+
+    async fn call_and_parse(
+        &self,
+        prompt: &str,
+        catalog: &RoleCatalog,
+    ) -> Result<Plan, PlannerError> {
+        let req = CompletionRequest {
+            agent_id: AgentId::new(),
+            model: self.model.clone(),
+            system: String::new(),
+            messages: vec![Message::User {
+                content: prompt.to_string(),
+            }],
+            tools: vec![],
+            max_tokens: 4000,
+        };
+        let resp = self
+            .llm
+            .complete(req)
+            .await
+            .map_err(|e| PlannerError::LlmCall(e.to_string()))?;
+
+        let text = resp
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| PlannerError::Malformed("no text block in LLM response".into()))?;
+
+        let json = extract_json(&text).ok_or_else(|| {
+            PlannerError::Malformed(format!(
+                "no JSON in response: {}",
+                truncate(&text, 200)
+            ))
+        })?;
+
+        let plan: Plan = serde_json::from_str(&json)
+            .map_err(|e| PlannerError::Malformed(format!("JSON parse: {e}")))?;
+
+        validate_plan_structure(&plan, catalog)?;
+
+        Ok(plan)
+    }
+}
+
+pub fn validate_plan_structure(plan: &Plan, catalog: &RoleCatalog) -> Result<(), PlannerError> {
+    if plan.final_output.is_empty() {
+        return Err(PlannerError::Malformed("final_output missing".into()));
+    }
+    if plan.subtasks.is_empty() {
+        return Err(PlannerError::Malformed("subtasks empty".into()));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for s in &plan.subtasks {
+        if !seen.insert(s.id.clone()) {
+            return Err(PlannerError::Malformed(format!(
+                "duplicate subtask id: {}",
+                s.id
+            )));
+        }
+        if catalog.get(&s.role).is_none() {
+            return Err(PlannerError::Malformed(format!(
+                "unknown role: {}",
+                s.role
+            )));
+        }
+    }
+    for s in &plan.subtasks {
+        for d in &s.depends_on {
+            if !seen.contains(d) {
+                return Err(PlannerError::Malformed(format!(
+                    "subtask '{}' depends on unknown id '{}'",
+                    s.id, d
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn extract_json(text: &str) -> Option<String> {
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let bytes = text.as_bytes();
+    for i in start..bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[start..=i].to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.len() <= n {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..n])
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PlannerError {
+    #[error("LLM call failed: {0}")]
+    LlmCall(String),
+    #[error("malformed plan from LLM: {0}")]
+    Malformed(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::{ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry, Subtask};
+    use std::collections::HashMap;
+
+    fn catalog_with_fetcher() -> RoleCatalog {
+        let r = Role {
+            name: "fetcher".into(),
+            model: "deepseek-chat".into(),
+            parameters: HashMap::from([
+                (
+                    "url".into(),
+                    ParameterSchema {
+                        param_type: ParameterType::String,
+                        required: true,
+                        description: "".into(),
+                    },
+                ),
+                (
+                    "workspace".into(),
+                    ParameterSchema {
+                        param_type: ParameterType::Path,
+                        required: true,
+                        description: "".into(),
+                    },
+                ),
+            ]),
+            capabilities: vec![],
+            system_prompt: "fetcher".into(),
+            message_template: "fetch {url} to {workspace}".into(),
+            budget: RoleBudget {
+                max_input_tokens: 20000,
+                max_output_tokens: 2000,
+            },
+            retry: RoleRetry {
+                max_attempts: 1,
+                on: vec![],
+            },
+        };
+        let mut cat = RoleCatalog::default();
+        cat.roles_mut().insert("fetcher".into(), r);
+        cat
+    }
+
+    #[test]
+    fn extract_json_from_pure_json() {
+        let j = extract_json(r#"{"a":1}"#).unwrap();
+        assert_eq!(j, r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn extract_json_from_prose_wrapper() {
+        let j = extract_json("Here's the plan:\n{\"a\":1}\nThat's it.").unwrap();
+        assert_eq!(j, r#"{"a":1}"#);
+    }
+
+    #[test]
+    fn validate_ok_on_good_plan() {
+        let cat = catalog_with_fetcher();
+        let p = Plan {
+            subtasks: vec![Subtask {
+                id: "a".into(),
+                role: "fetcher".into(),
+                params: serde_json::json!({}),
+                depends_on: vec![],
+            }],
+            final_output: "/out".into(),
+        };
+        validate_plan_structure(&p, &cat).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_unknown_role() {
+        let cat = catalog_with_fetcher();
+        let p = Plan {
+            subtasks: vec![Subtask {
+                id: "a".into(),
+                role: "wizard".into(),
+                params: serde_json::json!({}),
+                depends_on: vec![],
+            }],
+            final_output: "/out".into(),
+        };
+        let err = validate_plan_structure(&p, &cat).unwrap_err();
+        assert!(matches!(err, PlannerError::Malformed(_)));
+    }
+
+    #[test]
+    fn validate_rejects_empty_subtasks() {
+        let cat = catalog_with_fetcher();
+        let p = Plan {
+            subtasks: vec![],
+            final_output: "/out".into(),
+        };
+        assert!(validate_plan_structure(&p, &cat).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_dup_id() {
+        let cat = catalog_with_fetcher();
+        let p = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "a".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec![],
+                },
+                Subtask {
+                    id: "a".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec![],
+                },
+            ],
+            final_output: "/out".into(),
+        };
+        assert!(validate_plan_structure(&p, &cat).is_err());
+    }
+}

@@ -219,6 +219,11 @@ impl RoleCatalog {
     pub fn is_empty(&self) -> bool {
         self.roles.is_empty()
     }
+
+    #[cfg(test)]
+    pub fn roles_mut(&mut self) -> &mut std::collections::HashMap<String, Role> {
+        &mut self.roles
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
