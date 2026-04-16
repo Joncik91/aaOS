@@ -1,26 +1,47 @@
 //! PlanExecutor — deterministic DAG walk that spawns children per role.
 //!
-//! This is the skeleton. `execute_plan` currently validates structure/roles/
-//! params only — spawning subtasks is wired in Task 9 via a SubtaskRunner
-//! closure supplied by the server. The validation paths here produce the
-//! Correctable errors the replan loop depends on, so testing them early
-//! (before spawning complexity) pins the error-routing contract.
+//! Subtasks are spawned via a `SubtaskRunner` closure — the server
+//! constructs one that closes over its AgentRegistry + services and passes
+//! it in. This keeps the plan module decoupled from agentd's concrete
+//! service wiring.
+//!
+//! Execution shape: `topo_batches` splits the plan into dependency-ordered
+//! batches. Within a batch, all subtasks are spawned concurrently via
+//! `futures::try_join_all`. Batches run sequentially.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aaos_core::CoreError;
+use aaos_core::{AgentId, AuditEvent, AuditEventKind, AuditLog, CoreError};
 
 use crate::plan::{
-    topo_batches, Plan, PlanResult, Planner, PlannerError, RoleCatalog, Substitutions,
-    SubtaskId, SubtaskResult,
+    topo_batches, Plan, PlanResult, Planner, PlannerError, RoleCatalog, Subtask,
+    SubtaskId, SubtaskResult, Substitutions,
 };
+
+/// Closure that spawns a child from a rendered manifest + message, runs it
+/// to completion, and returns the SubtaskResult. Provided by the server so
+/// the executor doesn't have to re-wire services.
+pub type SubtaskRunner = Arc<
+    dyn Fn(
+            String,          // subtask_id (for audit correlation)
+            String,          // rendered manifest YAML
+            String,          // first message for the child
+        ) -> Pin<
+            Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>,
+        > + Send
+        + Sync,
+>;
 
 pub struct PlanExecutor {
     catalog: Arc<RoleCatalog>,
     planner: Arc<Planner>,
+    runner: SubtaskRunner,
+    audit_log: Arc<dyn AuditLog>,
     max_replans: u32,
     total_deadline: Duration,
     run_root_base: PathBuf,
@@ -30,11 +51,15 @@ impl PlanExecutor {
     pub fn new(
         catalog: Arc<RoleCatalog>,
         planner: Arc<Planner>,
+        runner: SubtaskRunner,
+        audit_log: Arc<dyn AuditLog>,
         run_root_base: PathBuf,
     ) -> Self {
         Self {
             catalog,
             planner,
+            runner,
+            audit_log,
             max_replans: 3,
             total_deadline: Duration::from_secs(600),
             run_root_base,
@@ -44,12 +69,13 @@ impl PlanExecutor {
     pub async fn run(&self, goal: &str, run_id: uuid::Uuid) -> Result<PlanResult, ExecutorError> {
         let started = Instant::now();
         let run_root = self.run_root_base.join(run_id.to_string());
-        std::fs::create_dir_all(&run_root)
-            .map_err(|e| ExecutorError::Terminal(CoreError::Ipc(format!(
+        std::fs::create_dir_all(&run_root).map_err(|e| {
+            ExecutorError::Terminal(CoreError::Ipc(format!(
                 "create workspace {}: {}",
                 run_root.display(),
                 e
-            ))))?;
+            )))
+        })?;
 
         let mut plan = self
             .planner
@@ -58,7 +84,7 @@ impl PlanExecutor {
             .map_err(ExecutorError::from)?;
         self.write_plan_json(&run_root, &plan)?;
 
-        let mut replans_used = 0;
+        let mut replans_used: u32 = 0;
         loop {
             if started.elapsed() > self.total_deadline {
                 return Err(ExecutorError::Terminal(CoreError::Ipc(
@@ -66,8 +92,23 @@ impl PlanExecutor {
                 )));
             }
             match self.execute_plan(&plan, &run_root).await {
-                Ok(result) => return Ok(result),
+                Ok(result) => {
+                    self.audit_log.record(AuditEvent::new(
+                        AgentId::from_uuid(uuid::Uuid::nil()),
+                        AuditEventKind::PlanProduced {
+                            subtask_count: plan.subtasks.len() as u32,
+                            replans_used,
+                        },
+                    ));
+                    return Ok(result);
+                }
                 Err(ExecutorError::Correctable(reason)) if replans_used < self.max_replans => {
+                    self.audit_log.record(AuditEvent::new(
+                        AgentId::from_uuid(uuid::Uuid::nil()),
+                        AuditEventKind::PlanReplanned {
+                            reason: reason.clone(),
+                        },
+                    ));
                     plan = self
                         .planner
                         .replan(goal, &self.catalog, &plan, &reason)
@@ -84,12 +125,13 @@ impl PlanExecutor {
     fn write_plan_json(&self, run_root: &PathBuf, plan: &Plan) -> Result<(), ExecutorError> {
         let path = run_root.join("plan.json");
         let json = serde_json::to_string_pretty(plan).unwrap();
-        std::fs::write(&path, json)
-            .map_err(|e| ExecutorError::Terminal(CoreError::Ipc(format!(
+        std::fs::write(&path, json).map_err(|e| {
+            ExecutorError::Terminal(CoreError::Ipc(format!(
                 "write {}: {}",
                 path.display(),
                 e
-            ))))
+            )))
+        })
     }
 
     pub async fn execute_plan(
@@ -97,12 +139,12 @@ impl PlanExecutor {
         plan: &Plan,
         run_root: &PathBuf,
     ) -> Result<PlanResult, ExecutorError> {
-        let subs = Substitutions::new(run_root.clone());
+        use futures::future::try_join_all;
 
-        // Structural check.
+        let subs = Substitutions::new(run_root.clone());
         let batches = topo_batches(plan).map_err(ExecutorError::Correctable)?;
 
-        // Role + param validation before any spawn.
+        // Pre-validate all subtasks BEFORE spawning anything.
         for s in &plan.subtasks {
             let role = self
                 .catalog
@@ -112,14 +154,59 @@ impl PlanExecutor {
             role.validate_params(&resolved).map_err(ExecutorError::Correctable)?;
         }
 
-        // Stub: spawn is Task 9. Empty results for now.
-        let _ = batches;
-        let _: HashMap<SubtaskId, SubtaskResult> = HashMap::new();
+        let mut results: HashMap<SubtaskId, SubtaskResult> = HashMap::new();
+
+        for batch in batches {
+            let spawns = batch
+                .iter()
+                .map(|s| self.spawn_subtask(s, &subs))
+                .collect::<Vec<_>>();
+            let batch_results = try_join_all(spawns).await?;
+            for (subtask, result) in batch.iter().zip(batch_results) {
+                self.audit_log.record(AuditEvent::new(
+                    result.agent_id,
+                    AuditEventKind::SubtaskCompleted {
+                        subtask_id: subtask.id.clone(),
+                        success: true,
+                    },
+                ));
+                results.insert(subtask.id.clone(), result);
+            }
+        }
+
         Ok(PlanResult {
             plan: plan.clone(),
-            results: HashMap::new(),
+            results,
             final_output: plan.final_output.clone(),
         })
+    }
+
+    async fn spawn_subtask(
+        &self,
+        subtask: &Subtask,
+        subs: &Substitutions,
+    ) -> Result<SubtaskResult, ExecutorError> {
+        let role = self
+            .catalog
+            .get(&subtask.role)
+            .ok_or_else(|| ExecutorError::Correctable(format!("unknown role: {}", subtask.role)))?;
+        let resolved_params = subs.apply(&subtask.params);
+        let manifest_yaml = role.render_manifest(&resolved_params);
+        let message = role.render_message(&resolved_params);
+
+        // Audit: subtask start. agent_id isn't known until the runner returns.
+        self.audit_log.record(AuditEvent::new(
+            AgentId::from_uuid(uuid::Uuid::nil()),
+            AuditEventKind::SubtaskStarted {
+                subtask_id: subtask.id.clone(),
+                role: subtask.role.clone(),
+            },
+        ));
+
+        let result = (self.runner)(subtask.id.clone(), manifest_yaml, message)
+            .await
+            .map_err(ExecutorError::Terminal)?;
+        Ok(result)
     }
 }
 
@@ -148,6 +235,7 @@ mod tests {
     use crate::plan::{
         ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry, Subtask,
     };
+    use aaos_core::InMemoryAuditLog;
     use std::collections::HashMap as StdHashMap;
 
     fn fetcher_catalog() -> RoleCatalog {
@@ -189,6 +277,20 @@ mod tests {
         cat
     }
 
+    fn stub_runner() -> SubtaskRunner {
+        Arc::new(|id, _manifest, _msg| {
+            Box::pin(async move {
+                Ok(SubtaskResult {
+                    subtask_id: id,
+                    agent_id: AgentId::new(),
+                    response: "stub".into(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+            })
+        })
+    }
+
     #[tokio::test]
     async fn execute_plan_returns_correctable_for_unknown_role() {
         let cat = Arc::new(fetcher_catalog());
@@ -201,11 +303,15 @@ mod tests {
             }],
             final_output: "/out".into(),
         };
-        let planner = Arc::new(Planner::new(
-            Arc::new(MockLlm),
-            "deepseek-chat".into(),
-        ));
-        let exec = PlanExecutor::new(cat, planner, std::env::temp_dir());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(
+            cat,
+            planner,
+            stub_runner(),
+            audit,
+            std::env::temp_dir(),
+        );
         let tmp = tempfile::tempdir().unwrap();
         let err = exec
             .execute_plan(&bad_plan, &tmp.path().to_path_buf())
@@ -221,22 +327,93 @@ mod tests {
             subtasks: vec![Subtask {
                 id: "a".into(),
                 role: "fetcher".into(),
-                params: serde_json::json!({"url": "https://x.com"}), // missing workspace
+                params: serde_json::json!({"url": "https://x.com"}),
                 depends_on: vec![],
             }],
             final_output: "/out".into(),
         };
-        let planner = Arc::new(Planner::new(
-            Arc::new(MockLlm),
-            "deepseek-chat".into(),
-        ));
-        let exec = PlanExecutor::new(cat, planner, std::env::temp_dir());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(
+            cat,
+            planner,
+            stub_runner(),
+            audit,
+            std::env::temp_dir(),
+        );
         let tmp = tempfile::tempdir().unwrap();
         let err = exec
             .execute_plan(&bad_plan, &tmp.path().to_path_buf())
             .await
             .unwrap_err();
         assert!(matches!(err, ExecutorError::Correctable(_)));
+    }
+
+    #[tokio::test]
+    async fn execute_plan_walks_dag_with_runner() {
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg| {
+            let c = counter_clone.clone();
+            Box::pin(async move {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(SubtaskResult {
+                    subtask_id: id,
+                    agent_id: AgentId::new(),
+                    response: "ok".into(),
+                    input_tokens: 10,
+                    output_tokens: 5,
+                })
+            })
+        });
+        let audit_concrete = Arc::new(InMemoryAuditLog::new());
+        let audit: Arc<dyn AuditLog> = audit_concrete.clone();
+        let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "hn".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({
+                        "url": "https://news.ycombinator.com/",
+                        "workspace": "{run}/hn.html"
+                    }),
+                    depends_on: vec![],
+                },
+                Subtask {
+                    id: "lob".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({
+                        "url": "https://lobste.rs/",
+                        "workspace": "{run}/lob.html"
+                    }),
+                    depends_on: vec![],
+                },
+            ],
+            final_output: "/out".into(),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let r = exec
+            .execute_plan(&plan, &tmp.path().to_path_buf())
+            .await
+            .unwrap();
+        assert_eq!(r.results.len(), 2);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let events = audit_concrete.events();
+        let started_count = events
+            .iter()
+            .filter(|e| matches!(e.event, AuditEventKind::SubtaskStarted { .. }))
+            .count();
+        let completed_count = events
+            .iter()
+            .filter(|e| matches!(e.event, AuditEventKind::SubtaskCompleted { .. }))
+            .count();
+        assert_eq!(started_count, 2);
+        assert_eq!(completed_count, 2);
     }
 
     struct MockLlm;
