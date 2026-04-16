@@ -72,6 +72,7 @@ assets = [
   ["../../manifests/bootstrap.yaml", "etc/aaos/manifests/", "644"],
   ["../../packaging/agentd.service", "lib/systemd/system/", "644"],
   ["../../README.md", "usr/share/doc/aaos/", "644"],
+  ["../../packaging/agentd.1.gz", "usr/share/man/man1/", "644"],
 ]
 conf-files = ["/etc/aaos/manifests/bootstrap.yaml"]
 maintainer-scripts = "../../packaging/debian/"
