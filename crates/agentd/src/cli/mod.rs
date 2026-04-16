@@ -80,12 +80,7 @@ pub mod list;
 
 pub mod status;
 
-pub mod stop {
-    use std::path::PathBuf;
-    pub async fn run(_agent_id: String, _socket: PathBuf) -> anyhow::Result<()> {
-        unimplemented!("filled in Task 12")
-    }
-}
+pub mod stop;
 
 pub mod logs {
     use std::path::PathBuf;
