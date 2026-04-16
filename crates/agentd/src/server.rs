@@ -1129,6 +1129,16 @@ impl Server {
             }
         }
 
+        // Emit Bootstrap's last assistant-message text as a `final_text` frame
+        // before the `end` frame. Lets the CLI show the actual answer, not just
+        // the timing summary. Missing or empty → skip the frame.
+        if let Some(text) = self.last_assistant_text(bootstrap_id) {
+            if !text.is_empty() {
+                let frame = json!({ "kind": "final_text", "text": text });
+                let _ = write_ndjson(writer, &frame).await;
+            }
+        }
+
         let end = json!({
             "kind": "end",
             "exit_code": exit_code,
@@ -1137,6 +1147,32 @@ impl Server {
             "elapsed_ms": started.elapsed().as_millis() as u64,
         });
         let _ = write_ndjson(writer, &end).await;
+    }
+
+    /// Pull the most recent assistant message's text from the session store
+    /// for the given agent, concatenating any Text content blocks.
+    /// Returns None if there's no history, no assistant message, or the load fails.
+    fn last_assistant_text(&self, agent_id: aaos_core::AgentId) -> Option<String> {
+        let history = self.session_store.load(&agent_id).ok()?;
+        history.iter().rev().find_map(|msg| {
+            if let aaos_llm::Message::Assistant { content } = msg {
+                let text: String = content
+                    .iter()
+                    .filter_map(|block| match block {
+                        aaos_llm::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            } else {
+                None
+            }
+        })
     }
 
     /// agent.logs_streaming — attach to a single named agent's audit stream.

@@ -73,6 +73,15 @@ pub async fn run(goal: String, verbose: bool, socket: PathBuf) -> anyhow::Result
                 line.clear();
 
                 match frame.get("kind").and_then(|k| k.as_str()) {
+                    Some("final_text") => {
+                        if let Some(text) = frame.get("text").and_then(|t| t.as_str()) {
+                            // Blank line before Bootstrap's answer so it stands
+                            // clearly apart from the audit stream above.
+                            println!();
+                            println!("{}", text);
+                            println!();
+                        }
+                    }
                     Some("end") => {
                         let exit = frame.get("exit_code").and_then(|c| c.as_i64()).unwrap_or(0) as i32;
                         let input_tokens = frame.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
