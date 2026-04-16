@@ -78,16 +78,7 @@ pub mod submit;
 
 pub mod list;
 
-pub mod status {
-    use std::path::PathBuf;
-    pub async fn run(
-        _agent_id: String,
-        _json: bool,
-        _socket: PathBuf,
-    ) -> anyhow::Result<()> {
-        unimplemented!("filled in Task 11")
-    }
-}
+pub mod status;
 
 pub mod stop {
     use std::path::PathBuf;
