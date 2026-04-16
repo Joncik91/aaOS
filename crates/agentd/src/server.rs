@@ -1004,14 +1004,7 @@ impl Server {
                 self.handle_submit_streaming(&request.params, writer).await
             }
             "agent.logs_streaming" => {
-                // Implemented in Task 3. Stub the streaming shape so clients
-                // get a well-formed end frame instead of a hang.
-                let err = json!({
-                    "kind": "end",
-                    "exit_code": 1,
-                    "error": "agent.logs_streaming not yet implemented",
-                });
-                let _ = write_ndjson(writer, &err).await;
+                self.handle_logs_streaming(&request.params, writer).await
             }
             other => {
                 let err = json!({
@@ -1129,6 +1122,131 @@ impl Server {
                     let _ = write_ndjson(writer, &frame).await;
                 }
                 Err(RecvError::Closed) => break,
+            }
+        }
+
+        let end = json!({
+            "kind": "end",
+            "exit_code": exit_code,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "elapsed_ms": started.elapsed().as_millis() as u64,
+        });
+        let _ = write_ndjson(writer, &end).await;
+    }
+
+    /// agent.logs_streaming — attach to a single named agent's audit stream.
+    /// Unlike `submit_streaming`, this handler:
+    ///   * does NOT spawn or message anyone,
+    ///   * does NOT walk parent/child chains — strict equality on `agent_id`,
+    ///   * emits an end frame ONLY on the target's clean termination (anything
+    ///     else keeps the stream open until the client disconnects or the
+    ///     broadcast channel dies).
+    async fn handle_logs_streaming<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        params: &serde_json::Value,
+        writer: &mut W,
+    ) {
+        use aaos_core::{AgentId, AuditEventKind};
+        use tokio::sync::broadcast::error::RecvError;
+
+        // Parse `agent_id` param.
+        let agent_id_str = match params.get("agent_id").and_then(|a| a.as_str()) {
+            Some(s) => s,
+            None => {
+                let err = json!({
+                    "kind": "end",
+                    "exit_code": 2,
+                    "error": "missing 'agent_id' parameter",
+                });
+                let _ = write_ndjson(writer, &err).await;
+                return;
+            }
+        };
+        let target: AgentId = match serde_json::from_value(json!(agent_id_str)) {
+            Ok(id) => id,
+            Err(_) => {
+                let err = json!({
+                    "kind": "end",
+                    "exit_code": 2,
+                    "error": "invalid agent_id",
+                });
+                let _ = write_ndjson(writer, &err).await;
+                return;
+            }
+        };
+        if self.registry.get_info(target).is_err() {
+            let err = json!({
+                "kind": "end",
+                "exit_code": 2,
+                "error": "agent not found",
+            });
+            let _ = write_ndjson(writer, &err).await;
+            return;
+        }
+
+        // Subscribe before we start reading so we don't miss any events
+        // emitted while the client-side setup was in flight.
+        let mut rx = self.broadcast_audit.subscribe();
+
+        let started = std::time::Instant::now();
+        let mut input_tokens: u64 = 0;
+        let mut output_tokens: u64 = 0;
+        let mut exit_code: i32 = 0;
+
+        // The loop exits only in three ways:
+        //   * `break` after forwarding the target's terminal event — falls
+        //     through to the end-frame write below.
+        //   * `return` on `RecvError::Closed` — channel died; no end frame,
+        //     the client sees EOF and infers an abnormal close.
+        //   * `return` on a write failure — client disconnected; nothing
+        //     more to do.
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    // Filter: exact match on target. No descendant walk —
+                    // `agentd logs <id>` shows only the named agent.
+                    if event.agent_id != target {
+                        continue;
+                    }
+                    // Aggregate usage (consistent with submit_streaming).
+                    if let AuditEventKind::UsageReported {
+                        input_tokens: i,
+                        output_tokens: o,
+                    } = &event.event
+                    {
+                        input_tokens = input_tokens.saturating_add(*i);
+                        output_tokens = output_tokens.saturating_add(*o);
+                        continue;
+                    }
+
+                    let frame =
+                        serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+                    let frame = json!({ "kind": "event", "event": frame });
+                    if write_ndjson(writer, &frame).await.is_err() {
+                        return;
+                    }
+
+                    match &event.event {
+                        AuditEventKind::AgentExecutionCompleted { .. } => break,
+                        AuditEventKind::AgentLoopStopped { reason, .. } => {
+                            if reason == "error" || reason == "budget_exceeded" {
+                                exit_code = 1;
+                            }
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    let frame = json!({ "kind": "lag", "missed": n });
+                    let _ = write_ndjson(writer, &frame).await;
+                }
+                Err(RecvError::Closed) => {
+                    // Channel died under us. Not a clean termination — no
+                    // end frame. Client sees EOF on the socket.
+                    return;
+                }
             }
         }
 
@@ -1688,6 +1806,208 @@ lifecycle: persistent
                 == Some("tool_invoked")
         });
         assert!(has_tool, "ToolInvoked should be forwarded");
+    }
+
+    #[tokio::test]
+    async fn logs_streaming_filters_to_single_agent() {
+        use std::time::Duration;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixStream;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("agentd.sock");
+
+        // Two agents registered side-by-side in one server. We don't need
+        // them to actually run any LLM loop — `handle_logs_streaming` only
+        // consults `registry.get_info` for existence and then subscribes to
+        // the broadcast audit sink. A non-persistent manifest with the
+        // hanging LLM never spawns a background task, which keeps test
+        // teardown tidy.
+        let hanging: Arc<dyn LlmClient> = Arc::new(HangingLlm);
+        let server = Arc::new(Server::with_llm_client(hanging));
+
+        let target_manifest = aaos_core::AgentManifest::from_yaml(
+            r#"
+name: target
+model: claude-haiku-4-5-20251001
+system_prompt: "target"
+"#,
+        )
+        .unwrap();
+        let other_manifest = aaos_core::AgentManifest::from_yaml(
+            r#"
+name: other
+model: claude-haiku-4-5-20251001
+system_prompt: "other"
+"#,
+        )
+        .unwrap();
+        let target_id = server.registry.spawn(target_manifest).unwrap();
+        let other_id = server.registry.spawn(other_manifest).unwrap();
+
+        let server_for_listen = server.clone();
+        let socket_path_for_listen = socket_path.clone();
+        let listener_task = tokio::spawn(async move {
+            let _ = server_for_listen.listen(&socket_path_for_listen).await;
+        });
+
+        for _ in 0..50 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+        let req = json!({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "agent.logs_streaming",
+            "params": { "agent_id": target_id.to_string() }
+        });
+        let mut line = serde_json::to_vec(&req).unwrap();
+        line.push(b'\n');
+        client.write_all(&line).await.unwrap();
+        client.flush().await.unwrap();
+
+        let audit = server.broadcast_audit.clone();
+        let emitter = tokio::spawn(async move {
+            // Small delay so the server has subscribed before we start.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            use aaos_core::{AuditEvent, AuditEventKind, AuditLog};
+            audit.record(AuditEvent::new(
+                target_id,
+                AuditEventKind::ToolInvoked {
+                    tool: "web_fetch".into(),
+                    input_hash: "h1".into(),
+                },
+            ));
+            audit.record(AuditEvent::new(
+                other_id,
+                AuditEventKind::ToolInvoked {
+                    tool: "file_write".into(),
+                    input_hash: "h2".into(),
+                },
+            ));
+            audit.record(AuditEvent::new(
+                target_id,
+                AuditEventKind::ToolInvoked {
+                    tool: "file_read".into(),
+                    input_hash: "h3".into(),
+                },
+            ));
+            audit.record(AuditEvent::new(
+                target_id,
+                AuditEventKind::AgentExecutionCompleted {
+                    stop_reason: "done".into(),
+                    total_iterations: 1,
+                },
+            ));
+        });
+
+        let (reader, _writer) = client.split();
+        let mut lines = BufReader::new(reader).lines();
+        let mut frames: Vec<serde_json::Value> = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Ok(Some(text)) = lines.next_line().await {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let is_end = v.get("kind").and_then(|k| k.as_str()) == Some("end");
+                    frames.push(v);
+                    if is_end {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("end frame within 5s");
+
+        emitter.await.unwrap();
+        listener_task.abort();
+
+        // 3 event frames (2 ToolInvoked + 1 AgentExecutionCompleted, all for
+        // target) + 1 end frame = 4 total. The other agent's event must NOT
+        // appear.
+        let event_frames: Vec<_> = frames
+            .iter()
+            .filter(|f| f.get("kind").and_then(|k| k.as_str()) == Some("event"))
+            .collect();
+        assert_eq!(
+            event_frames.len(),
+            3,
+            "expected 3 event frames for target, got {}: {:?}",
+            event_frames.len(),
+            frames
+        );
+
+        for f in &event_frames {
+            let aid = f["event"]["agent_id"].as_str().unwrap();
+            assert_eq!(
+                aid,
+                target_id.to_string(),
+                "event frame not filtered to target"
+            );
+        }
+
+        let end = frames.last().unwrap();
+        assert_eq!(end["kind"], "end");
+        assert_eq!(end["exit_code"], 0);
+    }
+
+    #[tokio::test]
+    async fn logs_streaming_missing_agent_id_emits_end_with_exit_2() {
+        use std::time::Duration;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixStream;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("agentd.sock");
+        let server = Arc::new(Server::new());
+        let server_for_listen = server.clone();
+        let socket_path_for_listen = socket_path.clone();
+        let listener_task = tokio::spawn(async move {
+            let _ = server_for_listen.listen(&socket_path_for_listen).await;
+        });
+        for _ in 0..50 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let mut client = UnixStream::connect(&socket_path).await.unwrap();
+        let req = json!({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "agent.logs_streaming",
+            "params": {}
+        });
+        let mut line = serde_json::to_vec(&req).unwrap();
+        line.push(b'\n');
+        client.write_all(&line).await.unwrap();
+        client.flush().await.unwrap();
+
+        let (reader, _writer) = client.split();
+        let mut lines = BufReader::new(reader).lines();
+        let mut frames: Vec<serde_json::Value> = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Ok(Some(text)) = lines.next_line().await {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    frames.push(v);
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("frame within 5s");
+
+        listener_task.abort();
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0]["kind"], "end");
+        assert_eq!(frames[0]["exit_code"], 2);
+        assert!(frames[0]["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("agent_id"));
     }
 
     #[tokio::test]
