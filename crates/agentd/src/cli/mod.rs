@@ -82,16 +82,7 @@ pub mod status;
 
 pub mod stop;
 
-pub mod logs {
-    use std::path::PathBuf;
-    pub async fn run(
-        _agent_id: String,
-        _verbose: bool,
-        _socket: PathBuf,
-    ) -> anyhow::Result<()> {
-        unimplemented!("filled in Task 13")
-    }
-}
+pub mod logs;
 
 #[cfg(test)]
 mod tests {
