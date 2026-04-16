@@ -76,12 +76,7 @@ pub enum CliCommand {
 
 pub mod submit;
 
-pub mod list {
-    use std::path::PathBuf;
-    pub async fn run(_json: bool, _socket: PathBuf) -> anyhow::Result<()> {
-        unimplemented!("filled in Task 10")
-    }
-}
+pub mod list;
 
 pub mod status {
     use std::path::PathBuf;

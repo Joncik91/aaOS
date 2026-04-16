@@ -692,6 +692,8 @@ impl Server {
                     "model": info.model,
                     "state": format!("{}", info.state),
                     "capability_count": info.capability_count,
+                    "started_at": info.started_at,
+                    "parent_agent": info.parent_agent,
                 })
             })
             .collect();
@@ -722,6 +724,8 @@ impl Server {
                     "model": info.model,
                     "state": format!("{}", info.state),
                     "capability_count": info.capability_count,
+                    "started_at": info.started_at,
+                    "parent_agent": info.parent_agent,
                 }),
             ),
             Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
