@@ -135,6 +135,21 @@ pub enum AuditEventKind {
         /// The error message reported by the store.
         message: String,
     },
+    PlanProduced {
+        subtask_count: u32,
+        replans_used: u32,
+    },
+    PlanReplanned {
+        reason: String,
+    },
+    SubtaskStarted {
+        subtask_id: String,
+        role: String,
+    },
+    SubtaskCompleted {
+        subtask_id: String,
+        success: bool,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
@@ -490,5 +505,45 @@ mod tests {
             ));
         }
         assert_eq!(log.len(), 50);
+    }
+
+    #[test]
+    fn plan_audit_events_round_trip() {
+        let events = vec![
+            AuditEvent::new(
+                AgentId::new(),
+                AuditEventKind::PlanProduced {
+                    subtask_count: 3,
+                    replans_used: 0,
+                },
+            ),
+            AuditEvent::new(
+                AgentId::new(),
+                AuditEventKind::PlanReplanned {
+                    reason: "unknown role".into(),
+                },
+            ),
+            AuditEvent::new(
+                AgentId::new(),
+                AuditEventKind::SubtaskStarted {
+                    subtask_id: "fetch-hn".into(),
+                    role: "fetcher".into(),
+                },
+            ),
+            AuditEvent::new(
+                AgentId::new(),
+                AuditEventKind::SubtaskCompleted {
+                    subtask_id: "fetch-hn".into(),
+                    success: true,
+                },
+            ),
+        ];
+        for e in events {
+            let s = serde_json::to_string(&e).unwrap();
+            let back: AuditEvent = serde_json::from_str(&s).unwrap();
+            let original = serde_json::to_string(&e.event).unwrap();
+            let rebuilt = serde_json::to_string(&back.event).unwrap();
+            assert_eq!(original, rebuilt);
+        }
     }
 }
