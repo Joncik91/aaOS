@@ -4,6 +4,9 @@
 //! etc.). This module defines the clap enum and re-exports each subcommand's
 //! `run` entry point.
 
+pub mod client;
+pub mod errors;
+
 use std::path::PathBuf;
 
 #[derive(clap::Subcommand, Debug)]
