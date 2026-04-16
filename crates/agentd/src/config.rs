@@ -2,55 +2,14 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
+pub use crate::cli::CliCommand as Command;
+
 /// aaOS Agent Daemon — manages agent lifecycles, IPC, and tool invocation.
 #[derive(Parser, Debug)]
-#[command(name = "agentd", version, about)]
+#[command(name = "agentd", version, about = "aaOS agent daemon and operator CLI")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
-}
-
-#[derive(clap::Subcommand, Debug)]
-pub enum Command {
-    /// Start the agent daemon
-    Run {
-        /// Path to the daemon configuration file
-        #[arg(short, long, default_value = "/etc/agentd/config.yaml")]
-        config: PathBuf,
-        /// Unix socket path for the API
-        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
-        socket: PathBuf,
-    },
-    /// Spawn an agent from a manifest file
-    Spawn {
-        /// Path to the agent manifest YAML file
-        manifest: PathBuf,
-        /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
-        socket: PathBuf,
-    },
-    /// List running agents
-    List {
-        /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
-        socket: PathBuf,
-    },
-    /// Get status of a specific agent
-    Status {
-        /// Agent ID
-        agent_id: String,
-        /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
-        socket: PathBuf,
-    },
-    /// Stop an agent
-    Stop {
-        /// Agent ID
-        agent_id: String,
-        /// Unix socket path for the daemon
-        #[arg(short, long, default_value = "/run/agentd/agentd.sock")]
-        socket: PathBuf,
-    },
 }
 
 /// Runtime configuration for the daemon.

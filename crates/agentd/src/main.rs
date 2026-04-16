@@ -57,25 +57,20 @@ async fn main() -> anyhow::Result<()> {
 
             server.listen(&socket).await?;
         }
-        Command::Spawn { manifest, socket } => {
-            let manifest = aaos_core::AgentManifest::from_file(&manifest)?;
-            tracing::info!(name = %manifest.name, "spawning agent (client mode not yet implemented)");
-            tracing::info!(socket = %socket.display(), "would connect to daemon");
-            // TODO: implement client connection to daemon socket
-            println!("Agent manifest loaded: {}", manifest.name);
-            println!("Client mode not yet implemented — use 'agentd run' to start the daemon.");
+        Command::Submit { goal, verbose, socket } => {
+            return agentd::cli::submit::run(goal, verbose, socket).await;
         }
-        Command::List { socket } => {
-            tracing::info!(socket = %socket.display(), "listing agents (client mode not yet implemented)");
-            println!("Client mode not yet implemented — use 'agentd run' to start the daemon.");
+        Command::List { json, socket } => {
+            return agentd::cli::list::run(json, socket).await;
         }
-        Command::Status { agent_id, socket } => {
-            tracing::info!(agent_id = %agent_id, socket = %socket.display(), "status query (client mode not yet implemented)");
-            println!("Client mode not yet implemented — use 'agentd run' to start the daemon.");
+        Command::Status { agent_id, json, socket } => {
+            return agentd::cli::status::run(agent_id, json, socket).await;
         }
         Command::Stop { agent_id, socket } => {
-            tracing::info!(agent_id = %agent_id, socket = %socket.display(), "stop request (client mode not yet implemented)");
-            println!("Client mode not yet implemented — use 'agentd run' to start the daemon.");
+            return agentd::cli::stop::run(agent_id, socket).await;
+        }
+        Command::Logs { agent_id, verbose, socket } => {
+            return agentd::cli::logs::run(agent_id, verbose, socket).await;
         }
     }
 
