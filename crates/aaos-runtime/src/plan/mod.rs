@@ -16,7 +16,7 @@ pub use role::{
 };
 pub use placeholders::Substitutions;
 pub use planner::{validate_plan_structure, Planner, PlannerError};
-pub use executor::{ExecutorError, PlanExecutor, SubtaskRunner};
+pub use executor::{ExecutorError, PlanExecutor, SubtaskExecutorOverrides, SubtaskRunner};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

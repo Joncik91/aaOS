@@ -7,7 +7,9 @@ use aaos_core::{
 };
 use aaos_ipc::{MessageRouter, SchemaValidator};
 use aaos_llm::{AgentExecutor, ExecutorConfig, LlmClient};
-use aaos_runtime::plan::{PlanExecutor, Planner, RoleCatalog, SubtaskResult, SubtaskRunner};
+use aaos_runtime::plan::{
+    PlanExecutor, Planner, RoleCatalog, SubtaskExecutorOverrides, SubtaskResult, SubtaskRunner,
+};
 use aaos_runtime::{AgentRegistry, AgentState, InProcessAgentServices, InProcessBackend};
 use aaos_tools::{EchoTool, ToolInvocation, ToolRegistry};
 use serde_json::json;
@@ -228,13 +230,15 @@ impl Server {
             return;
         };
         let server_weak = self.clone();
-        let runner: SubtaskRunner = Arc::new(move |subtask_id, manifest_yaml, message| {
-            let s = server_weak.clone();
-            Box::pin(async move {
-                s.run_subtask_inline(&subtask_id, &manifest_yaml, &message)
-                    .await
-            })
-        });
+        let runner: SubtaskRunner = Arc::new(
+            move |subtask_id, manifest_yaml, message, overrides| {
+                let s = server_weak.clone();
+                Box::pin(async move {
+                    s.run_subtask_inline(&subtask_id, &manifest_yaml, &message, overrides)
+                        .await
+                })
+            },
+        );
         let audit: Arc<dyn aaos_core::AuditLog> = self.broadcast_audit.clone();
         let executor = Arc::new(PlanExecutor::new(
             catalog,
@@ -260,6 +264,7 @@ impl Server {
         subtask_id: &str,
         manifest_yaml: &str,
         message: &str,
+        overrides: SubtaskExecutorOverrides,
     ) -> Result<SubtaskResult, aaos_core::CoreError> {
         // Parse the rendered manifest.
         let manifest = aaos_core::AgentManifest::from_yaml(manifest_yaml)
@@ -277,13 +282,11 @@ impl Server {
             let _ = cleanup_registry.stop_sync(aid);
         });
 
-        // Run the LLM execution loop for this agent. Mirrors the
-        // construction recipe of `execute_agent` but returns the
-        // response text directly since ephemeral subtask agents don't
-        // persist history to the session store (so
-        // `last_assistant_text` would return None).
+        // Run the LLM execution loop for this agent. Overrides carry the
+        // role's budget (max_output_tokens) + retry (max_iterations) so
+        // the per-role YAML actually constrains the LLM call.
         let response = self
-            .execute_agent_for_subtask(agent_id, &manifest, message)
+            .execute_agent_for_subtask(agent_id, &manifest, message, overrides)
             .await?;
 
         Ok(SubtaskResult {
@@ -309,6 +312,7 @@ impl Server {
         agent_id: aaos_core::AgentId,
         manifest: &aaos_core::AgentManifest,
         first_message: &str,
+        overrides: SubtaskExecutorOverrides,
     ) -> Result<String, aaos_core::CoreError> {
         let llm = self.llm_client.clone().ok_or_else(|| {
             aaos_core::CoreError::Ipc("no LLM client configured for subtask execution".into())
@@ -332,7 +336,15 @@ impl Server {
             self.approval_queue.clone() as Arc<dyn ApprovalService>,
         ));
 
-        let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
+        // Build the per-subtask ExecutorConfig from the role's overrides.
+        // max_total_tokens inherits the default (1_000_000) — that's a
+        // whole-run cap and shouldn't need per-role tuning today.
+        let config = ExecutorConfig {
+            max_iterations: overrides.max_iterations,
+            max_total_tokens: ExecutorConfig::default().max_total_tokens,
+            max_output_tokens: overrides.max_output_tokens,
+        };
+        let executor = AgentExecutor::new(llm, services, config);
         let result = executor.run(agent_id, manifest, first_message).await;
 
         self.audit_log.record(aaos_core::AuditEvent::new(
@@ -2433,7 +2445,12 @@ model: claude-haiku-4-5-20251001
 system_prompt: "test subtask"
 "#;
         let result = server
-            .run_subtask_inline("t1", yaml, "hello")
+            .run_subtask_inline(
+                "t1",
+                yaml,
+                "hello",
+                SubtaskExecutorOverrides::default(),
+            )
             .await
             .expect("subtask should run to completion");
         assert_eq!(result.subtask_id, "t1");

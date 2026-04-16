@@ -23,14 +23,37 @@ use crate::plan::{
     SubtaskId, SubtaskResult, Substitutions,
 };
 
+/// Per-subtask executor overrides derived from the role's `budget` + `retry`
+/// fields. The runner uses these to build a non-default `ExecutorConfig`
+/// instead of swallowing the role author's intent (which was the primary
+/// driver of the 2026-04-17 fetcher-stall bug — role.budget.max_output_tokens
+/// never reached the LLM call).
+#[derive(Debug, Clone, Copy)]
+pub struct SubtaskExecutorOverrides {
+    /// Cap on output tokens per LLM call. Usually role.budget.max_output_tokens.
+    pub max_output_tokens: u32,
+    /// Cap on LLM-loop iterations for this child.
+    pub max_iterations: u32,
+}
+
+impl Default for SubtaskExecutorOverrides {
+    fn default() -> Self {
+        Self {
+            max_output_tokens: 16_384,
+            max_iterations: 50,
+        }
+    }
+}
+
 /// Closure that spawns a child from a rendered manifest + message, runs it
 /// to completion, and returns the SubtaskResult. Provided by the server so
 /// the executor doesn't have to re-wire services.
 pub type SubtaskRunner = Arc<
     dyn Fn(
-            String,          // subtask_id (for audit correlation)
-            String,          // rendered manifest YAML
-            String,          // first message for the child
+            String,                     // subtask_id (for audit correlation)
+            String,                     // rendered manifest YAML
+            String,                     // first message for the child
+            SubtaskExecutorOverrides,   // per-role budget + iteration caps
         ) -> Pin<
             Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>,
         > + Send
@@ -194,6 +217,17 @@ impl PlanExecutor {
         let manifest_yaml = role.render_manifest(&resolved_params);
         let message = role.render_message(&resolved_params);
 
+        // Pull the role's budget + retry into per-subtask overrides so the
+        // runner can build a non-default ExecutorConfig. max_iterations is
+        // bounded conservatively (retry.max_attempts governs how many LLM
+        // loops should exit cleanly before surfacing); ExecutorConfig's
+        // max_iterations is a separate LLM-loop-per-call bound, so we add
+        // a safety floor of 10 above what the role declares.
+        let overrides = SubtaskExecutorOverrides {
+            max_output_tokens: role.budget.max_output_tokens as u32,
+            max_iterations: (role.retry.max_attempts + 10).max(10),
+        };
+
         // Audit: subtask start. agent_id isn't known until the runner returns.
         self.audit_log.record(AuditEvent::new(
             AgentId::from_uuid(uuid::Uuid::nil()),
@@ -203,7 +237,7 @@ impl PlanExecutor {
             },
         ));
 
-        let result = (self.runner)(subtask.id.clone(), manifest_yaml, message)
+        let result = (self.runner)(subtask.id.clone(), manifest_yaml, message, overrides)
             .await
             .map_err(ExecutorError::Terminal)?;
         Ok(result)
@@ -305,7 +339,7 @@ mod tests {
     }
 
     fn stub_runner() -> SubtaskRunner {
-        Arc::new(|id, _manifest, _msg| {
+        Arc::new(|id, _manifest, _msg, _overrides| {
             Box::pin(async move {
                 Ok(SubtaskResult {
                     subtask_id: id,
@@ -382,7 +416,7 @@ mod tests {
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter_clone = counter.clone();
-        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg| {
+        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _overrides| {
             let c = counter_clone.clone();
             Box::pin(async move {
                 c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
