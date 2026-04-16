@@ -7,7 +7,9 @@
 //! reasons about content inside each child; orchestration is pure code.
 
 pub mod role;
+pub mod placeholders;
 
 pub use role::{
     ParameterSchema, ParameterType, Role, RoleBudget, RoleCatalog, RoleCatalogError, RoleRetry,
 };
+pub use placeholders::Substitutions;
