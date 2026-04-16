@@ -382,3 +382,48 @@ run actually happened."
 Derived from commit `8b06004` — SpawnChild wildcard permission fix
 caught by an operator asking "why does it never spawn children?" when
 the behavior didn't match the reflection-run evidence.
+
+## Unit tests with stub LLMs don't catch prompt bugs — end-to-end
+## with a real LLM does
+
+Stub LLM tests are essential for pinning runtime behavior: "given
+this canned Plan JSON, does the executor walk it correctly?" But they
+hide prompt bugs because the stub always returns the expected JSON
+shape. The real LLM sees the same prompt + catalog + goal and decides
+what to emit — and that decision is where the bugs live.
+
+Computed orchestration shipped with 126 unit tests on the `plan/`
+module; all green. The first real DeepSeek call surfaced three prompt
+bugs the unit tests couldn't touch:
+
+- Planner emitted `workspace: "{run}"` (a directory) when the
+  fetcher's capability demanded a file path. Every fetcher then
+  flailed for 3+ minutes retrying `file_write` with invented names
+  before succeeding.
+- Planner routed the operator-stated absolute output path through
+  `{run}` substitution, landing the final artifact inside the
+  workspace dir instead of where the operator asked.
+- Planner over-decomposed simple goals (single-fetch → 3-node DAG).
+
+None of these were catchable with a stub — the stub always returned a
+pre-authored "correct" Plan. They're prompt-engineering bugs in
+`Planner::build_prompt`, and they emerged only when a real LLM made a
+real decision.
+
+**Rule.** For any feature where an LLM emits structured data the
+runtime interprets, unit-test the runtime in isolation AND validate
+with a real LLM on a canonical goal before shipping. The two test
+layers catch different classes of bug. Prompt bugs don't surface
+until a live model chooses something unexpected.
+
+**Adjacent rule.** Treat planner-prompt work as its own iteration
+discipline, separate from runtime engineering. The runtime's contract
+is "given a valid Plan, execute it correctly." The planner's contract
+is "emit a Plan the runtime + operator both agree with on paths and
+semantics." Different contracts, different test cases, different fix
+paths. Don't conflate "the planner is wrong" with "the orchestrator
+is broken."
+
+Derived from the 2026-04-16 computed-orchestration end-to-end run;
+three prompt bugs observed with zero runtime bugs across 126 unit
+tests that all remained green.
