@@ -124,7 +124,44 @@ budget_config:
   reset_period_seconds: 86400  # daily reset
 ```
 
-## Quick Start
+## Quick start
+
+**On Debian 13 (preferred):**
+
+```bash
+# 1. Install the .deb (download from Releases, or build from source — see below).
+sudo apt install ./aaos_0.0.0-1_amd64.deb
+
+# 2. Join the aaos group so your shell can talk to the daemon socket.
+#    (Log out and back in after this — group membership only takes effect
+#    on a fresh login session.)
+sudo adduser $USER aaos
+
+# 3. Configure an LLM provider. DEEPSEEK_API_KEY is preferred; ANTHROPIC_API_KEY
+#    works as a fallback.
+echo 'DEEPSEEK_API_KEY=sk-...' | sudo tee /etc/default/aaos > /dev/null
+sudo chmod 600 /etc/default/aaos
+
+# 4. Start the daemon.
+sudo systemctl enable --now agentd
+
+# 5. Send a goal.
+agentd submit "fetch HN top 5 stories and write a summary"
+```
+
+The CLI streams audit events live as Bootstrap spawns child agents, runs tools, and produces output. `agentd list`, `agentd status <id>`, `agentd stop <id>`, and `agentd logs <id>` complete the operator surface; `man agentd` covers the full CLI reference.
+
+**Building the .deb from source** (Debian 13 host with `cargo`, `cargo-deb`, and `pandoc`):
+
+```bash
+cargo build --release -p agentd --bin agentd
+cargo build --release -p aaos-backend-linux --bin aaos-agent-worker
+./packaging/build-man-page.sh
+cargo deb -p agentd --no-build
+# target/debian/aaos_*.deb is the installable artifact.
+```
+
+**On any system with Docker:**
 
 Requires Docker and a DeepSeek API key (or Anthropic API key as fallback).
 
