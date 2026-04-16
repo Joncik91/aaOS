@@ -77,11 +77,11 @@ impl PlanExecutor {
             )))
         })?;
 
-        let mut plan = self
-            .planner
-            .plan(goal, &self.catalog)
-            .await
-            .map_err(ExecutorError::from)?;
+        let mut plan = match self.planner.plan(goal, &self.catalog).await {
+            Ok(p) => p,
+            Err(PlannerError::Malformed(_)) => fallback_generalist_plan(goal, &self.catalog)?,
+            Err(e) => return Err(ExecutorError::from(e)),
+        };
         self.write_plan_json(&run_root, &plan)?;
 
         let mut replans_used: u32 = 0;
@@ -227,6 +227,33 @@ impl From<PlannerError> for ExecutorError {
             }
         }
     }
+}
+
+/// Falls back to a single-subtask plan using the `generalist` role when the
+/// planner fails to produce any valid plan on the initial call.
+///
+/// The generalist role is the broad-capability escape hatch for novel goals
+/// that don't match any specific role. With this fallback wired in, the
+/// planner is never a hard blocker: every goal produces some kind of
+/// execution, even if less efficient than a role-matched plan.
+///
+/// Returns `Terminal` with a clear diagnostic if the catalog has no
+/// `generalist` role — the operator needs to add one.
+pub fn fallback_generalist_plan(goal: &str, catalog: &RoleCatalog) -> Result<Plan, ExecutorError> {
+    if catalog.get("generalist").is_none() {
+        return Err(ExecutorError::Terminal(CoreError::Ipc(
+            "no 'generalist' role in catalog and planner failed to match".into(),
+        )));
+    }
+    Ok(Plan {
+        subtasks: vec![Subtask {
+            id: "generalist".into(),
+            role: "generalist".into(),
+            params: serde_json::json!({ "task_description": goal }),
+            depends_on: vec![],
+        }],
+        final_output: "/".into(),
+    })
 }
 
 #[cfg(test)]
@@ -414,6 +441,53 @@ mod tests {
             .count();
         assert_eq!(started_count, 2);
         assert_eq!(completed_count, 2);
+    }
+
+    fn generalist_catalog() -> RoleCatalog {
+        let r = Role {
+            name: "generalist".into(),
+            model: "deepseek-chat".into(),
+            parameters: StdHashMap::from([(
+                "task_description".into(),
+                ParameterSchema {
+                    param_type: ParameterType::String,
+                    required: true,
+                    description: "".into(),
+                },
+            )]),
+            capabilities: vec![],
+            system_prompt: "generalist".into(),
+            message_template: "{task_description}".into(),
+            budget: RoleBudget {
+                max_input_tokens: 100_000,
+                max_output_tokens: 10_000,
+            },
+            retry: RoleRetry {
+                max_attempts: 1,
+                on: vec![],
+            },
+        };
+        let mut cat = RoleCatalog::default();
+        cat.roles_mut().insert("generalist".into(), r);
+        cat
+    }
+
+    #[test]
+    fn fallback_plan_targets_generalist() {
+        let cat = generalist_catalog();
+        let fb = fallback_generalist_plan("do the thing", &cat).unwrap();
+        assert_eq!(fb.subtasks.len(), 1);
+        assert_eq!(fb.subtasks[0].role, "generalist");
+        assert_eq!(
+            fb.subtasks[0].params.get("task_description").and_then(|v| v.as_str()),
+            Some("do the thing")
+        );
+    }
+
+    #[test]
+    fn fallback_errors_when_generalist_missing() {
+        let cat = fetcher_catalog(); // no generalist role
+        assert!(fallback_generalist_plan("do it", &cat).is_err());
     }
 
     struct MockLlm;
