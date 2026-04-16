@@ -42,14 +42,14 @@ async fn main() -> anyhow::Result<()> {
                 let sched_config = InferenceSchedulingConfig::from_env();
                 let client: Arc<dyn aaos_llm::LlmClient> =
                     Arc::new(ScheduledLlmClient::new(raw, sched_config));
-                Arc::new(Server::with_llm_client(client))
+                Server::with_llm_client(client)
             } else if let Ok(config) = AnthropicConfig::from_env() {
                 tracing::info!(base_url = %config.base_url, "Anthropic LLM client configured");
                 let raw: Arc<dyn aaos_llm::LlmClient> = Arc::new(AnthropicClient::new(config));
                 let sched_config = InferenceSchedulingConfig::from_env();
                 let client: Arc<dyn aaos_llm::LlmClient> =
                     Arc::new(ScheduledLlmClient::new(raw, sched_config));
-                Arc::new(Server::with_llm_client(client))
+                Server::with_llm_client(client)
             } else {
                 tracing::warn!("No LLM client configured. agent.run will be unavailable.");
                 Arc::new(Server::new())
@@ -174,7 +174,7 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
 
     // Use StdoutAuditLog for container observability (logs to stdout as JSON)
     let audit_log: Arc<dyn aaos_core::AuditLog> = Arc::new(aaos_core::StdoutAuditLog);
-    let server = Arc::new(Server::with_llm_and_audit(llm_client.clone(), audit_log.clone()));
+    let server = Server::with_llm_and_audit(llm_client.clone(), audit_log.clone());
 
     // Load the bootstrap manifest
     let manifest = aaos_core::AgentManifest::from_file(&manifest_path)?;

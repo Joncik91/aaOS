@@ -35,11 +35,22 @@ pub struct Server {
     /// live audit events. `audit_log` above is the same object as a
     /// trait-object alias.
     pub broadcast_audit: Arc<BroadcastAuditLog>,
-    /// Optional computed-orchestration executor. Present when the role
+    /// Optional computed-orchestration executor. Installed lazily by
+    /// `install_plan_executor_runner` after the Server Arc exists — before
+    /// that point the OnceLock is empty and any attempt to execute a plan
+    /// falls through to the legacy Bootstrap path. Present when the role
     /// catalog at /etc/aaos/roles/ (or AAOS_ROLES_DIR) loaded cleanly
-    /// at server construction. When None, the daemon falls back to the
-    /// legacy Bootstrap path.
-    pub plan_executor: Option<Arc<PlanExecutor>>,
+    /// at server construction.
+    pub plan_executor: std::sync::OnceLock<Arc<PlanExecutor>>,
+    /// Role catalog loaded at construction time. Held here so
+    /// `install_plan_executor_runner` can rebuild a PlanExecutor with
+    /// the real runner closure (without needing to re-read the roles
+    /// directory or expose PlanExecutor internals).
+    pub role_catalog: Option<Arc<RoleCatalog>>,
+    /// Planner loaded at construction time. See `role_catalog`.
+    pub planner: Option<Arc<Planner>>,
+    /// Workspace base path used by PlanExecutor for per-run scratch dirs.
+    pub run_root_base: PathBuf,
     pub approval_queue: Arc<crate::approval::ApprovalQueue>,
     pub llm_client: Option<Arc<dyn LlmClient>>,
     pub session_store: Arc<dyn aaos_runtime::SessionStore>,
@@ -160,16 +171,17 @@ impl Server {
         }
     }
 
-    /// Build a PlanExecutor from the role catalog at /etc/aaos/roles/ (or
-    /// AAOS_ROLES_DIR if set). Returns None if the catalog can't be loaded —
-    /// the daemon continues with the legacy Bootstrap path in that case.
+    /// Load the role catalog at /etc/aaos/roles/ (or AAOS_ROLES_DIR if
+    /// set) and build a Planner. Returns (None, None) if the catalog
+    /// can't be loaded — the daemon continues with the legacy Bootstrap
+    /// path in that case.
     ///
-    /// The runner closes over `server_weak` to defer resolution until the Arc
-    /// is built; this avoids the classic "need Server in the closure before
-    /// Server exists" chicken-and-egg.
-    fn build_plan_executor(
+    /// The actual PlanExecutor is built later by
+    /// `install_plan_executor_runner`, which has access to the Server Arc
+    /// and can wire a real SubtaskRunner + the real broadcast_audit sink.
+    fn load_role_catalog(
         client: &Arc<dyn aaos_llm::LlmClient>,
-    ) -> Option<Arc<PlanExecutor>> {
+    ) -> (Option<Arc<RoleCatalog>>, Option<Arc<Planner>>) {
         let roles_dir = std::path::PathBuf::from(
             std::env::var("AAOS_ROLES_DIR").unwrap_or_else(|_| "/etc/aaos/roles".into()),
         );
@@ -182,53 +194,156 @@ impl Server {
                     "role catalog unavailable; computed orchestration disabled \
                      (falling back to bootstrap manifest)"
                 );
-                return None;
+                return (None, None);
             }
         };
         let catalog = Arc::new(catalog);
         let planner = Arc::new(Planner::new(client.clone(), "deepseek-chat".into()));
-        let workspace_base = std::path::PathBuf::from(
+        (Some(catalog), Some(planner))
+    }
+
+    /// Default workspace base used by PlanExecutor for per-run scratch
+    /// dirs. Read from `AAOS_WORKSPACE_BASE` if set, else
+    /// `/var/lib/aaos/workspace`.
+    fn default_run_root_base() -> PathBuf {
+        std::path::PathBuf::from(
             std::env::var("AAOS_WORKSPACE_BASE")
                 .unwrap_or_else(|_| "/var/lib/aaos/workspace".into()),
-        );
-        // Placeholder runner — always errors. Task 12 replaces this via
-        // Server::install_subtask_runner once the Server Arc exists and
-        // run_subtask_inline is implemented.
-        let runner: SubtaskRunner = Arc::new(|_id, _manifest, _msg| {
+        )
+    }
+
+    /// Rebuild `plan_executor` with a real SubtaskRunner that closes over
+    /// `self` (the Arc<Server>) and forwards to `run_subtask_inline`.
+    /// Also swaps in the Server's real broadcast_audit so subtask audit
+    /// events stream to connected CLIs like any other event.
+    ///
+    /// Called by the LLM-aware constructors after wrapping the partially-
+    /// built Server in an Arc. No-op if the role catalog didn't load
+    /// (computed-orchestration disabled).
+    pub fn install_plan_executor_runner(self: &Arc<Self>) {
+        let (Some(catalog), Some(planner)) = (
+            self.role_catalog.clone(),
+            self.planner.clone(),
+        ) else {
+            return;
+        };
+        let server_weak = self.clone();
+        let runner: SubtaskRunner = Arc::new(move |subtask_id, manifest_yaml, message| {
+            let s = server_weak.clone();
             Box::pin(async move {
-                Err(aaos_core::CoreError::Ipc(
-                    "SubtaskRunner not installed — run_subtask_inline pending (Task 12)".into(),
-                ))
+                s.run_subtask_inline(&subtask_id, &manifest_yaml, &message)
+                    .await
             })
         });
-        // The broadcast_audit Arc is on the Server but we need it here before
-        // the Server exists. Workaround: build a throwaway InMemoryAuditLog
-        // for the runner until Task 12 reinstalls with the server's real
-        // broadcast_audit.
-        let audit: Arc<dyn aaos_core::AuditLog> = Arc::new(aaos_core::InMemoryAuditLog::new());
-        Some(Arc::new(PlanExecutor::new(
+        let audit: Arc<dyn aaos_core::AuditLog> = self.broadcast_audit.clone();
+        let executor = Arc::new(PlanExecutor::new(
             catalog,
             planner,
             runner,
             audit,
-            workspace_base,
-        )))
+            self.run_root_base.clone(),
+        ));
+        // Best-effort: install once. If install_plan_executor_runner is
+        // called twice on the same Arc (shouldn't happen today), the
+        // second call silently no-ops — the first wins.
+        let _ = self.plan_executor.set(executor);
     }
 
-    /// Run a subtask by spawning a child from the rendered manifest, sending
-    /// it the first message, waiting for its final assistant text.
-    ///
-    /// Stub: Task 12 provides the real body.
+    /// Run a subtask by spawning a child from the rendered manifest,
+    /// running its LLM execution loop to completion, and collecting the
+    /// final assistant text. The child is ephemeral — stopped on any
+    /// return path via a scopeguard so no orphans survive an early
+    /// error.
     #[doc(hidden)]
     pub async fn run_subtask_inline(
         self: &Arc<Self>,
-        _subtask_id: &str,
-        _manifest_yaml: &str,
-        _message: &str,
+        subtask_id: &str,
+        manifest_yaml: &str,
+        message: &str,
     ) -> Result<SubtaskResult, aaos_core::CoreError> {
-        Err(aaos_core::CoreError::Ipc(
-            "run_subtask_inline not yet implemented".into(),
-        ))
+        // Parse the rendered manifest.
+        let manifest = aaos_core::AgentManifest::from_yaml(manifest_yaml)
+            .map_err(|e| aaos_core::CoreError::Ipc(format!("parse role manifest: {e}")))?;
+
+        // Spawn ephemeral child — NOT persistent, no session_store pinning.
+        let agent_id = self
+            .registry
+            .spawn(manifest.clone())
+            .map_err(|e| aaos_core::CoreError::Ipc(format!("spawn subtask: {e}")))?;
+
+        // Scopeguard: stop the agent on any return path (success or error).
+        let cleanup_registry = self.registry.clone();
+        let _guard = scopeguard::guard(agent_id, move |aid| {
+            let _ = cleanup_registry.stop_sync(aid);
+        });
+
+        // Run the LLM execution loop for this agent. Mirrors the
+        // construction recipe of `execute_agent` but returns the
+        // response text directly since ephemeral subtask agents don't
+        // persist history to the session store (so
+        // `last_assistant_text` would return None).
+        let response = self
+            .execute_agent_for_subtask(agent_id, &manifest, message)
+            .await?;
+
+        Ok(SubtaskResult {
+            subtask_id: subtask_id.to_string(),
+            agent_id,
+            response,
+            // Token aggregation arrives in a follow-up; today we zero
+            // these out rather than lie.
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+    }
+
+    /// Run the LLM execution loop for a freshly-spawned subtask agent
+    /// and return the final assistant text. Mirrors the construction
+    /// recipe of `execute_agent` but returns the response string
+    /// directly instead of a `JsonRpcResponse`. Kept as a small
+    /// duplication (~25 lines) rather than refactoring `execute_agent`
+    /// to preserve the existing JSON-RPC call path untouched; a future
+    /// cleanup task can extract the shared builder.
+    async fn execute_agent_for_subtask(
+        self: &Arc<Self>,
+        agent_id: aaos_core::AgentId,
+        manifest: &aaos_core::AgentManifest,
+        first_message: &str,
+    ) -> Result<String, aaos_core::CoreError> {
+        let llm = self.llm_client.clone().ok_or_else(|| {
+            aaos_core::CoreError::Ipc("no LLM client configured for subtask execution".into())
+        })?;
+
+        // Emit execution started audit event (correlated to the subtask
+        // child via agent_id).
+        self.audit_log.record(aaos_core::AuditEvent::new(
+            agent_id,
+            aaos_core::AuditEventKind::AgentExecutionStarted {
+                message_preview: first_message.chars().take(100).collect(),
+            },
+        ));
+
+        let services: Arc<dyn AgentServices> = Arc::new(InProcessAgentServices::new(
+            self.registry.clone(),
+            self.tool_invocation.clone(),
+            self.tool_registry.clone(),
+            self.audit_log.clone(),
+            self.router.clone(),
+            self.approval_queue.clone() as Arc<dyn ApprovalService>,
+        ));
+
+        let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
+        let result = executor.run(agent_id, manifest, first_message).await;
+
+        self.audit_log.record(aaos_core::AuditEvent::new(
+            agent_id,
+            aaos_core::AuditEventKind::AgentExecutionCompleted {
+                stop_reason: result.stop_reason.to_string(),
+                total_iterations: result.iterations,
+            },
+        ));
+
+        Ok(result.response)
     }
 
     /// Create a new server with default configuration.
@@ -315,7 +430,10 @@ impl Server {
             validator,
             audit_log,
             broadcast_audit,
-            plan_executor: None,
+            plan_executor: std::sync::OnceLock::new(),
+            role_catalog: None,
+            planner: None,
+            run_root_base: Self::default_run_root_base(),
             approval_queue,
             llm_client: None,
             session_store,
@@ -328,7 +446,7 @@ impl Server {
 
     /// Create a server with a specific LLM client (for testing).
     #[allow(dead_code)]
-    pub fn with_llm_client(llm_client: Arc<dyn LlmClient>) -> Self {
+    pub fn with_llm_client(llm_client: Arc<dyn LlmClient>) -> Arc<Self> {
         let mut server = Self::new();
         // Register SpawnAgentTool with the LLM client
         let spawn_tool = Arc::new(crate::spawn_tool::SpawnAgentTool::new(
@@ -347,7 +465,9 @@ impl Server {
             crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, server.registry.clone()),
         ));
         server.llm_client = Some(llm_client.clone());
-        server.plan_executor = Self::build_plan_executor(&llm_client);
+        let (catalog, planner) = Self::load_role_catalog(&llm_client);
+        server.role_catalog = catalog;
+        server.planner = planner;
         // Rebuild the backend with the LLM client so persistent
         // agents can launch through it.
         server.backend = Self::build_in_process_backend(
@@ -360,6 +480,8 @@ impl Server {
             server.approval_queue.clone(),
             Some(llm_client),
         );
+        let server = Arc::new(server);
+        server.install_plan_executor_runner();
         server
     }
 
@@ -368,7 +490,7 @@ impl Server {
     pub fn with_llm_and_audit(
         llm_client: Arc<dyn LlmClient>,
         audit_log: Arc<dyn AuditLog>,
-    ) -> Self {
+    ) -> Arc<Self> {
         // Wrap whatever audit sink the caller provided (e.g. StdoutAuditLog
         // for bootstrap container mode) with a BroadcastAuditLog so
         // streaming handlers can still subscribe. The original sink stays
@@ -468,9 +590,9 @@ impl Server {
             Some(llm_client.clone()),
         );
 
-        let plan_executor = Self::build_plan_executor(&llm_client);
+        let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
-        Self {
+        let server = Arc::new(Self {
             registry,
             tool_registry,
             tool_invocation,
@@ -478,7 +600,10 @@ impl Server {
             validator,
             audit_log,
             broadcast_audit,
-            plan_executor,
+            plan_executor: std::sync::OnceLock::new(),
+            role_catalog,
+            planner,
+            run_root_base: Self::default_run_root_base(),
             approval_queue,
             llm_client: Some(llm_client),
             session_store,
@@ -486,7 +611,9 @@ impl Server {
             embedding_source,
             skill_registry,
             backend,
-        }
+        });
+        server.install_plan_executor_runner();
+        server
     }
 
     /// Create a server with a specific LLM client and custom memory/embedding sources.
@@ -495,7 +622,7 @@ impl Server {
         llm_client: Arc<dyn LlmClient>,
         memory_store: Arc<dyn aaos_memory::MemoryStore>,
         embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
-    ) -> Self {
+    ) -> Arc<Self> {
         let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
         let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
         let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
@@ -576,9 +703,9 @@ impl Server {
             Some(llm_client.clone()),
         );
 
-        let plan_executor = Self::build_plan_executor(&llm_client);
+        let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
-        Self {
+        let server = Arc::new(Self {
             registry,
             tool_registry,
             tool_invocation,
@@ -586,7 +713,10 @@ impl Server {
             validator,
             audit_log,
             broadcast_audit,
-            plan_executor,
+            plan_executor: std::sync::OnceLock::new(),
+            role_catalog,
+            planner,
+            run_root_base: Self::default_run_root_base(),
             approval_queue,
             llm_client: Some(llm_client),
             session_store,
@@ -594,7 +724,9 @@ impl Server {
             embedding_source,
             skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
             backend,
-        }
+        });
+        server.install_plan_executor_runner();
+        server
     }
 
     /// Spawn an agent from YAML with a caller-supplied stable ID.
@@ -1817,7 +1949,7 @@ lifecycle: persistent
         // reach the subscriber, never racing against a real AgentExecutionCompleted
         // emitted by the agent loop.
         let hanging: Arc<dyn LlmClient> = Arc::new(HangingLlm);
-        let server = Arc::new(Server::with_llm_client(hanging));
+        let server = Server::with_llm_client(hanging);
         let audit = server.broadcast_audit.clone();
 
         let server_for_listen = server.clone();
@@ -1962,7 +2094,7 @@ lifecycle: persistent
         // hanging LLM never spawns a background task, which keeps test
         // teardown tidy.
         let hanging: Arc<dyn LlmClient> = Arc::new(HangingLlm);
-        let server = Arc::new(Server::with_llm_client(hanging));
+        let server = Server::with_llm_client(hanging);
 
         let target_manifest = aaos_core::AgentManifest::from_yaml(
             r#"
@@ -2174,6 +2306,38 @@ lifecycle: persistent
         let result = resp.result.unwrap();
         assert!(result.get("trace_id").is_some());
         assert_eq!(result["status"], "delivered");
+    }
+
+    #[tokio::test]
+    async fn run_subtask_inline_spawns_child_and_returns_response_text() {
+        // End-to-end exercise of the Task 12 plumbing: the SubtaskRunner
+        // closure calls into run_subtask_inline, which must parse the
+        // manifest, spawn an ephemeral child via registry.spawn(), run
+        // its LLM loop against the mock client, and return the final
+        // assistant text via last_assistant_text().
+        let server = Server::with_llm_client(MockLlm::text("subtask ok"));
+        let yaml = r#"
+name: t-subtask
+model: claude-haiku-4-5-20251001
+system_prompt: "test subtask"
+"#;
+        let result = server
+            .run_subtask_inline("t1", yaml, "hello")
+            .await
+            .expect("subtask should run to completion");
+        assert_eq!(result.subtask_id, "t1");
+        assert_eq!(result.response, "subtask ok");
+        // Tokens aren't aggregated yet — this is expected zero today.
+        assert_eq!(result.input_tokens, 0);
+        assert_eq!(result.output_tokens, 0);
+        // The scopeguard should have stopped the child; it must no
+        // longer appear in the registry's running list.
+        let still_running = server
+            .registry
+            .list()
+            .into_iter()
+            .any(|info| info.id == result.agent_id && info.state == AgentState::Running);
+        assert!(!still_running, "scopeguard must stop the subtask child");
     }
 }
 
