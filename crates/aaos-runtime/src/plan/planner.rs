@@ -55,6 +55,8 @@ impl Planner {
         previous: Option<&Plan>,
         failure_reason: Option<&str>,
     ) -> String {
+        // Catalog dump now includes parameter TYPES so the LLM picks the
+        // right shape (path vs string vs string_list) per field.
         let mut role_lines = String::new();
         for name in catalog.names() {
             let r = catalog.get(name).unwrap();
@@ -62,15 +64,17 @@ impl Planner {
                 .parameters
                 .iter()
                 .map(|(k, s)| {
-                    if s.required {
-                        k.clone()
-                    } else {
-                        format!("{k}?")
-                    }
+                    let type_tag = match s.param_type {
+                        crate::plan::ParameterType::String => "str",
+                        crate::plan::ParameterType::Path => "path",
+                        crate::plan::ParameterType::StringList => "str[]",
+                    };
+                    let req = if s.required { "" } else { "?" };
+                    format!("{k}{req}: {type_tag}")
                 })
                 .collect();
             role_lines.push_str(&format!(
-                "  {name}: {desc} Params: [{params}].\n",
+                "  {name}: {desc} Params: {{ {params} }}.\n",
                 desc = r.system_prompt.lines().next().unwrap_or(""),
                 params = params.join(", ")
             ));
@@ -85,8 +89,41 @@ impl Planner {
              \t\"final_output\": string (path)\n\
              }}\n\
              \n\
-             Use these path templates: {{run}} for the run's workspace root.\n\
-             Independent subtasks have empty depends_on and run in parallel.\n\
+             ## Path rules — read this carefully\n\
+             \n\
+             1. `{{run}}` is a DIRECTORY — the per-run workspace root. Never\n\
+                use it as a file path on its own.\n\
+             2. Every `path`-typed param that names a FILE must be a full\n\
+                path with a filename + extension. Examples:\n\
+                  GOOD: `\"workspace\": \"{{run}}/hn.html\"`\n\
+                  GOOD: `\"workspace\": \"{{run}}/fetched/raw.txt\"`\n\
+                  BAD:  `\"workspace\": \"{{run}}\"`            (directory, not a file)\n\
+                  BAD:  `\"workspace\": \"{{run}}/\"`           (trailing slash)\n\
+             3. For `string_list` params that hold input paths (e.g. the\n\
+                writer's `inputs`), each entry is a full file path and may\n\
+                reference another subtask's output by copying that subtask's\n\
+                `workspace` verbatim.\n\
+             4. **Operator-stated absolute paths stay verbatim.** If the\n\
+                GOAL says \"write to /data/report.md\", use `\"output\":\n\
+                \"/data/report.md\"` and `\"final_output\": \"/data/report.md\"`.\n\
+                Do NOT prefix with `{{run}}`. Operator-stated paths are\n\
+                treated as literal filesystem locations the operator\n\
+                already controls; runtime subtask paths use `{{run}}`.\n\
+             5. `final_output` must match whatever path the writer subtask\n\
+                declared as its `output` param. They are the same file.\n\
+             \n\
+             ## Decomposition rules\n\
+             \n\
+             - One subtask per independent unit of work. Don't invent\n\
+               subtasks that add a redundant layer. If the goal is\n\
+               \"fetch X and summarize it\", two subtasks suffice (fetcher +\n\
+               writer) — no analyzer step in between. Analyzers are for\n\
+               goals that genuinely call out analysis as a separate\n\
+               deliverable.\n\
+             - Prefer parallelism when subtasks are independent: list each\n\
+               in `subtasks` with empty `depends_on`, not as a chain.\n\
+             - Use `generalist` only when no specific role fits. Don't\n\
+               wrap a writer's work in a generalist step.\n\
              \n\
              ROLE CATALOG:\n\
              {roles}\n\
