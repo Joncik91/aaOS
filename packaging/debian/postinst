@@ -3,10 +3,20 @@ set -e
 
 case "$1" in
   configure)
-    # Create aaos system user if missing. State dirs come from systemd's
-    # StateDirectory= at service start — we don't duplicate that here.
+    # Ensure the aaos system group exists. Operators join this group
+    # (`sudo adduser $USER aaos`) to get access to /run/agentd/agentd.sock.
+    # Creating it separately from the user makes the intent explicit:
+    # the group is a public interface; the user is an implementation detail.
+    if ! getent group aaos >/dev/null; then
+      addgroup --system aaos
+    fi
+
+    # Ensure the aaos system user exists. `--ingroup aaos` reuses the
+    # group we created above instead of synthesizing a new group.
+    # State dirs (/var/lib/aaos, /run/agentd) come from the systemd unit's
+    # StateDirectory= / RuntimeDirectory= at service start.
     if ! getent passwd aaos >/dev/null; then
-      adduser --system --group --home /var/lib/aaos \
+      adduser --system --ingroup aaos --home /var/lib/aaos \
               --no-create-home --shell /usr/sbin/nologin aaos
     fi
     ;;
