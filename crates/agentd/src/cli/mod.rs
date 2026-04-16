@@ -74,12 +74,7 @@ pub enum CliCommand {
 
 // ---- Stub subcommand runners. Real implementations land in Tasks 9-13. ----
 
-pub mod submit {
-    use std::path::PathBuf;
-    pub async fn run(_goal: String, _verbose: bool, _socket: PathBuf) -> anyhow::Result<()> {
-        unimplemented!("filled in Task 9")
-    }
-}
+pub mod submit;
 
 pub mod list {
     use std::path::PathBuf;
