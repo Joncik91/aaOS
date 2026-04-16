@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod errors;
+pub mod prefix;
 
 use std::path::PathBuf;
 
