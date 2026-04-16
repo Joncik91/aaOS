@@ -128,13 +128,14 @@ impl Role {
 
     /// Produce the YAML manifest string for instantiating a child of this role
     /// with the given params. Path-sensitive capability patterns (`{workspace}`,
-    /// `{output}`) are substituted; anything else is emitted verbatim. The
+    /// `{output}`) are substituted; array-valued patterns (`{inputs.*}`) expand
+    /// into one capability per element. Anything else is emitted verbatim. The
     /// result is parseable via `AgentManifest::from_yaml`.
     pub fn render_manifest(&self, params: &serde_json::Value) -> String {
         let caps: Vec<String> = self
             .capabilities
             .iter()
-            .map(|c| substitute_tokens(c, params))
+            .flat_map(|c| expand_capability(c, params))
             .collect();
 
         let caps_yaml: String = caps
@@ -256,6 +257,74 @@ fn substitute_tokens(template: &str, params: &serde_json::Value) -> String {
         }
     }
     out
+}
+
+/// Expand one capability template into zero-or-more concrete capability
+/// strings. Handles the `{name.*}` array-expansion syntax used by roles
+/// whose input paths are plural (e.g. the writer's `file_read: {inputs.*}`):
+/// for each string in the matching array param, emit a copy of the template
+/// with `{name.*}` replaced by that element.
+///
+/// Templates without any `{name.*}` token fall through to plain
+/// `substitute_tokens` and produce exactly one string.
+///
+/// Edge cases:
+///   * Param missing → zero entries emitted (the capability silently drops;
+///     the runtime's param-validation step has already run by the time this
+///     is called, so missing required params are impossible).
+///   * Param present but not an array → zero entries. A future version
+///     could error, but for now this keeps role YAMLs additive.
+///   * Array present but empty → zero entries (correct: no paths, no grants).
+fn expand_capability(template: &str, params: &serde_json::Value) -> Vec<String> {
+    // Find any `{name.*}` occurrence. Only the first such token drives
+    // expansion; the template may still contain other `{name}` tokens
+    // handled by substitute_tokens below.
+    if let Some((start, end, name)) = find_array_token(template) {
+        let Some(arr) = params
+            .as_object()
+            .and_then(|obj| obj.get(&name))
+            .and_then(|v| v.as_array())
+        else {
+            // Not an array param — drop the capability rather than emit
+            // a literal `{name.*}` that won't match anything.
+            return Vec::new();
+        };
+        return arr
+            .iter()
+            .filter_map(|elem| elem.as_str())
+            .map(|elem_str| {
+                // Replace `{name.*}` with this element, then run ordinary
+                // substitution for any other `{name}` tokens.
+                let mut out = String::with_capacity(template.len());
+                out.push_str(&template[..start]);
+                out.push_str(elem_str);
+                out.push_str(&template[end..]);
+                substitute_tokens(&out, params)
+            })
+            .collect();
+    }
+
+    // No array expansion — fall back to single-substitution behavior.
+    vec![substitute_tokens(template, params)]
+}
+
+/// Locate a `{name.*}` token in `s`. Returns `(start, end, name)` where
+/// `start..end` is the byte range of the token including the braces.
+fn find_array_token(s: &str) -> Option<(usize, usize, String)> {
+    let open = s.find("{")?;
+    let close = s[open..].find("}").map(|o| open + o + 1)?;
+    let inner = &s[open + 1..close - 1];
+    if let Some(name) = inner.strip_suffix(".*") {
+        if !name.is_empty() {
+            return Some((open, close, name.to_string()));
+        }
+    }
+    // This token wasn't an array token — look deeper in the string.
+    let rest_offset = close;
+    if let Some((rstart, rend, name)) = find_array_token(&s[rest_offset..]) {
+        return Some((rest_offset + rstart, rest_offset + rend, name));
+    }
+    None
 }
 
 fn indent(s: &str, prefix: &str) -> String {
@@ -511,5 +580,131 @@ retry: { max_attempts: 1, on: [] }
         // Ensure that {workspace} was substituted correctly
         assert!(yaml.contains("/tmp/x.html"));
         assert!(!yaml.contains("{workspace}"), "yaml: {}", yaml);
+    }
+
+    // ----- {inputs.*} array-expansion tests (2026-04-17 fix) ---------------
+
+    fn writer_role_with_inputs_splat() -> Role {
+        serde_yaml::from_str(
+            r#"
+name: writer
+model: deepseek-chat
+parameters:
+  inputs:
+    type: string_list
+    required: true
+    description: input files
+  output:
+    type: path
+    required: true
+    description: output file
+  title:
+    type: string
+    required: true
+    description: title
+capabilities:
+  - "tool: file_read"
+  - "tool: file_write"
+  - "file_read: {inputs.*}"
+  - "file_write: {output}"
+system_prompt: "writer"
+message_template: "write {title} to {output} from {inputs}"
+budget: { max_input_tokens: 1000, max_output_tokens: 500 }
+retry: { max_attempts: 1, on: [] }
+"#,
+        )
+        .unwrap()
+    }
+
+    fn cap_is(c: &aaos_core::CapabilityDeclaration, want: &str) -> bool {
+        matches!(c, aaos_core::CapabilityDeclaration::Simple(s) if s == want)
+    }
+    fn cap_starts_with(c: &aaos_core::CapabilityDeclaration, prefix: &str) -> bool {
+        matches!(c, aaos_core::CapabilityDeclaration::Simple(s) if s.starts_with(prefix))
+    }
+
+    #[test]
+    fn render_manifest_expands_inputs_splat_to_one_cap_per_file() {
+        let r = writer_role_with_inputs_splat();
+        let params = json!({
+            "inputs": ["/a.html", "/b.html"],
+            "output": "/out.md",
+            "title": "Report"
+        });
+        let yaml = r.render_manifest(&params);
+        let manifest = aaos_core::AgentManifest::from_yaml(&yaml).unwrap();
+
+        // Expected: tool:file_read, tool:file_write, file_read:/a.html,
+        // file_read:/b.html, file_write:/out.md — five capabilities.
+        assert_eq!(
+            manifest.capabilities.len(),
+            5,
+            "caps: {:?}",
+            manifest.capabilities
+        );
+        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_read: /a.html")));
+        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_read: /b.html")));
+        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_write: /out.md")));
+        // No stray placeholder survived.
+        assert!(!yaml.contains("{inputs.*}"), "yaml: {}", yaml);
+        assert!(!yaml.contains("{inputs}"), "yaml: {}", yaml);
+    }
+
+    #[test]
+    fn render_manifest_expands_single_element_array() {
+        let r = writer_role_with_inputs_splat();
+        let params = json!({
+            "inputs": ["/only.html"],
+            "output": "/out.md",
+            "title": "t"
+        });
+        let yaml = r.render_manifest(&params);
+        let manifest = aaos_core::AgentManifest::from_yaml(&yaml).unwrap();
+        assert_eq!(manifest.capabilities.len(), 4);
+        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_read: /only.html")));
+    }
+
+    #[test]
+    fn render_manifest_empty_inputs_drops_splat_caps() {
+        let r = writer_role_with_inputs_splat();
+        let params = json!({
+            "inputs": [],
+            "output": "/out.md",
+            "title": "t"
+        });
+        let yaml = r.render_manifest(&params);
+        let manifest = aaos_core::AgentManifest::from_yaml(&yaml).unwrap();
+        // tool:file_read, tool:file_write, file_write:/out.md — 3. No file_read:/path.
+        assert_eq!(manifest.capabilities.len(), 3);
+        assert!(!yaml.contains("{inputs.*}"));
+        assert!(!manifest
+            .capabilities
+            .iter()
+            .any(|c| cap_starts_with(c, "file_read: /")));
+    }
+
+    #[test]
+    fn find_array_token_finds_first_splat() {
+        let got = find_array_token("file_read: {inputs.*}");
+        assert!(got.is_some());
+        let (start, end, name) = got.unwrap();
+        assert_eq!(&"file_read: {inputs.*}"[start..end], "{inputs.*}");
+        assert_eq!(name, "inputs");
+    }
+
+    #[test]
+    fn find_array_token_skips_regular_placeholder() {
+        let got = find_array_token("file_write: {output}");
+        assert!(got.is_none(), "must not match non-splat token");
+    }
+
+    #[test]
+    fn find_array_token_finds_splat_after_regular_token() {
+        // `{output}` comes first, `{inputs.*}` second. The splat finder
+        // must walk past the regular placeholder to find the real one.
+        let got = find_array_token("write {output} but read {inputs.*}");
+        assert!(got.is_some());
+        let (_, _, name) = got.unwrap();
+        assert_eq!(name, "inputs");
     }
 }
