@@ -7,6 +7,7 @@ use aaos_core::{
 };
 use aaos_ipc::{MessageRouter, SchemaValidator};
 use aaos_llm::{AgentExecutor, ExecutorConfig, LlmClient};
+use aaos_runtime::plan::{PlanExecutor, Planner, RoleCatalog, SubtaskResult, SubtaskRunner};
 use aaos_runtime::{AgentRegistry, AgentState, InProcessAgentServices, InProcessBackend};
 use aaos_tools::{EchoTool, ToolInvocation, ToolRegistry};
 use serde_json::json;
@@ -34,6 +35,11 @@ pub struct Server {
     /// live audit events. `audit_log` above is the same object as a
     /// trait-object alias.
     pub broadcast_audit: Arc<BroadcastAuditLog>,
+    /// Optional computed-orchestration executor. Present when the role
+    /// catalog at /etc/aaos/roles/ (or AAOS_ROLES_DIR) loaded cleanly
+    /// at server construction. When None, the daemon falls back to the
+    /// legacy Bootstrap path.
+    pub plan_executor: Option<Arc<PlanExecutor>>,
     pub approval_queue: Arc<crate::approval::ApprovalQueue>,
     pub llm_client: Option<Arc<dyn LlmClient>>,
     pub session_store: Arc<dyn aaos_runtime::SessionStore>,
@@ -154,6 +160,77 @@ impl Server {
         }
     }
 
+    /// Build a PlanExecutor from the role catalog at /etc/aaos/roles/ (or
+    /// AAOS_ROLES_DIR if set). Returns None if the catalog can't be loaded —
+    /// the daemon continues with the legacy Bootstrap path in that case.
+    ///
+    /// The runner closes over `server_weak` to defer resolution until the Arc
+    /// is built; this avoids the classic "need Server in the closure before
+    /// Server exists" chicken-and-egg.
+    fn build_plan_executor(
+        client: &Arc<dyn aaos_llm::LlmClient>,
+    ) -> Option<Arc<PlanExecutor>> {
+        let roles_dir = std::path::PathBuf::from(
+            std::env::var("AAOS_ROLES_DIR").unwrap_or_else(|_| "/etc/aaos/roles".into()),
+        );
+        let catalog = match RoleCatalog::load_from_dir(&roles_dir) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    dir = %roles_dir.display(),
+                    "role catalog unavailable; computed orchestration disabled \
+                     (falling back to bootstrap manifest)"
+                );
+                return None;
+            }
+        };
+        let catalog = Arc::new(catalog);
+        let planner = Arc::new(Planner::new(client.clone(), "deepseek-chat".into()));
+        let workspace_base = std::path::PathBuf::from(
+            std::env::var("AAOS_WORKSPACE_BASE")
+                .unwrap_or_else(|_| "/var/lib/aaos/workspace".into()),
+        );
+        // Placeholder runner — always errors. Task 12 replaces this via
+        // Server::install_subtask_runner once the Server Arc exists and
+        // run_subtask_inline is implemented.
+        let runner: SubtaskRunner = Arc::new(|_id, _manifest, _msg| {
+            Box::pin(async move {
+                Err(aaos_core::CoreError::Ipc(
+                    "SubtaskRunner not installed — run_subtask_inline pending (Task 12)".into(),
+                ))
+            })
+        });
+        // The broadcast_audit Arc is on the Server but we need it here before
+        // the Server exists. Workaround: build a throwaway InMemoryAuditLog
+        // for the runner until Task 12 reinstalls with the server's real
+        // broadcast_audit.
+        let audit: Arc<dyn aaos_core::AuditLog> = Arc::new(aaos_core::InMemoryAuditLog::new());
+        Some(Arc::new(PlanExecutor::new(
+            catalog,
+            planner,
+            runner,
+            audit,
+            workspace_base,
+        )))
+    }
+
+    /// Run a subtask by spawning a child from the rendered manifest, sending
+    /// it the first message, waiting for its final assistant text.
+    ///
+    /// Stub: Task 12 provides the real body.
+    #[doc(hidden)]
+    pub async fn run_subtask_inline(
+        self: &Arc<Self>,
+        _subtask_id: &str,
+        _manifest_yaml: &str,
+        _message: &str,
+    ) -> Result<SubtaskResult, aaos_core::CoreError> {
+        Err(aaos_core::CoreError::Ipc(
+            "run_subtask_inline not yet implemented".into(),
+        ))
+    }
+
     /// Create a new server with default configuration.
     pub fn new() -> Self {
         let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
@@ -238,6 +315,7 @@ impl Server {
             validator,
             audit_log,
             broadcast_audit,
+            plan_executor: None,
             approval_queue,
             llm_client: None,
             session_store,
@@ -269,6 +347,7 @@ impl Server {
             crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, server.registry.clone()),
         ));
         server.llm_client = Some(llm_client.clone());
+        server.plan_executor = Self::build_plan_executor(&llm_client);
         // Rebuild the backend with the LLM client so persistent
         // agents can launch through it.
         server.backend = Self::build_in_process_backend(
@@ -389,6 +468,8 @@ impl Server {
             Some(llm_client.clone()),
         );
 
+        let plan_executor = Self::build_plan_executor(&llm_client);
+
         Self {
             registry,
             tool_registry,
@@ -397,6 +478,7 @@ impl Server {
             validator,
             audit_log,
             broadcast_audit,
+            plan_executor,
             approval_queue,
             llm_client: Some(llm_client),
             session_store,
@@ -494,6 +576,8 @@ impl Server {
             Some(llm_client.clone()),
         );
 
+        let plan_executor = Self::build_plan_executor(&llm_client);
+
         Self {
             registry,
             tool_registry,
@@ -502,6 +586,7 @@ impl Server {
             validator,
             audit_log,
             broadcast_audit,
+            plan_executor,
             approval_queue,
             llm_client: Some(llm_client),
             session_store,
