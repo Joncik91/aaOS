@@ -87,6 +87,13 @@ Each entry is short by design. If something here grows enough to deserve an impl
 - **Why deferred:** a custom installer is a separate project on the scale of the rest of aaOS combined. The Debian installer works, is well-understood by operators, handles the hardware-compatibility long tail we'd otherwise inherit, and lets us ship a derivative today. The "Debian branding appears during install" is a real but cosmetic cost. Immutable A/B partitions are a real but operational-convenience cost, not a security cost — security comes from Landlock + seccomp + namespaces at runtime, which the derivative already provides.
 - **Signal to reconsider:** (a) users complain that the Debian installer shows Debian branding instead of aaOS branding and that's blocking adoption, OR (b) a buyer specifically demands immutable A/B partitions (atomic updates, rollback-on-failure) as a gating requirement for an unattended-deployment use case.
 
+## Deterministic scaffold roles (runtime-side execution for mechanical work) — **SIGNAL FIRED** (2026-04-17)
+
+- **Idea:** roles whose work is purely mechanical (fetcher: `web_fetch → file_write → return path`) should not run through the LLM loop at all. Runtime detects a `scaffold: true` marker on the role YAML (or a `scaffold_kind: "fetcher"` discriminator) and dispatches directly via Rust code that calls `ToolInvocation::invoke` for each step. LLM-shaped roles (analyzer, writer) stay untouched.
+- **Where seen:** the computed-skills project (github.com/Joncik91/computed-skills) names this explicitly — *"Don't make the LLM do work that code can do faster and more reliably."* Ties into Phase F-b's tool-wrapper layer where `cargo-builder` and `git-committer` would naturally be scaffolds too.
+- **Why deferred originally:** the simpler path was an LLM-powered fetcher + a tight prompt + a tight output budget. Signal fired 2026-04-17 across four benchmark runs (see `docs/reflection/2026-04-17-role-budget-wiring.md`): prompt tightening achieved 12× wall-clock improvement (5m30s → 28s) but the fetcher LLM still satisfied its `"respond with the workspace path"` contract by **emitting the path without ever calling `file_write`**. Prompt contracts cannot enforce tool-call side effects when the LLM can satisfy the surface reading without performing the effect.
+- **Signal to reconsider:** already fired. Next iteration ships it as the first bundled scaffold.
+
 ---
 
 ## How to add an entry

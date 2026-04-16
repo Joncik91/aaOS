@@ -427,3 +427,48 @@ is broken."
 Derived from the 2026-04-16 computed-orchestration end-to-end run;
 three prompt bugs observed with zero runtime bugs across 126 unit
 tests that all remained green.
+
+## Prompt contracts can't enforce tool-call side effects — when the
+## work is mechanical, use a scaffold, not an LLM
+
+A fetcher role's system prompt said "call web_fetch, then call
+file_write with the result, then respond with only the workspace
+path." The first two runs fetched an 80 KB HTML page but stalled
+for 3+ minutes looping without file_write. After a shorter output
+budget (200 tokens) forced the loop to exit quickly, the third
+run finished in 9 seconds — by having the LLM **emit a plausible
+"written to <path>" ack without ever calling file_write at all**.
+
+The LLM satisfied the prompt's surface reading ("respond with the
+path") without performing the underlying side effect ("call
+file_write first"). Nothing in a natural-language contract aligns
+the LLM's optimization pressure with mechanical I/O completion.
+The writer's "error loudly on missing input" rule worked in the
+same run because the LLM had nothing else to do when the
+prerequisite failed — that contract aligned with optimization
+pressure. Fetcher's didn't.
+
+**Rule.** Classify each role by the work it does:
+
+- **LLM-shaped work** — pattern-match, summarize, compare, reason
+  about content. Output is prose. Quality correlates with model
+  capability. Use an LLM-powered role; prompt contracts work here
+  because prose IS the side effect.
+- **Scaffold-shaped work** — fetch-then-write, parse-then-file,
+  transform-then-store. Output is mechanical. Quality is binary —
+  did the side effect execute or not. Use deterministic runtime
+  code; skip the LLM loop entirely.
+
+Mixing them into the same role abstraction (fetcher-as-LLM, writer-
+as-LLM, both in `/etc/aaos/roles/`) was the original sin. A fetcher
+doesn't need an LLM for `web_fetch(url) → file_write(workspace,
+body) → return workspace_path`. That's three Rust lines.
+
+**Adjacent rule.** If you find yourself tightening an LLM prompt
+to enforce a specific tool-call sequence, stop and ask whether the
+tool-call sequence could be expressed as code. If the sequence is
+the same every time, it belongs in a scaffold.
+
+Derived from the 2026-04-17 role-budget-wiring run — four iterations
+chasing a fetcher stall that only went away when we accepted the
+fetcher shouldn't be an LLM at all.
