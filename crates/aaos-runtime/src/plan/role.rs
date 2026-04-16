@@ -55,6 +55,63 @@ pub struct Role {
     pub retry: RoleRetry,
 }
 
+impl Role {
+    /// Validate submitted Plan parameters against this role's schema.
+    ///
+    /// Returns a single human-friendly error describing all problems so the
+    /// Planner's replan loop can correct them in one shot rather than having
+    /// to iterate on one error at a time.
+    pub fn validate_params(&self, params: &serde_json::Value) -> Result<(), String> {
+        let obj = params
+            .as_object()
+            .ok_or_else(|| format!("role '{}' expected params object, got non-object", self.name))?;
+
+        let mut problems: Vec<String> = Vec::new();
+
+        for (name, schema) in &self.parameters {
+            if schema.required && !obj.contains_key(name) {
+                problems.push(format!("missing required param '{name}'"));
+            }
+        }
+
+        for name in obj.keys() {
+            if !self.parameters.contains_key(name) {
+                problems.push(format!("unknown param '{name}'"));
+            }
+        }
+
+        for (name, value) in obj {
+            if let Some(schema) = self.parameters.get(name) {
+                let ok = match schema.param_type {
+                    ParameterType::String | ParameterType::Path => value.is_string(),
+                    ParameterType::StringList => value
+                        .as_array()
+                        .map(|arr| arr.iter().all(|v| v.is_string()))
+                        .unwrap_or(false),
+                };
+                if !ok {
+                    let expected = match schema.param_type {
+                        ParameterType::String => "string",
+                        ParameterType::Path => "string (path)",
+                        ParameterType::StringList => "array of strings",
+                    };
+                    problems.push(format!("param '{name}' must be {expected}"));
+                }
+            }
+        }
+
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "role '{}' param validation failed: {}",
+                self.name,
+                problems.join("; ")
+            ))
+        }
+    }
+}
+
 /// In-memory catalog of loaded roles, keyed by role name.
 #[derive(Debug, Clone, Default)]
 pub struct RoleCatalog {
@@ -228,5 +285,73 @@ retry:
         write(dir.path(), "analyzer.yaml", &alt);
         let cat = RoleCatalog::load_from_dir(dir.path()).unwrap();
         assert_eq!(cat.names(), vec!["analyzer", "fetcher"]);
+    }
+
+    use serde_json::json;
+
+    fn fetcher_role() -> Role {
+        serde_yaml::from_str(FETCHER_YAML).unwrap()
+    }
+
+    #[test]
+    fn validate_accepts_correct_params() {
+        let r = fetcher_role();
+        let params = json!({"url": "https://x.com", "workspace": "/tmp/x.html"});
+        r.validate_params(&params).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_missing_required() {
+        let r = fetcher_role();
+        let params = json!({"url": "https://x.com"});
+        let err = r.validate_params(&params).unwrap_err();
+        assert!(err.contains("workspace"), "err was: {}", err);
+        assert!(err.contains("missing"), "err was: {}", err);
+    }
+
+    #[test]
+    fn validate_rejects_wrong_type() {
+        let r = fetcher_role();
+        let params = json!({"url": 42, "workspace": "/tmp/x.html"});
+        let err = r.validate_params(&params).unwrap_err();
+        assert!(err.contains("url"), "err was: {}", err);
+        assert!(err.contains("string"), "err was: {}", err);
+    }
+
+    #[test]
+    fn validate_rejects_unknown_param() {
+        let r = fetcher_role();
+        let params = json!({
+            "url": "https://x.com",
+            "workspace": "/tmp/x.html",
+            "bogus": "nope"
+        });
+        let err = r.validate_params(&params).unwrap_err();
+        assert!(err.contains("bogus"), "err was: {}", err);
+        assert!(err.contains("unknown"), "err was: {}", err);
+    }
+
+    #[test]
+    fn validate_string_list_requires_array_of_strings() {
+        let r: Role = serde_yaml::from_str(
+            r#"
+name: writer
+model: deepseek-chat
+parameters:
+  inputs:
+    type: string_list
+    required: true
+    description: files
+capabilities: []
+system_prompt: "x"
+message_template: "x"
+budget: { max_input_tokens: 1000, max_output_tokens: 500 }
+retry: { max_attempts: 1, on: [] }
+"#,
+        )
+        .unwrap();
+        r.validate_params(&json!({"inputs": ["/a", "/b"]})).unwrap();
+        assert!(r.validate_params(&json!({"inputs": "single"})).is_err());
+        assert!(r.validate_params(&json!({"inputs": [1, 2]})).is_err());
     }
 }
