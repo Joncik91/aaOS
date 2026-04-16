@@ -1264,6 +1264,117 @@ impl Server {
             }
         };
 
+        // ===== PlanExecutor branch =====
+        // When a role catalog loaded at startup (/etc/aaos/roles/ or
+        // AAOS_ROLES_DIR), route the goal through the two-phase
+        // Planner → DAG walk path. When absent, fall through to the
+        // legacy Bootstrap path below.
+        if let Some(executor) = self.plan_executor.get().cloned() {
+            let run_id = uuid::Uuid::new_v4();
+            let started = std::time::Instant::now();
+            // Subscribe BEFORE spawning so we don't miss the earliest
+            // PlanProduced/SubtaskStarted events the executor emits.
+            let mut rx = self.broadcast_audit.subscribe();
+
+            let exec_task = tokio::spawn({
+                let goal = goal.clone();
+                async move { executor.run(&goal, run_id).await }
+            });
+            tokio::pin!(exec_task);
+
+            loop {
+                tokio::select! {
+                    result = &mut exec_task => {
+                        match result {
+                            Ok(Ok(plan_result)) => {
+                                let (in_tok, out_tok) =
+                                    plan_result.results.values().fold(
+                                        (0u64, 0u64),
+                                        |(a, b), r| {
+                                            (a + r.input_tokens, b + r.output_tokens)
+                                        },
+                                    );
+
+                                let plan_frame = json!({
+                                    "kind": "plan",
+                                    "plan": plan_result.plan,
+                                });
+                                let _ = write_ndjson(writer, &plan_frame).await;
+
+                                if let Some(last) = plan_result.plan.subtasks.last() {
+                                    if let Some(r) = plan_result.results.get(&last.id) {
+                                        if !r.response.is_empty() {
+                                            let ft = json!({
+                                                "kind": "final_text",
+                                                "text": r.response,
+                                            });
+                                            let _ = write_ndjson(writer, &ft).await;
+                                        }
+                                    }
+                                }
+
+                                let end = json!({
+                                    "kind": "end",
+                                    "exit_code": 0,
+                                    "input_tokens": in_tok,
+                                    "output_tokens": out_tok,
+                                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                                });
+                                let _ = write_ndjson(writer, &end).await;
+                            }
+                            Ok(Err(e)) => {
+                                let frame = json!({
+                                    "kind": "end",
+                                    "exit_code": 1,
+                                    "error": format!("{e}"),
+                                    "input_tokens": 0,
+                                    "output_tokens": 0,
+                                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                                });
+                                let _ = write_ndjson(writer, &frame).await;
+                            }
+                            Err(e) => {
+                                let frame = json!({
+                                    "kind": "end",
+                                    "exit_code": 1,
+                                    "error": format!("executor task panic: {e}"),
+                                    "input_tokens": 0,
+                                    "output_tokens": 0,
+                                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                                });
+                                let _ = write_ndjson(writer, &frame).await;
+                            }
+                        }
+                        return;
+                    }
+                    evt = rx.recv() => {
+                        match evt {
+                            Ok(event) => {
+                                let frame = serde_json::to_value(&event)
+                                    .unwrap_or(serde_json::Value::Null);
+                                let frame = json!({
+                                    "kind": "event",
+                                    "event": frame,
+                                });
+                                if write_ndjson(writer, &frame).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Err(RecvError::Lagged(n)) => {
+                                let frame = json!({
+                                    "kind": "lag",
+                                    "missed": n,
+                                });
+                                let _ = write_ndjson(writer, &frame).await;
+                            }
+                            Err(RecvError::Closed) => return,
+                        }
+                    }
+                }
+            }
+        }
+        // ===== End PlanExecutor branch — Bootstrap fallback below =====
+
         // Subscribe BEFORE routing the goal so we don't miss the first events
         // Bootstrap emits in response.
         let mut rx = self.broadcast_audit.subscribe();
@@ -2338,6 +2449,42 @@ system_prompt: "test subtask"
             .into_iter()
             .any(|info| info.id == result.agent_id && info.state == AgentState::Running);
         assert!(!still_running, "scopeguard must stop the subtask child");
+    }
+
+    #[tokio::test]
+    async fn submit_streaming_uses_plan_executor_when_catalog_loaded() {
+        // A Server built with AAOS_ROLES_DIR pointing at a valid roles
+        // dir must have `plan_executor` populated — that's the hook
+        // `handle_submit_streaming` checks before taking the PlanExecutor
+        // path. Without a loaded catalog the OnceLock stays empty and
+        // the handler falls through to the legacy Bootstrap path.
+        let temp_roles = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp_roles.path().join("generalist.yaml"),
+            r#"
+name: generalist
+model: deepseek-chat
+parameters:
+  task_description:
+    type: string
+    required: true
+    description: free-form
+capabilities: []
+system_prompt: "x"
+message_template: "{task_description}"
+budget: { max_input_tokens: 1000, max_output_tokens: 500 }
+retry: { max_attempts: 1, on: [] }
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("AAOS_ROLES_DIR", temp_roles.path());
+        let server = Server::with_llm_client(MockLlm::text("ok"));
+        assert!(
+            server.plan_executor.get().is_some(),
+            "plan_executor should be built when AAOS_ROLES_DIR has valid roles"
+        );
+        std::env::remove_var("AAOS_ROLES_DIR");
     }
 }
 
