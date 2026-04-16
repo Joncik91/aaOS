@@ -72,6 +72,14 @@ async fn main() -> anyhow::Result<()> {
         Command::Logs { agent_id, verbose, socket } => {
             return agentd::cli::logs::run(agent_id, verbose, socket).await;
         }
+        Command::Roles { subcommand } => {
+            use agentd::cli::RolesCommand;
+            return match subcommand {
+                RolesCommand::List { dir } => agentd::cli::roles::list(dir).await,
+                RolesCommand::Show { name, dir } => agentd::cli::roles::show(name, dir).await,
+                RolesCommand::Validate { path } => agentd::cli::roles::validate(path).await,
+            };
+        }
     }
 
     Ok(())

@@ -70,6 +70,30 @@ pub enum CliCommand {
         #[arg(long, default_value = "/run/agentd/agentd.sock")]
         socket: PathBuf,
     },
+    /// Inspect the role catalog at /etc/aaos/roles/.
+    Roles {
+        #[command(subcommand)]
+        subcommand: RolesCommand,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum RolesCommand {
+    /// List all loaded roles with their parameter summaries.
+    List {
+        #[arg(long, default_value = "/etc/aaos/roles")]
+        dir: std::path::PathBuf,
+    },
+    /// Print a role's full YAML.
+    Show {
+        name: String,
+        #[arg(long, default_value = "/etc/aaos/roles")]
+        dir: std::path::PathBuf,
+    },
+    /// Validate a single role YAML file without installing it.
+    Validate {
+        path: std::path::PathBuf,
+    },
 }
 
 // ---- Stub subcommand runners. Real implementations land in Tasks 9-13. ----
@@ -83,6 +107,8 @@ pub mod status;
 pub mod stop;
 
 pub mod logs;
+
+pub mod roles;
 
 #[cfg(test)]
 mod tests {
