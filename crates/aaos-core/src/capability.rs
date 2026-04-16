@@ -191,7 +191,17 @@ impl CapabilityToken {
                 Capability::SpawnChild {
                     allowed_agents: req,
                 },
-            ) => req.iter().all(|a| granted.contains(a)),
+            ) => {
+                // Wildcard: `spawn_child: [*]` grants permission to spawn any
+                // agent name. Matches the ToolInvoke `granted == "*"` pattern
+                // above. Without this line, the literal string "*" never
+                // matches any concrete child name — which silently broke
+                // wildcard-configured Bootstrap manifests like the default.
+                if granted.iter().any(|g| g == "*") {
+                    return true;
+                }
+                req.iter().all(|a| granted.contains(a))
+            }
             (
                 Capability::ToolInvoke { tool_name: granted },
                 Capability::ToolInvoke { tool_name: req },
@@ -376,6 +386,40 @@ mod tests {
         );
         assert!(token.permits(&Capability::ToolInvoke {
             tool_name: "web_search".into()
+        }));
+    }
+
+    #[test]
+    fn spawn_child_wildcard_permits_any_name() {
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::SpawnChild {
+                allowed_agents: vec!["*".into()],
+            },
+            Constraints::default(),
+        );
+        assert!(token.permits(&Capability::SpawnChild {
+            allowed_agents: vec!["fetcher".into()],
+        }));
+        assert!(token.permits(&Capability::SpawnChild {
+            allowed_agents: vec!["any-invented-name".into()],
+        }));
+    }
+
+    #[test]
+    fn spawn_child_named_list_requires_exact_match() {
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::SpawnChild {
+                allowed_agents: vec!["fetcher".into(), "writer".into()],
+            },
+            Constraints::default(),
+        );
+        assert!(token.permits(&Capability::SpawnChild {
+            allowed_agents: vec!["fetcher".into()],
+        }));
+        assert!(!token.permits(&Capability::SpawnChild {
+            allowed_agents: vec!["analyzer".into()],
         }));
     }
 

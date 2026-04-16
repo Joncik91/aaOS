@@ -118,6 +118,20 @@ impl ToolInvocation {
             },
         ));
 
+        // Observability: surface tool failures in the daemon log so operators
+        // can diagnose without replaying the LLM's tool_call response text.
+        // The audit event only carries success/false — not the actual error
+        // string — by design (audit events are a stable schema). The tracing
+        // log is the right place for free-form diagnostic detail.
+        if let Err(ref e) = result {
+            tracing::warn!(
+                tool = tool_name,
+                agent_id = %agent_id,
+                error = %e,
+                "tool invocation failed",
+            );
+        }
+
         result
     }
 }
