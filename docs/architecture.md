@@ -2,9 +2,9 @@
 
 ## Overview
 
-aaOS is an agent runtime organized as a six-layer stack, each layer providing services to the one above it.
+aaOS is an agent runtime organized as a seven-layer stack, each layer providing services to the one above it: agent backend → runtime core → IPC → memory → tools → orchestration → human supervision.
 
-**Current state:** The runtime runs as a daemon on Linux, isolated in Docker. The abstractions are designed to survive a future migration to a real capability-based microkernel (see [Roadmap](roadmap.md)): the `AgentServices` trait is the future syscall interface, and the `Tool` trait is the future driver model. Code written against these interfaces today will work unchanged on a real kernel.
+**Current state:** Installable as a Debian `.deb` with a systemd unit + operator CLI, or runnable as a Docker container with `agentd` as PID 1. Both paths use the same daemon binary. The abstractions are designed to survive a future migration to a real capability-based microkernel (see [Roadmap](roadmap.md)): the `AgentServices` trait is the future syscall interface, and the `Tool` trait is the future driver model. Code written against these interfaces today will work unchanged on a real kernel. The pluggable `AgentBackend` trait lets a future MicroVM-per-agent (Firecracker/Kata/gVisor) backend land as a new crate without touching `aaos-core`.
 
 ## Layer Details
 
@@ -171,4 +171,13 @@ Every action in aaOS produces an `AuditEvent`:
 - Memory stored/queried (episodic memory, with content/query hashes)
 - Session-store error (persistent-agent on-disk history write failed; emitted with `operation` = `clear`|`append` and a throttle of one event per minute per agent to avoid log spam from a persistently-broken store)
 
-Events include trace IDs for request-level correlation and parent event IDs for causal tracing. 22 event kinds total.
+Events include trace IDs for request-level correlation and parent event IDs for causal tracing.
+
+Computed-orchestration additions (2026-04-16):
+
+- `PlanProduced { subtask_count, replans_used }` — emitted after the Planner returns the Plan that ultimately ran.
+- `PlanReplanned { reason }` — emitted when the executor asks the Planner to revise on a correctable failure (unknown role, bad params, malformed plan).
+- `SubtaskStarted { subtask_id, role }` — emitted as each DAG node spawns.
+- `SubtaskCompleted { subtask_id, success }` — emitted when each DAG node exits.
+
+26 event kinds total.
