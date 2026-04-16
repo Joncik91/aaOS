@@ -312,3 +312,30 @@ refuse to compile" at release time.
 
 Derived from commit `8d45691` — release-build fix for the
 `CapabilityRegistry::inspect` gate.
+
+## End-to-end verification as an unprivileged user catches permission
+## bugs the test suite can't
+
+Tests run as root. CI runs as root. Local `cargo run` during
+development runs as the developer's user, which on a typical dev box
+has enough ambient authority to hide Unix-permission bugs. The bugs
+surface only when a deployed system is driven by a non-root operator
+with a deliberately narrow group claim — exactly the configuration
+end users actually run.
+
+The `agentd` operator CLI shipped with a socket-mode bug: `UnixListener::bind`
+inherits the process umask, so the socket came up at 0755-ish. `stat`
+succeeded for non-root users (directory traverse OK), but `connect(2)`
+needs write on the socket inode, and group-only `r-x` doesn't grant
+that. Operators in the `aaos` group got "Permission denied" even
+though the README Quick Start promised they were authorized. No test
+caught it — every test runs as root.
+
+**Rule.** Before calling a feature shipped, run the documented
+end-user flow as a non-root user with only the group memberships the
+docs claim they need. If the docs say "add yourself to the `aaos`
+group," verify `adduser $USER aaos` is actually sufficient — not just
+that the test suite passes.
+
+Derived from commit `5e01acc` — socket chmod fix caught on the
+Debian 13 droplet during the Task 18 end-to-end run.

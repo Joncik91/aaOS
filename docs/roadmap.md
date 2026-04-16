@@ -111,6 +111,8 @@ The `.deb` itself — installable on any Debian 13 host.
 
 **CI (not yet done).** The build still runs manually — `cargo deb -p agentd` on a Debian 13 host. A GitHub Actions workflow to build in `debian:13` on tag push is a follow-up when the first real release is cut; there's nothing to cut today.
 
+**Operator CLI (complete).** Five subcommands (`submit`, `list`, `status`, `stop`, `logs`) + server-side NDJSON streaming (`agent.submit_streaming`, `agent.logs_streaming`) + `BroadcastAuditLog` + explicit `aaos` system group + `agentd(1)` man page. End-to-end verified on a fresh Debian 13 cloud VM as a non-root operator in the `aaos` group; two DeepSeek-backed goals ran successfully (5s and 3s respectively). Commits `58dd1bb` through `5e01acc` — eighteen incremental commits, subagent-driven implementation. The droplet verification caught a socket-permissions bug (`UnixListener::bind` inherits the process umask; needed explicit `chmod 0660` after bind) that the test suite missed because tests all run as root.
+
 ### Phase F-b: Debian-derivative reference image
 
 A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the aaOS `.deb`, enables the service, and bakes opinionated defaults.
