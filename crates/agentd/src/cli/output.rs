@@ -12,14 +12,17 @@
 use aaos_core::{AuditEvent, AuditEventKind};
 
 pub fn is_operator_visible(event: &AuditEvent) -> bool {
-    matches!(
-        &event.event,
+    match &event.event {
         AuditEventKind::AgentSpawned { .. }
-            | AuditEventKind::ToolInvoked { .. }
-            | AuditEventKind::AgentExecutionCompleted { .. }
-            | AuditEventKind::AgentLoopStopped { .. }
-            | AuditEventKind::CapabilityDenied { .. }
-    )
+        | AuditEventKind::ToolInvoked { .. }
+        | AuditEventKind::AgentExecutionCompleted { .. }
+        | AuditEventKind::AgentLoopStopped { .. }
+        | AuditEventKind::CapabilityDenied { .. } => true,
+        // Show only failed tool results — successes are implied by
+        // the next event in the stream and would double the noise.
+        AuditEventKind::ToolResult { success, .. } => !success,
+        _ => false,
+    }
 }
 
 pub fn format_operator_line(
@@ -46,6 +49,18 @@ pub fn format_operator_line(
                 tool.clone()
             };
             format!("tool: {}", tool_col)
+        }
+        AuditEventKind::ToolResult { tool, success } => {
+            let text = if *success {
+                format!("tool ok: {}", tool)
+            } else {
+                format!("tool FAILED: {}", tool)
+            };
+            if colorize && !success {
+                format!("\x1b[31m{}\x1b[0m", text)
+            } else {
+                text
+            }
         }
         AuditEventKind::AgentExecutionCompleted { .. } => {
             if colorize {
