@@ -1,6 +1,6 @@
 # Junior-senior workflow — grep tool end to end *(2026-04-17)*
 
-**Integration commits:** `677a58f` "feat: grep tool — ripgrep-backed search, capability-scoped", `71ce3ec` "feat: grep tool production-ready"
+**Integration commits:** `7004b78` "feat: grep tool — ripgrep-backed search, capability-scoped", `533873e` "feat: grep tool production-ready" (SHAs post-rewrite; force-push on 2026-04-17 scrubbed droplet IPs from the commit trailers — content and trees are identical)
 
 Two self-build runs (run 8, run 9) shipped a feature from plan to prod with a clear division of labor: the **junior** (aaOS builder role on a DO droplet) wrote the code; the **senior** (me, on A8) wrote the plans, reviewed the diffs, and committed. This is the first feature in the repo where aaOS is the actual author of the code — not a re-derivation of a hand-written fix (run 7) but a genuine new capability whose first draft came from the agent.
 
@@ -32,7 +32,7 @@ Runs 5–6 surfaced that self-build is tool-bound, not model-bound. Runs 7–9 a
 - **The tool wasn't granted to any role.** Registered everywhere it needed to be, but no role's capability block included `"tool: grep"`, so no running agent could invoke it.
 - **Doc drift.** Tool count in README + architecture still said 14.
 
-Committed as `677a58f`. Feature present but not prod-ready.
+Committed as `7004b78` (was `677a58f` pre-rewrite). Feature present but not prod-ready.
 
 ## Run 9 — junior makes grep prod-ready
 
@@ -53,7 +53,7 @@ Committed as `677a58f`. Feature present but not prod-ready.
 
 The junior's diff is 15 insertions, 4 deletions, exactly the shape the plan called for. No stray edits, no over-reach, no missed steps.
 
-**Senior review:** verified full workspace test (478 passed, 0 failed, 11 ignored), no issues, committed as `71ce3ec` with a `Co-Authored-By: aaOS builder role (ephemeral droplet, run 0e0d703e)` trailer.
+**Senior review:** verified full workspace test (478 passed, 0 failed, 11 ignored), no issues, committed as `533873e` (was `71ce3ec` pre-rewrite) with a `Co-Authored-By: aaOS builder role (ephemeral droplet, run 0e0d703e)` trailer.
 
 ## What this proves
 
