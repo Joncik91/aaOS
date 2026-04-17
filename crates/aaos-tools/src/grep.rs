@@ -71,11 +71,17 @@ async fn run_rg(
     glob: Option<&str>,
     case_insensitive: bool,
 ) -> Result<Value> {
+    // Use ripgrep's --json output so the parser doesn't depend on ':' as
+    // a delimiter. The default "file:line:text" format mis-splits any
+    // filename that itself contains a colon (valid on Unix). --json emits
+    // one NDJSON event per line with structured fields.
+    //
+    // No --max-count flag: that flag is per-FILE in ripgrep, not global,
+    // so passing MAX_MATCHES there cooks in a misleading bound. We cap
+    // total matches via .take(MAX_MATCHES) on the iterator below, which
+    // is the real contract.
     let mut cmd = tokio::process::Command::new("rg");
-    cmd.arg("--line-number")
-        .arg("--no-heading")
-        .arg("--with-filename")
-        .arg("--max-count").arg(MAX_MATCHES.to_string());
+    cmd.arg("--json");
     if case_insensitive { cmd.arg("-i"); }
     if let Some(g) = glob { cmd.arg("--glob").arg(g); }
     cmd.arg("--").arg(pattern).arg(path);
@@ -99,21 +105,58 @@ async fn run_rg(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // Each line is an NDJSON event. We only care about "type":"match".
+    // Shape (per ripgrep docs):
+    //   { "type": "match",
+    //     "data": {
+    //       "path": { "text": "<file>" },
+    //       "lines": { "text": "<matching line>\n" },
+    //       "line_number": 42,
+    //       ...
+    //     } }
+    // We read `path.text`, `line_number`, and `lines.text` (trimming a
+    // trailing newline). Any line we can't parse or that isn't a match
+    // event is silently skipped — ripgrep emits `begin`/`end`/`summary`
+    // events too.
     let mut matches = Vec::new();
-    for line in stdout.lines().take(MAX_MATCHES) {
-        // Format: "<file>:<line>:<text>"
-        if let Some((file, rest)) = line.split_once(':') {
-            if let Some((line_no, text)) = rest.split_once(':') {
-                matches.push(json!({
-                    "file": file,
-                    "line": line_no.parse::<u64>().unwrap_or(0),
-                    "text": cap(text, 512),
-                }));
-            }
+    let mut total_match_events = 0usize;
+    for line in stdout.lines() {
+        let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if ev.get("type").and_then(|v| v.as_str()) != Some("match") {
+            continue;
         }
+        total_match_events += 1;
+        if matches.len() >= MAX_MATCHES {
+            continue;
+        }
+        let data = match ev.get("data") {
+            Some(d) => d,
+            None => continue,
+        };
+        let file = data
+            .get("path")
+            .and_then(|p| p.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        let line_no = data
+            .get("line_number")
+            .and_then(|n| n.as_u64())
+            .unwrap_or(0);
+        let text = data
+            .get("lines")
+            .and_then(|l| l.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or("");
+        // ripgrep's `lines.text` includes the trailing newline; strip it.
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        matches.push(json!({
+            "file": file,
+            "line": line_no,
+            "text": cap(text, 512),
+        }));
     }
 
-    let truncated = stdout.lines().count() >= MAX_MATCHES || stdout.len() > MAX_INLINE_BYTES;
+    let truncated = total_match_events > MAX_MATCHES || stdout.len() > MAX_INLINE_BYTES;
 
     Ok(json!({
         "pattern": pattern,
@@ -187,5 +230,28 @@ mod tests {
 
         let result = GrepTool.invoke(json!({"pattern": "xyz", "path": path}), &ctx).await.unwrap();
         assert_eq!(result["matches"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn grep_parses_filename_with_colon() {
+        // Regression: the old parser used split_once(':') on ripgrep's
+        // default "file:line:text" output and mis-parsed any filename
+        // containing a colon. With --json output the path is a
+        // structured field so embedded colons round-trip correctly.
+        let dir = TempDir::new().unwrap();
+        let weird = dir.path().join("weird:name.txt");
+        std::fs::write(&weird, "needle\n").unwrap();
+        let path = dir.path().to_str().unwrap();
+        let ctx = ctx_with_read(path);
+
+        let result = GrepTool
+            .invoke(json!({"pattern": "needle", "path": path}), &ctx)
+            .await
+            .unwrap();
+        let matches = result["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 1, "matches: {:?}", matches);
+        let file = matches[0]["file"].as_str().unwrap();
+        assert!(file.ends_with("weird:name.txt"), "file: {file}");
     }
 }
