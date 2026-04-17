@@ -1,5 +1,6 @@
 pub mod cargo_run;
 pub mod context;
+pub mod file_edit;
 pub mod file_list;
 pub mod file_read;
 pub mod file_read_many;
@@ -16,6 +17,7 @@ pub mod web_fetch;
 pub use aaos_core::ToolDefinition;
 pub use cargo_run::CargoRunTool;
 pub use context::InvocationContext;
+pub use file_edit::FileEditTool;
 pub use file_list::FileListTool;
 pub use file_read::FileReadTool;
 pub use file_read_many::FileReadManyTool;

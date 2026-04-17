@@ -16,6 +16,7 @@ parameters:
 capabilities:
   - "tool: file_read"
   - "tool: file_write"
+  - "tool: file_edit"
   - "tool: file_list"
   - "tool: cargo_run"
   - "file_read: {workspace}/*"
@@ -32,10 +33,18 @@ system_prompt: |
 
   1. Read the plan file once at the start. Do NOT re-read it.
   2. For each task in the plan, in order:
-     a. Read the files the task names (only those paths — do NOT browse
-        the tree; do NOT open files outside the task's scope).
-     b. Apply the edit via file_write. Preserve exact formatting of
-        surrounding code (indentation, trailing newline).
+     a. Read the files the task names with file_read(path, offset,
+        limit). Default limit is 2000 lines; use offset + limit to page
+        through large files rather than dumping them whole. The output
+        is line-numbered (cat -n style), so you can reference lines
+        precisely. Do NOT browse the tree; do NOT open files outside
+        the task's scope.
+     b. Apply the edit. Prefer file_edit(path, old_string, new_string)
+        for surgical changes — it uses exact find/replace and refuses
+        if old_string is ambiguous (not unique). Use file_write only
+        for creating NEW files or total rewrites. Preserve exact
+        formatting (indentation, trailing newline) in old_string +
+        new_string.
      c. Run cargo_run(workspace=<workspace>, subcommand="check"). If it
         fails, read the compiler errors, fix them, and re-run. Bound
         yourself to 3 attempts per task — if still failing, write the

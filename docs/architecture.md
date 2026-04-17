@@ -43,7 +43,7 @@ Universal tool registry where every capability is:
 - Invoked through capability-checked channels
 - Logged to the audit trail
 
-Built-in tools: `echo`, `web_fetch`, `file_read`, `file_read_many`, `file_list`, `file_write`, `spawn_agent`, `spawn_agents`, `memory_store`, `memory_query`, `memory_delete`, `skill_read`, `cargo_run`. External tools integrate via the Tool trait.
+Built-in tools: `echo`, `web_fetch`, `file_read`, `file_read_many`, `file_list`, `file_write`, `file_edit`, `spawn_agent`, `spawn_agents`, `memory_store`, `memory_query`, `memory_delete`, `skill_read`, `cargo_run`. External tools integrate via the Tool trait.
 
 **`file_read_many`** — Batch read of 2-16 files in parallel. Each path is capability-checked individually; per-file failures (capability denied, not found, too large) appear in the result array alongside successes so one bad path doesn't abort the batch. Introduced in the Phase 1 speed work after Run 7b's code-reader spent ~4m of ~5m37s on sequential `file_read` loops. Cuts scan-phase latency 3-5x compared to per-file loops. Explicit opt-in (tool-level) rather than executor-level parallelism — same-turn tool calls can be semantically dependent, so generic parallelism is a footgun.
 
@@ -52,6 +52,10 @@ Built-in tools: `echo`, `web_fetch`, `file_read`, `file_read_many`, `file_list`,
 **`file_list`** — List directory contents (name, kind, size) or return metadata for a single file. Introduced after run 4 analysis showed children were guessing paths and calling `file_read` on directories to explore them. Uses the same `FileRead` capability glob as `file_read`, same lexical path normalization — capability model unchanged.
 
 **`cargo_run`** — Run `cargo <subcommand>` in a Rust workspace under a `CargoRun { workspace }` capability. Allowlisted subcommands: `check`, `test`, `clippy`, `fmt` — anything else (`install`, `publish`, custom subcommands) is refused. Workspace must contain a `Cargo.toml`; output is captured (stdout + stderr, 8KB inline cap) with exit code and wall-clock duration in the result. 4-minute timeout per invocation so a runaway build can't hang an agent. Designed to let aaOS build and test Rust code (including itself) without granting a general shell-exec tool.
+
+**`file_edit`** — Surgical find/replace primitive: `{ path, old_string, new_string, replace_all? }`. Refuses the edit if `old_string` matches more than once unless `replace_all: true`, avoiding the common LLM mistake of rewriting the first occurrence when a different one was meant. Requires both `FileRead` and `FileWrite` capability for the path. Matches the Edit-tool idiom from Claude Code, Cursor, and Aider. Added after the first self-build attempt surfaced the "whole-file `file_write` blows the output budget" failure mode: for a 3-line change in a 100KB source file the agent would otherwise have to emit the entire file as one tool-call argument.
+
+**`file_read` with offset + limit** — The same `file_read` tool now takes optional `offset` (1-indexed line number) and `limit` (line count, default 2000) parameters and returns line-numbered content (cat -n style). Lets agents page through large files under their own control instead of dumping whole files into the context, and gives the LLM line numbers it can reference in subsequent `file_edit` calls.
 
 **AgentSkills Support** — Implements the [AgentSkills](https://agentskills.io) open standard by Anthropic. Skills are folders with `SKILL.md` files containing YAML frontmatter + markdown instructions. `SkillRegistry` discovers skills at startup from `/etc/aaos/skills/` and `AAOS_SKILLS_DIR`. Skill catalog (names + descriptions) injected into agent system prompts (progressive disclosure tier 1). `skill_read` tool serves full instructions and reference files on demand (tiers 2+3). Path traversal protection on reference file reads. 21 production-grade skills bundled from addyosmani/agent-skills.
 

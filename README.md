@@ -79,7 +79,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Orchestration Layer                 |  Planner + PlanExecutor (primary) · Bootstrap Agent (fallback)
 +---------------------------------------------+
-|        Tool & Service Layer                  |  13 tools, capability-checked, schema-validated, AgentSkills registry
+|        Tool & Service Layer                  |  14 tools, capability-checked, schema-validated, AgentSkills registry
 +---------------------------------------------+
 |        Agent Memory Layer                    |  Context windows, episodic store, embeddings
 +---------------------------------------------+
@@ -95,7 +95,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 - **aaos-core** — Types, traits, capability model, audit events (26 kinds), budget tracking
 - **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management, **computed orchestration (`plan/` module — Planner, PlanExecutor, RoleCatalog)**
 - **aaos-ipc** — MCP message router with capability validation, request-response IPC
-- **aaos-tools** — Tool registry, invocation, 13 built-in tools (echo, web_fetch, file_read/list/read_many/write, spawn_agent/spawn_agents, memory_store/query/delete, skill_read, cargo_run)
+- **aaos-tools** — Tool registry, invocation, 14 built-in tools (echo, web_fetch, file_read/list/read_many/write/edit, spawn_agent/spawn_agents, memory_store/query/delete, skill_read, cargo_run)
 - **aaos-llm** — LLM clients (Anthropic + OpenAI-compat), execution loop, inference scheduler
 - **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **aaos-backend-linux** — Opt-in Linux-namespaced agent backend (`namespaced-agents` feature). User/mount/IPC namespaces, Landlock + seccomp confinement, peer-creds-authenticated broker socket, worker subprocess. `clone() + uid_map + pivot_root + exec` launch path verified end-to-end on Debian 13 / kernel 6.12.43 (2026-04-15 and 2026-04-17 re-verify); live workers show `Seccomp: 2`, `NoNewPrivs: 1`, both stacked seccomp filters installed.
@@ -243,6 +243,7 @@ The operator CLI (`agentd submit|list|status|stop|logs`) uses `submit_streaming`
 | `file_list` | `FileRead { path_glob }` | List directory contents — use before guessing filenames |
 | `file_read_many` | `FileRead { path_glob }` (per file) | Batch-read up to 16 files in parallel; partial failures OK |
 | `file_write` | `FileWrite { path_glob }` | Write file, path-checked |
+| `file_edit` | `FileRead` + `FileWrite { path_glob }` | Surgical find/replace — refuses non-unique old_string |
 | `spawn_agent` | `SpawnChild { allowed_agents }` | Spawn child with narrowed capabilities |
 | `spawn_agents` | `SpawnChild { allowed_agents }` (per child) | Spawn up to 3 independent children concurrently; best-effort per-child, wall-clock = slowest child |
 | `memory_store` | `tool: memory_store` | Store a fact/observation/decision/preference |
