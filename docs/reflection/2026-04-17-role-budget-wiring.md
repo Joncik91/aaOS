@@ -99,3 +99,28 @@ Zero `capability denied` events. Writer did NOT emit "ERROR: missing input" — 
 **What v5 did not improve.** Total wall-clock went from 28s (v4) to 2m9s (v5). Not a regression — v4 short-circuited because its writer errored out on the missing inputs; v5 actually produced the output, so it paid the real analyzer+writer LLM-loop cost. That cost is a separate fitness-of-prompt question (the writer does two rounds of `file_read` then a long `file_write`; could probably be cut in half), deferred.
 
 **Shipped.** `2b8ed6d` plus this addendum. Fetcher is now a first-class scaffold; the pattern (`scaffold_runner` closure, `Role::scaffold` field, kind-dispatched runtime implementation) is in place for future scaffold-shaped roles — `file_sync`, `archive_extract`, `db_dump`, whatever shows up. The LLM path is unchanged for roles that need it.
+
+## Addendum 2 — adversarial e2e sweep *(same day)*
+
+After the scaffold verification, ran five adversarial cases against the same running daemon to probe for edge cases. Three of the five surfaced real bugs.
+
+| # | Case | Outcome | Bug |
+|---|------|---------|-----|
+| 1 | `fetch https://example.com/does-not-exist-404-test-page` (200 from example.com + a real `/status/404`) | Completed; empty 0-byte file was written, writer honestly said "no data captured" | #1: fetcher scaffold treats all HTTP bodies equal — a 404 / empty body silently succeeds |
+| 2 | `fetch HN front page, summarize top 5` | Clean 2-subtask plan, 32s, real content | none |
+| 3 | `fetch HN + lobste.rs + slashdot, top 2 each` | All 3 fetchers spawned same second; Slashdot blocked (Cloudflare), writer reported "unavailable" honestly | same class as #1 (fetcher does not surface protocol errors) |
+| 4 | `fetch example.com, write summary to /etc/cannot-write-here.md` | Writer emitted `ERROR: missing input <workspace-path>` — but the input was there; `file_write` to `/etc/` was what failed | #2: writer prompt contract covers only `file_read` failures; `file_write` failure falls through to the nearest-error template and lies about the cause |
+| 5 | `write a Merkle-tree explainer to /data/merkle.md` (no fetch) | Planner picked `generalist` + `writer`, but generalist has no workspace/output-path parameter, so writer's input path never materialized — `ERROR: missing input` | #3: planner composes generalist→writer plans that cannot resolve (no declared handoff path) |
+
+**Orthogonal:** the `submit` CLI's `tool: <name>` line is emitted from `ToolInvoked` only. The audit schema has a separate `ToolResult { tool, success: bool }` kind (`crates/aaos-core/src/audit.rs:65`) which the operator view doesn't surface. Failed tool calls look identical to successful ones in the event stream — part of why #2 was confusing to diagnose.
+
+**What this means.**
+
+- The scaffold fix is correct for the LLM-can-skip-side-effects class of bug it targets. It does not fix HTTP-semantics bugs (empty/404 body written to disk silently) — that's a separate "fetcher should treat non-2xx as an error" follow-up, bounded (~1 hour: add a status-code check in `scaffold_fetcher`, return `CoreError` on 4xx/5xx).
+- The writer contract needs a second error shape for `file_write` failures — otherwise when the output path is un-writable, the operator sees a misleading error. Bounded fix: add a second line to the prompt, *"If file_write fails, respond with exactly `ERROR: cannot write <output>: <reason>` — do not retry, do not invent a missing input."*
+- The planner needs a rule that roles used in a handoff chain must have a declared output-path parameter, OR generalist needs an output-path parameter added to its schema. The cleaner fix is to teach the planner: *"If a downstream subtask depends on this one, the upstream role MUST have a workspace/output parameter."* — bounded ~30 minutes in the Planner prompt.
+- The `tool:` event should distinguish success vs. failure. Either add a `tool ✗` / `tool ✓` variant to the operator-visible events, or fold `ToolResult` into `ToolInvoked` at audit-emit time. Small but high-signal improvement.
+
+**Ship-vs-defer call.** None of the four are blocking for the current scaffold milestone. They're edge cases operators would hit once they started using the daemon for varied goals. Worth filing as separate short tasks — probably one commit per issue. The fetcher scaffold itself is correct and stays shipped.
+
+No code changes in this addendum — just the e2e record and the diagnosis.
