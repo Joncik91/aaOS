@@ -143,4 +143,4 @@ Re-verified in a fresh `debian:13` container with the rebuilt `.deb`:
 | #3  | `generalist→writer` plan had no declared handoff path; writer failed with "missing input" | Planner now generates `fetcher(workspace=X) → writer(inputs=[X])` chains with correct path handoff; real content written |
 | #4  | Failed `file_write` looked identical to success in the event stream | New `tool FAILED: file_write` line appears in red after the invocation line |
 
-All plan/role unit tests still pass (44 passed). No regressions. Scaffold path unchanged — the fetcher still fires `web_fetch` + `file_write` in 1s. The edge-case fixes ride on top of the scaffold rather than replacing any of it.
+All unit tests still pass (44 plan/role + 59 CLI). No regressions. Scaffold path unchanged — the fetcher still fires `web_fetch` + `file_write` in 1s. The edge-case fixes ride on top of the scaffold rather than replacing any of it.
