@@ -87,6 +87,13 @@ Each entry is short by design. If something here grows enough to deserve an impl
 - **Why deferred:** a custom installer is a separate project on the scale of the rest of aaOS combined. The Debian installer works, is well-understood by operators, handles the hardware-compatibility long tail we'd otherwise inherit, and lets us ship a derivative today. The "Debian branding appears during install" is a real but cosmetic cost. Immutable A/B partitions are a real but operational-convenience cost, not a security cost — security comes from Landlock + seccomp + namespaces at runtime, which the derivative already provides.
 - **Signal to reconsider:** (a) users complain that the Debian installer shows Debian branding instead of aaOS branding and that's blocking adoption, OR (b) a buyer specifically demands immutable A/B partitions (atomic updates, rollback-on-failure) as a gating requirement for an unattended-deployment use case.
 
+## Self-hosted build loop (aaOS applies plans to aaOS) — **surface shipped 2026-04-17**
+
+- **Idea:** aaOS should be able to read a markdown implementation plan and apply it to its own Rust source tree on a throwaway host, running `cargo check`/`cargo test` between edits to bound LLM drift. The minimum surface is a capability-scoped `cargo_run` tool (allowlisted subcommands, fixed workspace) plus a `builder` role that reads the plan and drives the loop.
+- **Where seen:** OpenHands, Devin, SWE-agent — all build self-editing loops on top of a shell-exec tool. aaOS's twist is capability enforcement: the agent gets `CargoRun { workspace }` scoped to one tree and a subcommand allowlist, not a general shell. `cargo install` and `cargo publish` are refused at the tool boundary.
+- **Status:** tool + role shipped in commit `45ce06b`. End-to-end self-build run pending a throwaway-host execution so a runaway LLM can't touch the daily driver.
+- **Signal to reconsider scope:** if a successful self-build run completes, expand the tool set with `git_commit` (narrow) and `rustfmt` so an agent can produce a clean branch + diff + commit without human hand-holding. If the loop keeps diverging, the failure mode tells us what the next primitive is.
+
 ## Deterministic scaffold roles (runtime-side execution for mechanical work) — **SIGNAL FIRED** (2026-04-17)
 
 - **Idea:** roles whose work is purely mechanical (fetcher: `web_fetch → file_write → return path`) should not run through the LLM loop at all. Runtime detects a `scaffold: true` marker on the role YAML (or a `scaffold_kind: "fetcher"` discriminator) and dispatches directly via Rust code that calls `ToolInvocation::invoke` for each step. LLM-shaped roles (analyzer, writer) stay untouched.

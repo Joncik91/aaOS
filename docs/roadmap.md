@@ -124,6 +124,8 @@ The `.deb` itself — installable on any Debian 13 host.
 
 **Known remaining bug**: the fetcher role, even with tight budgets and explicit step-by-step prompts, still sometimes emits a plausible `"written to <path>"` ack without actually calling `file_write`. The LLM satisfies the surface contract without performing the mechanical I/O. The honest fix is a deterministic fetcher scaffold — runtime-side `web_fetch` → `file_write` in Rust, no LLM loop for the mechanical role. Next iteration will ship that alongside an infrastructure bit that lets any role opt into scaffold execution via a `scaffold: true` marker. Analyzer + writer stay LLM-powered (genuinely LLM-shaped work); fetcher becomes the first bundled scaffold.
 
+**`cargo_run` tool + `builder` role (2026-04-17).** A new `cargo_run` tool (commit `45ce06b`) executes `cargo {check,test,clippy,fmt}` in a capability-scoped workspace. Subcommand allowlist refuses anything that mutates state outside the workspace (no `install`, no `publish`, no custom subcommands); 4-minute wall-clock timeout; 8KB inline output cap. Paired with the `builder` role YAML, this is the minimum surface for aaOS to read a markdown implementation plan and apply it to a Rust workspace — verifying each change compiles and tests pass before moving on. The obvious first workload is aaOS applying plans to its own source tree on a throwaway host.
+
 ### Phase F-b: Debian-derivative reference image
 
 A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the aaOS `.deb`, enables the service, and bakes opinionated defaults.

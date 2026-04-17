@@ -79,7 +79,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Orchestration Layer                 |  Planner + PlanExecutor (primary) · Bootstrap Agent (fallback)
 +---------------------------------------------+
-|        Tool & Service Layer                  |  12 tools, capability-checked, schema-validated, AgentSkills registry
+|        Tool & Service Layer                  |  13 tools, capability-checked, schema-validated, AgentSkills registry
 +---------------------------------------------+
 |        Agent Memory Layer                    |  Context windows, episodic store, embeddings
 +---------------------------------------------+
