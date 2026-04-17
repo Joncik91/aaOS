@@ -56,14 +56,22 @@ async fn full_e2e_phase_a_b_c1() {
 
     // Run ephemeral agent — should use the echo tool
     eprintln!("2. Run ephemeral agent: 'Use the echo tool to echo hello'...");
-    let resp = server.handle_request(&rpc("agent.run", json!({
-        "agent_id": ephemeral_id,
-        "message": "Use the echo tool to echo the word hello"
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.run",
+            json!({
+                "agent_id": ephemeral_id,
+                "message": "Use the echo tool to echo the word hello"
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
     let result = resp.result.unwrap();
     eprintln!("   Response: {}", result["response"]);
-    eprintln!("   Iterations: {}, Stop: {}", result["iterations"], result["stop_reason"]);
+    eprintln!(
+        "   Iterations: {}, Stop: {}",
+        result["iterations"], result["stop_reason"]
+    );
     assert!(
         result["iterations"].as_u64().unwrap() >= 1,
         "expected at least 1 iteration"
@@ -95,10 +103,15 @@ async fn full_e2e_phase_a_b_c1() {
 
     for (i, msg) in phase_b_messages.iter().enumerate() {
         eprintln!("4.{}: Sending: '{msg}'", i + 1);
-        let resp = server.handle_request(&rpc("agent.run", json!({
-            "agent_id": phase_b_id,
-            "message": msg
-        }))).await;
+        let resp = server
+            .handle_request(&rpc(
+                "agent.run",
+                json!({
+                    "agent_id": phase_b_id,
+                    "message": msg
+                }),
+            ))
+            .await;
         assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
         let result = resp.result.unwrap();
         eprintln!("   Delivered: trace_id={}", result["trace_id"]);
@@ -107,8 +120,7 @@ async fn full_e2e_phase_a_b_c1() {
 
     // Verify session history has grown
     eprintln!("\n5. Checking Phase B conversation history...");
-    let phase_b_agent_id: aaos_core::AgentId =
-        serde_json::from_value(json!(phase_b_id)).unwrap();
+    let phase_b_agent_id: aaos_core::AgentId = serde_json::from_value(json!(phase_b_id)).unwrap();
     let history = server.session_store.load(&phase_b_agent_id).unwrap();
     eprintln!("   {} messages in session store", history.len());
     assert!(
@@ -116,13 +128,21 @@ async fn full_e2e_phase_a_b_c1() {
         "expected at least 6 messages (3 user + 3 assistant), got {}",
         history.len()
     );
-    eprintln!("   Phase B: PASSED — persistent agent has {} messages in history", history.len());
+    eprintln!(
+        "   Phase B: PASSED — persistent agent has {} messages in history",
+        history.len()
+    );
 
     // Stop Phase B agent
     eprintln!("\n6. Stopping Phase B agent...");
-    let resp = server.handle_request(&rpc("agent.stop", json!({
-        "agent_id": phase_b_id
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.stop",
+            json!({
+                "agent_id": phase_b_id
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "stop failed: {:?}", resp.error);
     eprintln!("   Stopped cleanly");
 
@@ -187,12 +207,26 @@ async fn full_e2e_phase_a_b_c1() {
 
     for (i, (msg, wait_secs)) in c1_messages.iter().enumerate() {
         let preview = if msg.len() > 60 { &msg[..60] } else { msg };
-        eprintln!("8.{:02}: Sending: '{preview}...' (wait {}s)", i + 1, wait_secs);
-        let resp = server.handle_request(&rpc("agent.run", json!({
-            "agent_id": c1_id,
-            "message": msg
-        }))).await;
-        assert!(resp.error.is_none(), "run failed at message {}: {:?}", i, resp.error);
+        eprintln!(
+            "8.{:02}: Sending: '{preview}...' (wait {}s)",
+            i + 1,
+            wait_secs
+        );
+        let resp = server
+            .handle_request(&rpc(
+                "agent.run",
+                json!({
+                    "agent_id": c1_id,
+                    "message": msg
+                }),
+            ))
+            .await;
+        assert!(
+            resp.error.is_none(),
+            "run failed at message {}: {:?}",
+            i,
+            resp.error
+        );
         let result = resp.result.unwrap();
         eprintln!("        trace_id={}", result["trace_id"]);
         tokio::time::sleep(Duration::from_secs(*wait_secs)).await;
@@ -202,11 +236,20 @@ async fn full_e2e_phase_a_b_c1() {
     // know them because the ContextManager summarized and preserved them.
     eprintln!("\n9. Asking about early facts (tests summarization preserved them)...");
     let verification_msg = "What is my name, my cat's name, and what database do we use?";
-    let resp = server.handle_request(&rpc("agent.run", json!({
-        "agent_id": c1_id,
-        "message": verification_msg
-    }))).await;
-    assert!(resp.error.is_none(), "verification run failed: {:?}", resp.error);
+    let resp = server
+        .handle_request(&rpc(
+            "agent.run",
+            json!({
+                "agent_id": c1_id,
+                "message": verification_msg
+            }),
+        ))
+        .await;
+    assert!(
+        resp.error.is_none(),
+        "verification run failed: {:?}",
+        resp.error
+    );
     let result = resp.result.unwrap();
     eprintln!("   Delivered trace_id={}", result["trace_id"]);
     // Wait for LLM to process the verification answer
@@ -246,9 +289,14 @@ async fn full_e2e_phase_a_b_c1() {
 
     // Stop C1 agent
     eprintln!("\n11. Stopping C1 agent...");
-    let resp = server.handle_request(&rpc("agent.stop", json!({
-        "agent_id": c1_id
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.stop",
+            json!({
+                "agent_id": c1_id
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "stop failed: {:?}", resp.error);
     eprintln!("    Stopped cleanly");
 
@@ -268,7 +316,10 @@ async fn full_e2e_phase_a_b_c1() {
 
     eprintln!("\n=== E2E Test PASSED ===");
     eprintln!("  Phase A: ephemeral agent with echo tool ran successfully");
-    eprintln!("  Phase B: persistent agent processed 3 messages, {} in history", history.len());
+    eprintln!(
+        "  Phase B: persistent agent processed 3 messages, {} in history",
+        history.len()
+    );
     eprintln!(
         "  Phase C1: context agent ran {} messages, {} archive segments",
         c1_messages.len() + 1,

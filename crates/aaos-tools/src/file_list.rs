@@ -38,10 +38,10 @@ impl Tool for FileListTool {
         let requested = Capability::FileRead {
             path_glob: path_str.to_string(),
         };
-        let allowed = ctx
-            .tokens
-            .iter()
-            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
+        let allowed = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry
+                .permits(*h, ctx.agent_id, &requested)
+        });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
@@ -68,7 +68,9 @@ impl Tool for FileListTool {
         }
 
         if !metadata.is_dir() {
-            return Err(CoreError::Ipc(format!("{path_str} is neither a file nor a directory")));
+            return Err(CoreError::Ipc(format!(
+                "{path_str} is neither a file nor a directory"
+            )));
         }
 
         let mut entries = Vec::new();
@@ -144,8 +146,12 @@ mod tests {
     #[tokio::test]
     async fn lists_directory_contents() {
         let dir = tempdir().unwrap();
-        tokio::fs::write(dir.path().join("a.txt"), b"hi").await.unwrap();
-        tokio::fs::write(dir.path().join("b.txt"), b"hello").await.unwrap();
+        tokio::fs::write(dir.path().join("a.txt"), b"hi")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("b.txt"), b"hello")
+            .await
+            .unwrap();
         tokio::fs::create_dir(dir.path().join("sub")).await.unwrap();
 
         let glob = format!("{}/*", dir.path().display());
@@ -161,7 +167,10 @@ mod tests {
         assert_eq!(out["kind"], "dir");
         let entries = out["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 3);
-        let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
         assert!(names.contains(&"a.txt"));
         assert!(names.contains(&"b.txt"));
         assert!(names.contains(&"sub"));
@@ -176,7 +185,10 @@ mod tests {
         let glob = format!("{}/*", dir.path().display());
         let tool = FileListTool;
         let out = tool
-            .invoke(json!({ "path": file.to_str().unwrap() }), &ctx_with_read(&glob))
+            .invoke(
+                json!({ "path": file.to_str().unwrap() }),
+                &ctx_with_read(&glob),
+            )
             .await
             .unwrap();
 
@@ -202,10 +214,7 @@ mod tests {
     async fn path_traversal_denied() {
         let tool = FileListTool;
         let out = tool
-            .invoke(
-                json!({ "path": "/data/../etc" }),
-                &ctx_with_read("/data/*"),
-            )
+            .invoke(json!({ "path": "/data/../etc" }), &ctx_with_read("/data/*"))
             .await;
         assert!(matches!(out, Err(CoreError::CapabilityDenied { .. })));
     }

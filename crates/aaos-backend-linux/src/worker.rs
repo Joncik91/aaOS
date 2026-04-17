@@ -27,9 +27,7 @@ mod linux_impl {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
 
-    use crate::broker_protocol::{
-        ReadyAck, Request, WireRequest, WireResponse,
-    };
+    use crate::broker_protocol::{ReadyAck, Request, WireRequest, WireResponse};
     use crate::landlock_compile;
     use crate::seccomp_compile;
 
@@ -69,8 +67,8 @@ mod linux_impl {
 
     impl WorkerConfig {
         pub fn from_env() -> Result<Self, WorkerError> {
-            let agent_id = std::env::var(ENV_AGENT_ID)
-                .map_err(|_| WorkerError::MissingEnv(ENV_AGENT_ID))?;
+            let agent_id =
+                std::env::var(ENV_AGENT_ID).map_err(|_| WorkerError::MissingEnv(ENV_AGENT_ID))?;
             let broker_socket = std::env::var(ENV_BROKER_SOCKET)
                 .map_err(|_| WorkerError::MissingEnv(ENV_BROKER_SOCKET))?;
             Ok(Self {
@@ -92,8 +90,8 @@ mod linux_impl {
         // --- Phase 1: ready -> ready-ack ---
         let my_pid = std::process::id();
         let ready = WireRequest::new(1, Request::Ready { pid: my_pid });
-        let mut line = serde_json::to_vec(&ready)
-            .map_err(|e| WorkerError::InvalidResponse(e.to_string()))?;
+        let mut line =
+            serde_json::to_vec(&ready).map_err(|e| WorkerError::InvalidResponse(e.to_string()))?;
         line.push(b'\n');
         write_half.write_all(&line).await?;
         write_half.flush().await?;
@@ -110,9 +108,9 @@ mod linux_impl {
         if let Some(err) = resp.error {
             return Err(WorkerError::BrokerError(err.message));
         }
-        let ack_value = resp.result.ok_or_else(|| {
-            WorkerError::InvalidResponse("ready-ack missing result".into())
-        })?;
+        let ack_value = resp
+            .result
+            .ok_or_else(|| WorkerError::InvalidResponse("ready-ack missing result".into()))?;
         let ack: ReadyAck = serde_json::from_value(ack_value)
             .map_err(|e| WorkerError::InvalidResponse(e.to_string()))?;
 
@@ -120,8 +118,7 @@ mod linux_impl {
         apply_confinement(&ack.policy)?;
 
         // --- Phase 3: sandboxed-ready ---
-        let sandboxed =
-            WireRequest::new(2, Request::SandboxedReady);
+        let sandboxed = WireRequest::new(2, Request::SandboxedReady);
         let mut line2 = serde_json::to_vec(&sandboxed)
             .map_err(|e| WorkerError::InvalidResponse(e.to_string()))?;
         line2.push(b'\n');
@@ -152,9 +149,7 @@ mod linux_impl {
         // side effects; it sets a per-task flag.
         let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         if rc != 0 {
-            return Err(WorkerError::NoNewPrivsFailed(
-                nix::Error::last(),
-            ));
+            return Err(WorkerError::NoNewPrivsFailed(nix::Error::last()));
         }
 
         // 2. Landlock (filesystem boundary).
@@ -166,8 +161,7 @@ mod linux_impl {
         let kill = seccomp_compile::compile_kill_filter()?;
         seccompiler::apply_filter(&allow)
             .map_err(|e| WorkerError::SeccompInstall(e.to_string()))?;
-        seccompiler::apply_filter(&kill)
-            .map_err(|e| WorkerError::SeccompInstall(e.to_string()))?;
+        seccompiler::apply_filter(&kill).map_err(|e| WorkerError::SeccompInstall(e.to_string()))?;
 
         Ok(())
     }
@@ -197,11 +191,7 @@ mod linux_impl {
             };
             let resp = match req.request {
                 Request::Poke { op } => handle_poke(op),
-                _ => WireResponse::error(
-                    req.id,
-                    -32601,
-                    "worker: unsupported request",
-                ),
+                _ => WireResponse::error(req.id, -32601, "worker: unsupported request"),
             };
             let mut buf = serde_json::to_vec(&resp)
                 .map_err(|e| WorkerError::InvalidResponse(e.to_string()))?;
@@ -231,19 +221,14 @@ mod linux_impl {
                 // Only reachable if seccomp didn't kill us.
                 WireResponse::error(0, -32001, "execve did not SIGSYS — sandbox broken")
             }
-            PokeOp::TryReadHostPath { path } => {
-                match std::fs::read_to_string(&path) {
-                    Ok(_) => WireResponse::error(
-                        0,
-                        -32002,
-                        format!("landlock allowed read of {}", path.display()),
-                    ),
-                    Err(e) => WireResponse::success(
-                        0,
-                        serde_json::json!({"denied": e.to_string()}),
-                    ),
-                }
-            }
+            PokeOp::TryReadHostPath { path } => match std::fs::read_to_string(&path) {
+                Ok(_) => WireResponse::error(
+                    0,
+                    -32002,
+                    format!("landlock allowed read of {}", path.display()),
+                ),
+                Err(e) => WireResponse::success(0, serde_json::json!({"denied": e.to_string()})),
+            },
         }
     }
 }

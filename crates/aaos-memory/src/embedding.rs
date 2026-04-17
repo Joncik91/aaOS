@@ -1,5 +1,5 @@
-use async_trait::async_trait;
 use crate::store::MemoryError;
+use async_trait::async_trait;
 
 /// Trait for generating text embeddings.
 #[async_trait]
@@ -22,11 +22,17 @@ pub struct MockEmbeddingSource {
 
 impl MockEmbeddingSource {
     pub fn new(dims: usize) -> Self {
-        Self { dims, model: "mock-embed".into() }
+        Self {
+            dims,
+            model: "mock-embed".into(),
+        }
     }
 
     pub fn with_model(dims: usize, model: &str) -> Self {
-        Self { dims, model: model.into() }
+        Self {
+            dims,
+            model: model.into(),
+        }
     }
 }
 
@@ -95,7 +101,8 @@ impl EmbeddingSource for OllamaEmbeddingSource {
             "input": text,
         });
 
-        let response = self.client
+        let response = self
+            .client
             .post(&url)
             .json(&body)
             .send()
@@ -105,9 +112,9 @@ impl EmbeddingSource for OllamaEmbeddingSource {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(MemoryError::Embedding(
-                format!("Ollama API error {status}: {body}")
-            ));
+            return Err(MemoryError::Embedding(format!(
+                "Ollama API error {status}: {body}"
+            )));
         }
 
         let json: serde_json::Value = response
@@ -168,7 +175,10 @@ mod tests {
         let source = MockEmbeddingSource::new(64);
         let v = source.embed("test text").await.unwrap();
         let magnitude: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((magnitude - 1.0).abs() < 0.01, "vector should be unit normalized, got {magnitude}");
+        assert!(
+            (magnitude - 1.0).abs() < 0.01,
+            "vector should be unit normalized, got {magnitude}"
+        );
     }
 
     #[test]

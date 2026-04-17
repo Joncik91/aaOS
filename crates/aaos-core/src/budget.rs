@@ -142,7 +142,10 @@ mod tests {
 
     #[test]
     fn within_budget() {
-        let t = BudgetTracker::new(BudgetConfig { max_tokens: 100, reset_period_seconds: 0 });
+        let t = BudgetTracker::new(BudgetConfig {
+            max_tokens: 100,
+            reset_period_seconds: 0,
+        });
         assert!(t.track(50).is_ok());
         assert!(t.track(30).is_ok());
         assert_eq!(t.used(), 80);
@@ -151,7 +154,10 @@ mod tests {
 
     #[test]
     fn exceeds_budget() {
-        let t = BudgetTracker::new(BudgetConfig { max_tokens: 100, reset_period_seconds: 0 });
+        let t = BudgetTracker::new(BudgetConfig {
+            max_tokens: 100,
+            reset_period_seconds: 0,
+        });
         assert!(t.track(80).is_ok());
         let err = t.track(30).unwrap_err();
         assert_eq!(err.used, 80);
@@ -163,7 +169,10 @@ mod tests {
 
     #[test]
     fn reset_after_period() {
-        let t = BudgetTracker::new(BudgetConfig { max_tokens: 100, reset_period_seconds: 1 });
+        let t = BudgetTracker::new(BudgetConfig {
+            max_tokens: 100,
+            reset_period_seconds: 1,
+        });
         assert!(t.track(80).is_ok());
         std::thread::sleep(Duration::from_secs(2));
         // Trigger reset check
@@ -174,13 +183,19 @@ mod tests {
     #[test]
     fn thread_safety() {
         use std::sync::Arc;
-        let t = Arc::new(BudgetTracker::new(BudgetConfig { max_tokens: 1000, reset_period_seconds: 0 }));
+        let t = Arc::new(BudgetTracker::new(BudgetConfig {
+            max_tokens: 1000,
+            reset_period_seconds: 0,
+        }));
         let mut handles = vec![];
         for _ in 0..10 {
             let tc = t.clone();
             handles.push(std::thread::spawn(move || tc.track(100)));
         }
-        let successes = handles.into_iter().filter_map(|h| h.join().unwrap().ok()).count();
+        let successes = handles
+            .into_iter()
+            .filter_map(|h| h.join().unwrap().ok())
+            .count();
         assert_eq!(successes, 10);
         assert_eq!(t.used(), 1000);
         assert!(t.track(1).is_err());
@@ -188,7 +203,10 @@ mod tests {
 
     #[test]
     fn config_serde() {
-        let c = BudgetConfig { max_tokens: 5000, reset_period_seconds: 7200 };
+        let c = BudgetConfig {
+            max_tokens: 5000,
+            reset_period_seconds: 7200,
+        };
         let json = serde_json::to_string(&c).unwrap();
         let d: BudgetConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(d.max_tokens, 5000);

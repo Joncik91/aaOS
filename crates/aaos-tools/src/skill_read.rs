@@ -8,9 +8,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use aaos_core::{AuditLog, Skill, ToolDefinition};
-use crate::Tool;
 use crate::context::InvocationContext;
+use crate::Tool;
+use aaos_core::{AuditLog, Skill, ToolDefinition};
 
 /// Registry of loaded skills, keyed by name.
 pub struct SkillRegistry {
@@ -56,7 +56,10 @@ pub struct SkillReadTool {
 
 impl SkillReadTool {
     pub fn new(registry: Arc<SkillRegistry>, audit_log: Arc<dyn AuditLog>) -> Self {
-        Self { registry, audit_log }
+        Self {
+            registry,
+            audit_log,
+        }
     }
 }
 
@@ -98,9 +101,9 @@ impl Tool for SkillReadTool {
             let full_path = skill.path.join(file_path);
 
             // Security: ensure the path stays within the skill directory
-            let canonical = full_path.canonicalize().map_err(|e| {
-                aaos_core::CoreError::Ipc(format!("cannot read skill file: {e}"))
-            })?;
+            let canonical = full_path
+                .canonicalize()
+                .map_err(|e| aaos_core::CoreError::Ipc(format!("cannot read skill file: {e}")))?;
             let skill_canonical = skill.path.canonicalize().map_err(|e| {
                 aaos_core::CoreError::Ipc(format!("cannot resolve skill path: {e}"))
             })?;
@@ -174,7 +177,8 @@ mod tests {
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: test-skill\ndescription: A test.\n---\n# Instructions\nDo the thing.",
-        ).unwrap();
+        )
+        .unwrap();
 
         let skill = Skill::load(&skill_dir).unwrap();
         let registry = Arc::new(SkillRegistry::new(vec![skill]));
@@ -186,7 +190,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result["instructions"].as_str().unwrap().contains("Do the thing"));
+        assert!(result["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Do the thing"));
     }
 
     #[tokio::test]
@@ -197,7 +204,8 @@ mod tests {
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: ref-skill\ndescription: Has refs.\n---\nBody",
-        ).unwrap();
+        )
+        .unwrap();
         let refs = skill_dir.join("references");
         std::fs::create_dir(&refs).unwrap();
         std::fs::write(refs.join("GUIDE.md"), "# Guide\nDetailed info.").unwrap();
@@ -208,11 +216,17 @@ mod tests {
         let tool = SkillReadTool::new(registry, audit);
 
         let result = tool
-            .invoke(json!({"skill_name": "ref-skill", "file": "references/GUIDE.md"}), &test_ctx())
+            .invoke(
+                json!({"skill_name": "ref-skill", "file": "references/GUIDE.md"}),
+                &test_ctx(),
+            )
             .await
             .unwrap();
 
-        assert_eq!(result["content"].as_str().unwrap(), "# Guide\nDetailed info.");
+        assert_eq!(
+            result["content"].as_str().unwrap(),
+            "# Guide\nDetailed info."
+        );
     }
 
     #[tokio::test]
@@ -223,7 +237,8 @@ mod tests {
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "---\nname: safe-skill\ndescription: Safe.\n---\nBody",
-        ).unwrap();
+        )
+        .unwrap();
 
         let skill = Skill::load(&skill_dir).unwrap();
         let registry = Arc::new(SkillRegistry::new(vec![skill]));
@@ -231,7 +246,10 @@ mod tests {
         let tool = SkillReadTool::new(registry, audit);
 
         let result = tool
-            .invoke(json!({"skill_name": "safe-skill", "file": "../../etc/passwd"}), &test_ctx())
+            .invoke(
+                json!({"skill_name": "safe-skill", "file": "../../etc/passwd"}),
+                &test_ctx(),
+            )
             .await;
 
         assert!(result.is_err());
@@ -255,7 +273,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let s1 = dir.path().join("skill-a");
         std::fs::create_dir(&s1).unwrap();
-        std::fs::write(s1.join("SKILL.md"), "---\nname: skill-a\ndescription: Does A.\n---\nBody").unwrap();
+        std::fs::write(
+            s1.join("SKILL.md"),
+            "---\nname: skill-a\ndescription: Does A.\n---\nBody",
+        )
+        .unwrap();
 
         let skill = Skill::load(&s1).unwrap();
         let registry = SkillRegistry::new(vec![skill]);

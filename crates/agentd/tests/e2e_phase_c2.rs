@@ -47,15 +47,10 @@ async fn e2e_phase_c2_episodic_memory() {
     let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> = Arc::new(
         OllamaEmbeddingSource::new("http://localhost:11434", "nomic-embed-text", 768),
     );
-    let memory_store: Arc<dyn aaos_memory::MemoryStore> = Arc::new(
-        InMemoryMemoryStore::new(10_000, 768, "nomic-embed-text"),
-    );
+    let memory_store: Arc<dyn aaos_memory::MemoryStore> =
+        Arc::new(InMemoryMemoryStore::new(10_000, 768, "nomic-embed-text"));
 
-    let server = agentd::server::Server::with_memory(
-        llm,
-        memory_store.clone(),
-        embedding_source,
-    );
+    let server = agentd::server::Server::with_memory(llm, memory_store.clone(), embedding_source);
 
     // ─── 1. Spawn persistent agent with memory tools ─────────────────────────
 
@@ -76,9 +71,14 @@ async fn e2e_phase_c2_episodic_memory() {
         "  max_history_messages: 50",
     );
 
-    let resp = server.handle_request(&rpc("agent.spawn", json!({
-        "manifest": manifest
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.spawn",
+            json!({
+                "manifest": manifest
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "spawn failed: {:?}", resp.error);
     let agent_id = resp.result.as_ref().unwrap()["agent_id"]
         .as_str()
@@ -89,10 +89,15 @@ async fn e2e_phase_c2_episodic_memory() {
     // ─── 2. Tell agent to remember first fact ────────────────────────────────
 
     eprintln!("\n2. Send: 'Remember this: the project deadline is March 15th, 2026'...");
-    let resp = server.handle_request(&rpc("agent.run", json!({
-        "agent_id": agent_id,
-        "message": "Remember this: the project deadline is March 15th, 2026"
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.run",
+            json!({
+                "agent_id": agent_id,
+                "message": "Remember this: the project deadline is March 15th, 2026"
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "run (1) failed: {:?}", resp.error);
     let result = resp.result.unwrap();
     eprintln!("   Delivered: trace_id={}", result["trace_id"]);
@@ -104,10 +109,15 @@ async fn e2e_phase_c2_episodic_memory() {
     // ─── 3. Tell agent to remember second fact ───────────────────────────────
 
     eprintln!("\n3. Send: 'Remember this: we use PostgreSQL 16 for the database'...");
-    let resp = server.handle_request(&rpc("agent.run", json!({
-        "agent_id": agent_id,
-        "message": "Remember this: we use PostgreSQL 16 for the database"
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.run",
+            json!({
+                "agent_id": agent_id,
+                "message": "Remember this: we use PostgreSQL 16 for the database"
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "run (2) failed: {:?}", resp.error);
     let result = resp.result.unwrap();
     eprintln!("   Delivered: trace_id={}", result["trace_id"]);
@@ -118,10 +128,15 @@ async fn e2e_phase_c2_episodic_memory() {
     // ─── 4. Ask about stored facts ───────────────────────────────────────────
 
     eprintln!("\n4. Send: 'What do you know about the project deadline?'...");
-    let resp = server.handle_request(&rpc("agent.run", json!({
-        "agent_id": agent_id,
-        "message": "What do you know about the project deadline?"
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.run",
+            json!({
+                "agent_id": agent_id,
+                "message": "What do you know about the project deadline?"
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "run (3) failed: {:?}", resp.error);
     let result = resp.result.unwrap();
     eprintln!("   Delivered: trace_id={}", result["trace_id"]);
@@ -132,8 +147,7 @@ async fn e2e_phase_c2_episodic_memory() {
     // ─── 5. Check session history for evidence of tool use ───────────────────
 
     eprintln!("\n5. Checking conversation history for tool use...");
-    let agent_id_parsed: aaos_core::AgentId =
-        serde_json::from_value(json!(agent_id)).unwrap();
+    let agent_id_parsed: aaos_core::AgentId = serde_json::from_value(json!(agent_id)).unwrap();
     let history = server.session_store.load(&agent_id_parsed).unwrap();
     eprintln!("   {} messages in session store", history.len());
 
@@ -154,8 +168,7 @@ async fn e2e_phase_c2_episodic_memory() {
     }
 
     // Check if any assistant response mentions March 15th
-    let mentions_deadline = history_text.contains("March 15")
-        || history_text.contains("march 15");
+    let mentions_deadline = history_text.contains("March 15") || history_text.contains("march 15");
     eprintln!("   Response mentions deadline: {mentions_deadline}");
 
     // ─── 6. Verify memory store has records ──────────────────────────────────
@@ -182,9 +195,14 @@ async fn e2e_phase_c2_episodic_memory() {
     // ─── 7. Stop agent ───────────────────────────────────────────────────────
 
     eprintln!("\n7. Stopping agent...");
-    let resp = server.handle_request(&rpc("agent.stop", json!({
-        "agent_id": agent_id
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.stop",
+            json!({
+                "agent_id": agent_id
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "stop failed: {:?}", resp.error);
     eprintln!("   Stopped cleanly");
 

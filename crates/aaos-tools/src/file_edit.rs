@@ -109,10 +109,10 @@ impl Tool for FileEditTool {
             .tokens
             .iter()
             .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &read_cap));
-        let has_write = ctx
-            .tokens
-            .iter()
-            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &write_cap));
+        let has_write = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry
+                .permits(*h, ctx.agent_id, &write_cap)
+        });
 
         if !has_read {
             return Err(CoreError::CapabilityDenied {

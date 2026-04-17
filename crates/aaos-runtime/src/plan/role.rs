@@ -93,9 +93,12 @@ impl Role {
     /// Planner's replan loop can correct them in one shot rather than having
     /// to iterate on one error at a time.
     pub fn validate_params(&self, params: &serde_json::Value) -> Result<(), String> {
-        let obj = params
-            .as_object()
-            .ok_or_else(|| format!("role '{}' expected params object, got non-object", self.name))?;
+        let obj = params.as_object().ok_or_else(|| {
+            format!(
+                "role '{}' expected params object, got non-object",
+                self.name
+            )
+        })?;
 
         let mut problems: Vec<String> = Vec::new();
 
@@ -204,18 +207,15 @@ impl RoleCatalog {
             RoleCatalogError::Io(format!("cannot read role dir {}: {}", dir.display(), e))
         })?;
         for entry in entries {
-            let entry =
-                entry.map_err(|e| RoleCatalogError::Io(format!("dir entry error: {e}")))?;
+            let entry = entry.map_err(|e| RoleCatalogError::Io(format!("dir entry error: {e}")))?;
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
                 continue;
             }
-            let contents = std::fs::read_to_string(&path).map_err(|e| {
-                RoleCatalogError::Io(format!("read {}: {e}", path.display()))
-            })?;
-            let role: Role = serde_yaml::from_str(&contents).map_err(|e| {
-                RoleCatalogError::Parse(format!("parse {}: {e}", path.display()))
-            })?;
+            let contents = std::fs::read_to_string(&path)
+                .map_err(|e| RoleCatalogError::Io(format!("read {}: {e}", path.display())))?;
+            let role: Role = serde_yaml::from_str(&contents)
+                .map_err(|e| RoleCatalogError::Parse(format!("parse {}: {e}", path.display())))?;
             if role.name.is_empty() {
                 return Err(RoleCatalogError::Parse(format!(
                     "role at {} has empty name",
@@ -269,11 +269,9 @@ pub enum RoleCatalogError {
 fn render_value(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .map(render_value)
-            .collect::<Vec<_>>()
-            .join(", "),
+        serde_json::Value::Array(arr) => {
+            arr.iter().map(render_value).collect::<Vec<_>>().join(", ")
+        }
         serde_json::Value::Null => String::new(),
         other => other.to_string(),
     }
@@ -410,10 +408,7 @@ retry:
         assert_eq!(role.parameters.len(), 2);
         assert!(role.parameters["url"].required);
         assert_eq!(role.parameters["url"].param_type, ParameterType::String);
-        assert_eq!(
-            role.parameters["workspace"].param_type,
-            ParameterType::Path
-        );
+        assert_eq!(role.parameters["workspace"].param_type, ParameterType::Path);
         assert_eq!(role.capabilities.len(), 1);
         assert_eq!(role.budget.max_input_tokens, 20000);
         assert_eq!(role.retry.max_attempts, 2);
@@ -471,10 +466,7 @@ retry:
 
     #[test]
     fn scaffold_field_parses_when_present() {
-        let yaml = format!(
-            "{}\nscaffold:\n  kind: fetcher\n",
-            FETCHER_YAML.trim_end()
-        );
+        let yaml = format!("{}\nscaffold:\n  kind: fetcher\n", FETCHER_YAML.trim_end());
         let r: Role = serde_yaml::from_str(&yaml).unwrap();
         let s = r.scaffold.expect("scaffold should parse");
         assert_eq!(s.kind, "fetcher");
@@ -690,9 +682,18 @@ retry: { max_attempts: 1, on: [] }
             "caps: {:?}",
             manifest.capabilities
         );
-        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_read: /a.html")));
-        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_read: /b.html")));
-        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_write: /out.md")));
+        assert!(manifest
+            .capabilities
+            .iter()
+            .any(|c| cap_is(c, "file_read: /a.html")));
+        assert!(manifest
+            .capabilities
+            .iter()
+            .any(|c| cap_is(c, "file_read: /b.html")));
+        assert!(manifest
+            .capabilities
+            .iter()
+            .any(|c| cap_is(c, "file_write: /out.md")));
         // No stray placeholder survived.
         assert!(!yaml.contains("{inputs.*}"), "yaml: {}", yaml);
         assert!(!yaml.contains("{inputs}"), "yaml: {}", yaml);
@@ -709,7 +710,10 @@ retry: { max_attempts: 1, on: [] }
         let yaml = r.render_manifest(&params);
         let manifest = aaos_core::AgentManifest::from_yaml(&yaml).unwrap();
         assert_eq!(manifest.capabilities.len(), 4);
-        assert!(manifest.capabilities.iter().any(|c| cap_is(c, "file_read: /only.html")));
+        assert!(manifest
+            .capabilities
+            .iter()
+            .any(|c| cap_is(c, "file_read: /only.html")));
     }
 
     #[test]

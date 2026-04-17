@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use aaos_core::AgentId;
-use crate::store::{MemoryError, MemoryStoreResult, MemoryStore};
+use crate::store::{MemoryError, MemoryStore, MemoryStoreResult};
 use crate::types::{MemoryCategory, MemoryRecord, MemoryResult};
+use aaos_core::AgentId;
 
 /// In-memory implementation of `MemoryStore` backed by `DashMap`.
 ///
@@ -250,8 +250,12 @@ mod tests {
 
         // Store 3 records with increasing timestamps
         for i in 0..3 {
-            let mut rec =
-                make_record(agent, &format!("record-{i}"), MemoryCategory::Fact, emb.clone());
+            let mut rec = make_record(
+                agent,
+                &format!("record-{i}"),
+                MemoryCategory::Fact,
+                emb.clone(),
+            );
             // Ensure distinct timestamps
             rec.created_at = Utc::now() + chrono::Duration::milliseconds(i as i64 * 10);
             store.store(rec).await.unwrap();
@@ -276,8 +280,7 @@ mod tests {
         let original_id = original.id;
         store.store(original).await.unwrap();
 
-        let mut replacement =
-            make_record(agent, "version 2", MemoryCategory::Fact, emb.clone());
+        let mut replacement = make_record(agent, "version 2", MemoryCategory::Fact, emb.clone());
         replacement.replaces = Some(original_id);
         store.store(replacement).await.unwrap();
 
@@ -318,8 +321,12 @@ mod tests {
         let emb = vec![1.0, 0.0, 0.0];
 
         for i in 0..5 {
-            let mut rec =
-                make_record(agent, &format!("item-{i}"), MemoryCategory::Fact, emb.clone());
+            let mut rec = make_record(
+                agent,
+                &format!("item-{i}"),
+                MemoryCategory::Fact,
+                emb.clone(),
+            );
             rec.created_at = Utc::now() + chrono::Duration::milliseconds(i as i64 * 10);
             store.store(rec).await.unwrap();
         }
@@ -358,14 +365,22 @@ mod tests {
         let agent = AgentId::new();
 
         // Store a record with wrong dimensions (4 instead of 3)
-        let wrong = make_record(agent, "wrong dims", MemoryCategory::Fact, vec![1.0, 0.0, 0.0, 0.0]);
+        let wrong = make_record(
+            agent,
+            "wrong dims",
+            MemoryCategory::Fact,
+            vec![1.0, 0.0, 0.0, 0.0],
+        );
         store.store(wrong).await.unwrap();
 
         // Store a valid record
         let good = make_record(agent, "good", MemoryCategory::Fact, vec![1.0, 0.0, 0.0]);
         store.store(good).await.unwrap();
 
-        let results = store.query(&agent, &[1.0, 0.0, 0.0], 10, None).await.unwrap();
+        let results = store
+            .query(&agent, &[1.0, 0.0, 0.0], 10, None)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].content, "good");
     }
@@ -377,7 +392,12 @@ mod tests {
         let emb = vec![1.0, 0.0, 0.0];
 
         store
-            .store(make_record(agent, "a fact", MemoryCategory::Fact, emb.clone()))
+            .store(make_record(
+                agent,
+                "a fact",
+                MemoryCategory::Fact,
+                emb.clone(),
+            ))
             .await
             .unwrap();
         store
@@ -405,7 +425,12 @@ mod tests {
         let emb = vec![1.0, 0.0, 0.0];
 
         store
-            .store(make_record(agent, "test", MemoryCategory::Fact, emb.clone()))
+            .store(make_record(
+                agent,
+                "test",
+                MemoryCategory::Fact,
+                emb.clone(),
+            ))
             .await
             .unwrap();
 

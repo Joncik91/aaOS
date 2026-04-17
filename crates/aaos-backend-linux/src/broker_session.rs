@@ -189,9 +189,7 @@ impl SessionMap {
 /// Helper: on Linux, extract `SO_PEERCRED` from a
 /// [`tokio::net::UnixStream`]. On non-Linux, always returns an error.
 #[cfg(target_os = "linux")]
-pub fn peer_creds_from_stream(
-    stream: &tokio::net::UnixStream,
-) -> std::io::Result<PeerCreds> {
+pub fn peer_creds_from_stream(stream: &tokio::net::UnixStream) -> std::io::Result<PeerCreds> {
     let creds = stream.peer_cred()?;
     Ok(PeerCreds {
         pid: creds.pid().unwrap_or(0) as u32,
@@ -201,9 +199,7 @@ pub fn peer_creds_from_stream(
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn peer_creds_from_stream(
-    _stream: &tokio::net::UnixStream,
-) -> std::io::Result<PeerCreds> {
+pub fn peer_creds_from_stream(_stream: &tokio::net::UnixStream) -> std::io::Result<PeerCreds> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "SO_PEERCRED only supported on Linux",
@@ -312,14 +308,8 @@ mod tests {
     #[tokio::test]
     async fn sandboxed_ready_fires_once() {
         let id = AgentId::new();
-        let (session, rx) = BrokerSession::new(
-            id,
-            1,
-            1,
-            1,
-            sample_policy(),
-            PathBuf::from("/tmp/a.sock"),
-        );
+        let (session, rx) =
+            BrokerSession::new(id, 1, 1, 1, sample_policy(), PathBuf::from("/tmp/a.sock"));
         session.fire_sandboxed_ready().await;
         assert!(rx.await.is_ok());
         // Second fire is a no-op (logs warning, doesn't panic).

@@ -8,10 +8,7 @@ use crate::client::LlmClient;
 use crate::error::{LlmError, LlmResult};
 use crate::types::{CompletionRequest, CompletionResponse, ContentBlock, LlmStopReason, Message};
 
-const DEEPSEEK_SUPPORTED_MODELS: &[&str] = &[
-    "deepseek-reasoner",
-    "deepseek-chat",
-];
+const DEEPSEEK_SUPPORTED_MODELS: &[&str] = &["deepseek-reasoner", "deepseek-chat"];
 
 /// Configuration for an OpenAI-compatible API client (e.g. DeepSeek).
 #[derive(Debug, Clone)]
@@ -138,8 +135,7 @@ impl OpenAiCompatibleClient {
                     // OpenAI tool result format: role "tool" with tool_call_id
                     let content_str = match content {
                         Value::String(s) => s.clone(),
-                        other => serde_json::to_string(other)
-                            .unwrap_or_else(|_| other.to_string()),
+                        other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
                     };
                     messages.push(json!({
                         "role": "tool",
@@ -249,8 +245,8 @@ impl OpenAiCompatibleClient {
                     .pointer("/function/arguments")
                     .and_then(|v| v.as_str())
                     .unwrap_or("{}");
-                let input: Value =
-                    serde_json::from_str(arguments_str).unwrap_or(Value::Object(Default::default()));
+                let input: Value = serde_json::from_str(arguments_str)
+                    .unwrap_or(Value::Object(Default::default()));
 
                 blocks.push(ContentBlock::ToolUse { id, name, input });
             }
@@ -278,10 +274,7 @@ impl OpenAiCompatibleClient {
         // OpenAI usage: prompt_tokens / completion_tokens
         let usage = if let Some(u) = body.get("usage") {
             TokenUsage {
-                input_tokens: u
-                    .get("prompt_tokens")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
+                input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
                 output_tokens: u
                     .get("completion_tokens")
                     .and_then(|v| v.as_u64())
@@ -371,7 +364,9 @@ mod tests {
             agent_id: AgentId::new(),
             model: "deepseek-chat".into(),
             system: "You are helpful.".into(),
-            messages: vec![Message::User { content: "Hello".into() }],
+            messages: vec![Message::User {
+                content: "Hello".into(),
+            }],
             tools: vec![],
             max_tokens: 1024,
         };
@@ -425,7 +420,9 @@ mod tests {
             system: "".into(),
             messages: vec![Message::Assistant {
                 content: vec![
-                    ContentBlock::Text { text: "Let me fetch that.".into() },
+                    ContentBlock::Text {
+                        text: "Let me fetch that.".into(),
+                    },
                     ContentBlock::ToolUse {
                         id: "call_2".into(),
                         name: "web_fetch".into(),
@@ -453,7 +450,9 @@ mod tests {
             agent_id: AgentId::new(),
             model: "deepseek-chat".into(),
             system: "".into(),
-            messages: vec![Message::User { content: "hi".into() }],
+            messages: vec![Message::User {
+                content: "hi".into(),
+            }],
             tools: vec![ToolDefinition {
                 name: "echo".into(),
                 description: "Echoes input".into(),
@@ -512,7 +511,9 @@ mod tests {
         let resp = c.parse_response(200, &body).unwrap();
         assert_eq!(resp.stop_reason, LlmStopReason::ToolUse);
         assert_eq!(resp.content.len(), 1);
-        assert!(matches!(&resp.content[0], ContentBlock::ToolUse { name, .. } if name == "web_fetch"));
+        assert!(
+            matches!(&resp.content[0], ContentBlock::ToolUse { name, .. } if name == "web_fetch")
+        );
     }
 
     #[test]

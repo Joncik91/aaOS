@@ -45,19 +45,14 @@ pub async fn run(agent_id: String, json_flag: bool, socket: PathBuf) -> anyhow::
         }
     };
 
-    let result = match client::call_sync(
-        &socket,
-        "agent.status",
-        json!({ "agent_id": full_id }),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprint!("{}", format_error(&e));
-            std::process::exit(exit_code(&e));
-        }
-    };
+    let result =
+        match client::call_sync(&socket, "agent.status", json!({ "agent_id": full_id })).await {
+            Ok(r) => r,
+            Err(e) => {
+                eprint!("{}", format_error(&e));
+                std::process::exit(exit_code(&e));
+            }
+        };
 
     if json_flag {
         println!(
@@ -71,7 +66,11 @@ pub async fn run(agent_id: String, json_flag: bool, socket: PathBuf) -> anyhow::
     println!("{:<15}{}", "Name:", field_str(&result, "name"));
     println!("{:<15}{}", "Model:", field_str(&result, "model"));
     println!("{:<15}{}", "State:", field_str(&result, "state"));
-    println!("{:<15}{}", "Parent:", format_parent(result.get("parent_agent")));
+    println!(
+        "{:<15}{}",
+        "Parent:",
+        format_parent(result.get("parent_agent"))
+    );
     println!(
         "{:<15}{}",
         "Capabilities:",

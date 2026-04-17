@@ -67,7 +67,10 @@ memory:
         .await;
     assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
     let result = resp.result.unwrap();
-    eprintln!("   Delivered: trace_id={}, status={}", result["trace_id"], result["status"]);
+    eprintln!(
+        "   Delivered: trace_id={}, status={}",
+        result["trace_id"], result["status"]
+    );
 
     // Wait for LLM processing
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -82,7 +85,10 @@ memory:
         .await;
     assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
     let result = resp.result.unwrap();
-    eprintln!("   Delivered: trace_id={}, status={}", result["trace_id"], result["status"]);
+    eprintln!(
+        "   Delivered: trace_id={}, status={}",
+        result["trace_id"], result["status"]
+    );
 
     tokio::time::sleep(Duration::from_secs(5)).await;
 
@@ -96,15 +102,17 @@ memory:
         .await;
     assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
     let result = resp.result.unwrap();
-    eprintln!("   Delivered: trace_id={}, status={}", result["trace_id"], result["status"]);
+    eprintln!(
+        "   Delivered: trace_id={}, status={}",
+        result["trace_id"], result["status"]
+    );
 
     // Wait for the 3rd message to be processed
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     // 5. Check session store has history
     eprintln!("\n5. Checking session store for conversation history...");
-    let agent_id_parsed: aaos_core::AgentId =
-        serde_json::from_value(json!(agent_id)).unwrap();
+    let agent_id_parsed: aaos_core::AgentId = serde_json::from_value(json!(agent_id)).unwrap();
     match server.session_store.load(&agent_id_parsed) {
         Ok(messages) => {
             eprintln!("   Session has {} messages in history", messages.len());
@@ -134,7 +142,11 @@ system_prompt: "Reply with exactly one word."
             json!({"manifest": ephemeral_manifest, "message": "Say hello"}),
         ))
         .await;
-    assert!(resp.error.is_none(), "ephemeral run failed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "ephemeral run failed: {:?}",
+        resp.error
+    );
     let result = resp.result.unwrap();
     eprintln!("   Ephemeral response: {}", result["response"]);
     assert!(!result["response"].as_str().unwrap().is_empty());
@@ -142,15 +154,15 @@ system_prompt: "Reply with exactly one word."
     // 7. Stop persistent agent
     eprintln!("\n7. Stopping persistent agent...");
     let resp = server
-        .handle_request(&make_request(
-            "agent.stop",
-            json!({"agent_id": agent_id}),
-        ))
+        .handle_request(&make_request("agent.stop", json!({"agent_id": agent_id})))
         .await;
     assert!(resp.error.is_none(), "stop failed: {:?}", resp.error);
 
-    let final_count = server.session_store.load(&agent_id_parsed)
-        .map(|m| m.len()).unwrap_or(0);
+    let final_count = server
+        .session_store
+        .load(&agent_id_parsed)
+        .map(|m| m.len())
+        .unwrap_or(0);
 
     eprintln!("\n=== Phase B Smoke Test PASSED ===");
     eprintln!("  - Persistent agent spawned and processed 3 messages");

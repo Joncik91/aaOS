@@ -25,11 +25,7 @@ pub fn is_operator_visible(event: &AuditEvent) -> bool {
     }
 }
 
-pub fn format_operator_line(
-    event: &AuditEvent,
-    agent_name: &str,
-    colorize: bool,
-) -> String {
+pub fn format_operator_line(event: &AuditEvent, agent_name: &str, colorize: bool) -> String {
     let ts = event.timestamp.format("%H:%M:%S");
     let name_col_text = format!("{:<12}", agent_name);
     let name_col = if colorize {
@@ -42,7 +38,9 @@ pub fn format_operator_line(
         AuditEventKind::AgentSpawned { manifest_name } => {
             format!("spawned {}", manifest_name)
         }
-        AuditEventKind::ToolInvoked { tool, args_preview, .. } => {
+        AuditEventKind::ToolInvoked {
+            tool, args_preview, ..
+        } => {
             let tool_col = if colorize {
                 format!("\x1b[36m{}\x1b[0m", tool)
             } else {
@@ -53,7 +51,11 @@ pub fn format_operator_line(
                 _ => format!("tool: {}", tool_col),
             }
         }
-        AuditEventKind::ToolResult { tool, success, result_preview } => {
+        AuditEventKind::ToolResult {
+            tool,
+            success,
+            result_preview,
+        } => {
             let base = if *success {
                 format!("tool ok: {}", tool)
             } else {
@@ -136,28 +138,34 @@ mod tests {
 
     #[test]
     fn visible_agent_execution_completed() {
-        assert!(is_operator_visible(&evt(AuditEventKind::AgentExecutionCompleted {
-            stop_reason: "done".into(),
-            total_iterations: 1,
-        })));
+        assert!(is_operator_visible(&evt(
+            AuditEventKind::AgentExecutionCompleted {
+                stop_reason: "done".into(),
+                total_iterations: 1,
+            }
+        )));
     }
 
     #[test]
     fn visible_agent_loop_stopped() {
-        assert!(is_operator_visible(&evt(AuditEventKind::AgentLoopStopped {
-            reason: "shutdown".into(),
-            messages_processed: 5,
-        })));
+        assert!(is_operator_visible(&evt(
+            AuditEventKind::AgentLoopStopped {
+                reason: "shutdown".into(),
+                messages_processed: 5,
+            }
+        )));
     }
 
     #[test]
     fn visible_capability_denied() {
-        assert!(is_operator_visible(&evt(AuditEventKind::CapabilityDenied {
-            capability: Capability::FileRead {
-                path_glob: "/etc/*".into(),
-            },
-            reason: "not in allowed paths".into(),
-        })));
+        assert!(is_operator_visible(&evt(
+            AuditEventKind::CapabilityDenied {
+                capability: Capability::FileRead {
+                    path_glob: "/etc/*".into(),
+                },
+                reason: "not in allowed paths".into(),
+            }
+        )));
     }
 
     #[test]
@@ -270,16 +278,26 @@ mod tests {
     #[test]
     fn colorize_false_emits_no_escapes_for_any_visible_event() {
         let events = vec![
-            evt(AuditEventKind::AgentSpawned { manifest_name: "f".into() }),
-            evt(AuditEventKind::ToolInvoked { tool: "t".into(), input_hash: "h".into(), args_preview: None }),
+            evt(AuditEventKind::AgentSpawned {
+                manifest_name: "f".into(),
+            }),
+            evt(AuditEventKind::ToolInvoked {
+                tool: "t".into(),
+                input_hash: "h".into(),
+                args_preview: None,
+            }),
             evt(AuditEventKind::AgentExecutionCompleted {
-                stop_reason: "d".into(), total_iterations: 1,
+                stop_reason: "d".into(),
+                total_iterations: 1,
             }),
             evt(AuditEventKind::AgentLoopStopped {
-                reason: "error".into(), messages_processed: 1,
+                reason: "error".into(),
+                messages_processed: 1,
             }),
             evt(AuditEventKind::CapabilityDenied {
-                capability: Capability::FileRead { path_glob: "/".into() },
+                capability: Capability::FileRead {
+                    path_glob: "/".into(),
+                },
                 reason: "r".into(),
             }),
         ];
@@ -333,7 +351,9 @@ mod tests {
 
     #[test]
     fn format_line_includes_timestamp_in_hh_mm_ss() {
-        let e = evt(AuditEventKind::AgentSpawned { manifest_name: "f".into() });
+        let e = evt(AuditEventKind::AgentSpawned {
+            manifest_name: "f".into(),
+        });
         let s = format_operator_line(&e, "x", false);
         // Timestamp is at the start: "[HH:MM:SS]".
         assert!(s.starts_with('['), "{}", s);

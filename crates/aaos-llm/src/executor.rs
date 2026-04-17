@@ -315,7 +315,14 @@ impl AgentExecutor {
             },
         };
 
-        self.run_with_history_and_prompt(agent_id, manifest, initial_message, prior_messages, &system).await
+        self.run_with_history_and_prompt(
+            agent_id,
+            manifest,
+            initial_message,
+            prior_messages,
+            &system,
+        )
+        .await
     }
 
     /// Run an agent with prior conversation history and an overridden system prompt.
@@ -895,9 +902,13 @@ capabilities:
         let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
 
         let prior = vec![
-            Message::User { content: "My name is Alice.".into() },
+            Message::User {
+                content: "My name is Alice.".into(),
+            },
             Message::Assistant {
-                content: vec![ContentBlock::Text { text: "Hello Alice!".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "Hello Alice!".into(),
+                }],
             },
         ];
 
@@ -924,12 +935,20 @@ capabilities:
                     input: serde_json::json!({"msg": "test"}),
                 }],
                 stop_reason: LlmStopReason::ToolUse,
-                usage: TokenUsage { input_tokens: 10, output_tokens: 5 },
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                },
             }),
             Ok(CompletionResponse {
-                content: vec![ContentBlock::Text { text: "Done".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "Done".into(),
+                }],
                 stop_reason: LlmStopReason::EndTurn,
-                usage: TokenUsage { input_tokens: 15, output_tokens: 3 },
+                usage: TokenUsage {
+                    input_tokens: 15,
+                    output_tokens: 3,
+                },
             }),
         ]));
         let services = Arc::new(MockAgentServices::new(
@@ -951,7 +970,10 @@ capabilities:
         let llm = Arc::new(MockLlmClient::new(vec![Ok(CompletionResponse {
             content: vec![ContentBlock::Text { text: "Hi!".into() }],
             stop_reason: LlmStopReason::EndTurn,
-            usage: TokenUsage { input_tokens: 10, output_tokens: 5 },
+            usage: TokenUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+            },
         })]));
         let services = Arc::new(MockAgentServices::new(vec![], vec![]));
         let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());

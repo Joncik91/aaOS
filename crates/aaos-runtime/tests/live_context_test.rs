@@ -90,9 +90,7 @@ async fn live_context_summarization_preserves_facts() {
                     messages: summ.archived_messages,
                     archived_at: chrono::Utc::now(),
                 };
-                session_store
-                    .archive_segment(&agent_id, &segment)
-                    .unwrap();
+                session_store.archive_segment(&agent_id, &segment).unwrap();
                 archive_count += 1;
 
                 // Then update history
@@ -109,10 +107,7 @@ async fn live_context_summarization_preserves_facts() {
 
     // Now prepare final context — the agent should know facts from the summary
     let final_prepared = cm
-        .prepare_context(
-            &history,
-            "You are a helpful assistant with perfect memory.",
-        )
+        .prepare_context(&history, "You are a helpful assistant with perfect memory.")
         .await
         .unwrap();
 

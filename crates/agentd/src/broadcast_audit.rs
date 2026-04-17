@@ -77,7 +77,10 @@ mod tests {
         let mut rx = log.subscribe();
         log.record(make_spawned("b"));
 
-        let received = rx.recv().await.expect("subscriber receives post-subscribe event");
+        let received = rx
+            .recv()
+            .await
+            .expect("subscriber receives post-subscribe event");
         match received.event {
             AuditEventKind::AgentSpawned { manifest_name } => {
                 assert_eq!(manifest_name, "b");

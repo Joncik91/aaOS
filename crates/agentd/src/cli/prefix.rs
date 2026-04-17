@@ -59,10 +59,7 @@ mod tests {
 
     #[test]
     fn ambiguous_prefix_lists_candidates() {
-        let two_similar = vec![
-            "a3b7c9d2-1111".to_string(),
-            "a3b7e5f4-2222".to_string(),
-        ];
+        let two_similar = vec!["a3b7c9d2-1111".to_string(), "a3b7e5f4-2222".to_string()];
         let err = resolve_prefix("a3b7", &two_similar).unwrap_err();
         match err {
             PrefixError::Ambiguous(v) => {

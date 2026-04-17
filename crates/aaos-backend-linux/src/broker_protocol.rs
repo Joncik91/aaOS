@@ -36,9 +36,7 @@ pub enum Request {
     /// First message after connect. Carries the worker's own pid so
     /// the broker can sanity-check against the peer creds (the
     /// authoritative source; this field is advisory / diagnostic).
-    Ready {
-        pid: u32,
-    },
+    Ready { pid: u32 },
     /// Sent after `PR_SET_NO_NEW_PRIVS` + `landlock_restrict_self` +
     /// seccomp have returned successfully. Confinement is in force
     /// before the broker observes this message.
@@ -46,9 +44,7 @@ pub enum Request {
     /// Debug / integration-test helper: instruct the worker to attempt
     /// a specific operation (e.g. try `execve`) so tests can observe
     /// the sandbox's response. Not part of production traffic.
-    Poke {
-        op: PokeOp,
-    },
+    Poke { op: PokeOp },
 }
 
 /// Integration-test-only operations the worker can be asked to try
@@ -61,9 +57,7 @@ pub enum PokeOp {
     /// with `SIGSYS`.
     TryExecve,
     /// Attempt to open an arbitrary host path. Landlock should deny.
-    TryReadHostPath {
-        path: PathBuf,
-    },
+    TryReadHostPath { path: PathBuf },
 }
 
 /// A full JSON-RPC request as sent on the wire.

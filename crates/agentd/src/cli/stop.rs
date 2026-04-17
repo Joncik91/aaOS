@@ -44,13 +44,7 @@ pub async fn run(agent_id: String, socket: PathBuf) -> anyhow::Result<()> {
         }
     };
 
-    if let Err(e) = client::call_sync(
-        &socket,
-        "agent.stop",
-        json!({ "agent_id": full_id }),
-    )
-    .await
-    {
+    if let Err(e) = client::call_sync(&socket, "agent.stop", json!({ "agent_id": full_id })).await {
         eprint!("{}", format_error(&e));
         std::process::exit(exit_code(&e));
     }

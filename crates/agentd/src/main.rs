@@ -46,7 +46,8 @@ async fn main() -> anyhow::Result<()> {
                 // /etc/default/aaos is a separate concern addressed by the
                 // 0600 root:root mode on that file.
                 scrub_api_key_env();
-                let raw: Arc<dyn aaos_llm::LlmClient> = Arc::new(OpenAiCompatibleClient::new(config));
+                let raw: Arc<dyn aaos_llm::LlmClient> =
+                    Arc::new(OpenAiCompatibleClient::new(config));
                 let sched_config = InferenceSchedulingConfig::from_env();
                 let client: Arc<dyn aaos_llm::LlmClient> =
                     Arc::new(ScheduledLlmClient::new(raw, sched_config));
@@ -66,19 +67,31 @@ async fn main() -> anyhow::Result<()> {
 
             server.listen(&socket).await?;
         }
-        Command::Submit { goal, verbose, socket } => {
+        Command::Submit {
+            goal,
+            verbose,
+            socket,
+        } => {
             return agentd::cli::submit::run(goal, verbose, socket).await;
         }
         Command::List { json, socket } => {
             return agentd::cli::list::run(json, socket).await;
         }
-        Command::Status { agent_id, json, socket } => {
+        Command::Status {
+            agent_id,
+            json,
+            socket,
+        } => {
             return agentd::cli::status::run(agent_id, json, socket).await;
         }
         Command::Stop { agent_id, socket } => {
             return agentd::cli::stop::run(agent_id, socket).await;
         }
-        Command::Logs { agent_id, verbose, socket } => {
+        Command::Logs {
+            agent_id,
+            verbose,
+            socket,
+        } => {
             return agentd::cli::logs::run(agent_id, verbose, socket).await;
         }
         Command::Roles { subcommand } => {
@@ -163,7 +176,9 @@ fn scrub_one_env_var(key: &str) {
 #[cfg(not(target_os = "linux"))]
 fn scrub_one_env_var(key: &str) {
     // Non-Linux fallback: libc env scrub is Linux-specific; just unset.
-    unsafe { std::env::remove_var(key); }
+    unsafe {
+        std::env::remove_var(key);
+    }
 }
 
 /// Wipe persistent Bootstrap memory and the stable-ID file. Used when
@@ -172,7 +187,12 @@ fn reset_persistent_memory() {
     let mem_db = std::env::var("AAOS_MEMORY_DB")
         .unwrap_or_else(|_| "/var/lib/aaos/memory/memories.db".to_string());
     let id_path = "/var/lib/aaos/bootstrap_id";
-    for p in [&mem_db, &format!("{mem_db}-wal"), &format!("{mem_db}-shm"), &id_path.to_string()] {
+    for p in [
+        &mem_db,
+        &format!("{mem_db}-wal"),
+        &format!("{mem_db}-shm"),
+        &id_path.to_string(),
+    ] {
         match std::fs::remove_file(p) {
             Ok(()) => tracing::warn!(path = %p, "AAOS_RESET_MEMORY: deleted"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -315,7 +335,10 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
 
     if let Some(err) = &run_resp.error {
         tracing::error!(error = %err.message, "failed to send initial goal");
-        return Err(anyhow::anyhow!("failed to send initial goal: {}", err.message));
+        return Err(anyhow::anyhow!(
+            "failed to send initial goal: {}",
+            err.message
+        ));
     }
     tracing::info!("initial goal delivered to persistent bootstrap agent");
 

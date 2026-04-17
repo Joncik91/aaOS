@@ -5,7 +5,10 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::agent_id::AgentId;
-use crate::capability::{Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken, Constraints};
+use crate::capability::{
+    Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken,
+    Constraints,
+};
 
 /// Runtime-owned table of issued capability tokens. Agents and tools hold
 /// `CapabilityHandle` values; the underlying `CapabilityToken` and its

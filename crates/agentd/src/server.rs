@@ -91,18 +91,17 @@ impl Server {
         let router_b = router.clone();
         let approval_b = approval_queue.clone();
 
-        let services_builder: Arc<
-            dyn Fn() -> Arc<dyn AgentServices> + Send + Sync,
-        > = Arc::new(move || {
-            Arc::new(InProcessAgentServices::new(
-                registry_b.clone(),
-                tool_invocation_b.clone(),
-                tool_registry_b.clone(),
-                audit_log_b.clone(),
-                router_b.clone(),
-                approval_b.clone() as Arc<dyn ApprovalService>,
-            )) as Arc<dyn AgentServices>
-        });
+        let services_builder: Arc<dyn Fn() -> Arc<dyn AgentServices> + Send + Sync> =
+            Arc::new(move || {
+                Arc::new(InProcessAgentServices::new(
+                    registry_b.clone(),
+                    tool_invocation_b.clone(),
+                    tool_registry_b.clone(),
+                    audit_log_b.clone(),
+                    router_b.clone(),
+                    approval_b.clone() as Arc<dyn ApprovalService>,
+                )) as Arc<dyn AgentServices>
+            });
 
         let in_process: Arc<dyn AgentBackend> = Arc::new(InProcessBackend::new(
             registry,
@@ -136,9 +135,7 @@ impl Server {
     ///   which we respect here; the env-var selector is operator
     ///   intent, not policy.
     #[allow(unused_variables, unused_mut)]
-    fn maybe_swap_for_namespaced(
-        in_process: Arc<dyn AgentBackend>,
-    ) -> Arc<dyn AgentBackend> {
+    fn maybe_swap_for_namespaced(in_process: Arc<dyn AgentBackend>) -> Arc<dyn AgentBackend> {
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
         {
             let requested = std::env::var("AAOS_DEFAULT_BACKEND")
@@ -223,44 +220,33 @@ impl Server {
     /// built Server in an Arc. No-op if the role catalog didn't load
     /// (computed-orchestration disabled).
     pub fn install_plan_executor_runner(self: &Arc<Self>) {
-        let (Some(catalog), Some(planner)) = (
-            self.role_catalog.clone(),
-            self.planner.clone(),
-        ) else {
+        let (Some(catalog), Some(planner)) = (self.role_catalog.clone(), self.planner.clone())
+        else {
             return;
         };
         let server_weak = self.clone();
-        let runner: SubtaskRunner = Arc::new(
-            move |subtask_id, manifest_yaml, message, overrides| {
+        let runner: SubtaskRunner =
+            Arc::new(move |subtask_id, manifest_yaml, message, overrides| {
                 let s = server_weak.clone();
                 Box::pin(async move {
                     s.run_subtask_inline(&subtask_id, &manifest_yaml, &message, overrides)
                         .await
                 })
-            },
-        );
+            });
 
         // Build the scaffold runner — deterministic runtime-side execution
         // for roles with `scaffold: {kind: ...}`. Handles "fetcher" today;
         // other kinds can be added without changing PlanExecutor.
         let server_weak2 = self.clone();
-        let scaffold_runner: aaos_runtime::plan::ScaffoldRunner = Arc::new(
-            move |subtask_id, kind, params| {
+        let scaffold_runner: aaos_runtime::plan::ScaffoldRunner =
+            Arc::new(move |subtask_id, kind, params| {
                 let s = server_weak2.clone();
-                Box::pin(async move {
-                    s.run_scaffold_inline(&subtask_id, &kind, params).await
-                })
-            },
-        );
+                Box::pin(async move { s.run_scaffold_inline(&subtask_id, &kind, params).await })
+            });
 
         let audit: Arc<dyn aaos_core::AuditLog> = self.broadcast_audit.clone();
-        let mut executor = PlanExecutor::new(
-            catalog,
-            planner,
-            runner,
-            audit,
-            self.run_root_base.clone(),
-        );
+        let mut executor =
+            PlanExecutor::new(catalog, planner, runner, audit, self.run_root_base.clone());
         executor.set_scaffold_runner(scaffold_runner);
         // Best-effort: install once. If install_plan_executor_runner is
         // called twice on the same Arc (shouldn't happen today), the
@@ -325,14 +311,16 @@ impl Server {
 
         // Fetch the agent's capability handles — the tool_invocation
         // path enforces capabilities via these.
-        let token_handles = self.registry.get_token_handles(agent_id).map_err(|e| {
-            aaos_core::CoreError::Ipc(format!("scaffold: get token handles: {e}"))
-        })?;
+        let token_handles = self
+            .registry
+            .get_token_handles(agent_id)
+            .map_err(|e| aaos_core::CoreError::Ipc(format!("scaffold: get token handles: {e}")))?;
 
         // Dispatch on kind.
         let response = match kind {
             "fetcher" => {
-                self.scaffold_fetcher(agent_id, &token_handles, &params).await?
+                self.scaffold_fetcher(agent_id, &token_handles, &params)
+                    .await?
             }
             other => {
                 return Err(aaos_core::CoreError::Ipc(format!(
@@ -360,12 +348,9 @@ impl Server {
         token_handles: &[aaos_core::CapabilityHandle],
         params: &serde_json::Value,
     ) -> Result<String, aaos_core::CoreError> {
-        let url = params
-            .get("url")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                aaos_core::CoreError::Ipc("scaffold fetcher: missing 'url' param".into())
-            })?;
+        let url = params.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+            aaos_core::CoreError::Ipc("scaffold fetcher: missing 'url' param".into())
+        })?;
         let workspace = params
             .get("workspace")
             .and_then(|v| v.as_str())
@@ -568,9 +553,8 @@ impl Server {
         // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
         let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
             Arc::new(aaos_memory::MockEmbeddingSource::new(768));
-        let memory_store: Arc<dyn aaos_memory::MemoryStore> = create_memory_store(
-            embedding_source.model_name(),
-        );
+        let memory_store: Arc<dyn aaos_memory::MemoryStore> =
+            create_memory_store(embedding_source.model_name());
 
         // Register memory tools
         tool_registry.register(Arc::new(aaos_tools::MemoryStoreTool::new(
@@ -662,9 +646,12 @@ impl Server {
         server.tool_registry.register(spawn_tool.clone());
         // Register SpawnAgentsTool (batch, parallel) — delegates per-child
         // to SpawnAgentTool so cleanup (scopeguard) stays in one place.
-        server.tool_registry.register(Arc::new(
-            crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, server.registry.clone()),
-        ));
+        server
+            .tool_registry
+            .register(Arc::new(crate::spawn_agents_tool::SpawnAgentsTool::new(
+                spawn_tool,
+                server.registry.clone(),
+            )));
         server.llm_client = Some(llm_client.clone());
         let (catalog, planner) = Self::load_role_catalog(&llm_client);
         server.role_catalog = catalog;
@@ -718,9 +705,8 @@ impl Server {
         // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
         let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
             Arc::new(aaos_memory::MockEmbeddingSource::new(768));
-        let memory_store: Arc<dyn aaos_memory::MemoryStore> = create_memory_store(
-            embedding_source.model_name(),
-        );
+        let memory_store: Arc<dyn aaos_memory::MemoryStore> =
+            create_memory_store(embedding_source.model_name());
 
         // Register memory tools
         tool_registry.register(Arc::new(aaos_tools::MemoryStoreTool::new(
@@ -780,9 +766,10 @@ impl Server {
         ));
         tool_registry.register(spawn_tool.clone());
         // Register SpawnAgentsTool (batch, parallel).
-        tool_registry.register(Arc::new(
-            crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, registry.clone()),
-        ));
+        tool_registry.register(Arc::new(crate::spawn_agents_tool::SpawnAgentsTool::new(
+            spawn_tool,
+            registry.clone(),
+        )));
 
         let backend = Self::build_in_process_backend(
             registry.clone(),
@@ -897,9 +884,10 @@ impl Server {
         ));
         tool_registry.register(spawn_tool.clone());
         // Register SpawnAgentsTool (batch, parallel).
-        tool_registry.register(Arc::new(
-            crate::spawn_agents_tool::SpawnAgentsTool::new(spawn_tool, registry.clone()),
-        ));
+        tool_registry.register(Arc::new(crate::spawn_agents_tool::SpawnAgentsTool::new(
+            spawn_tool,
+            registry.clone(),
+        )));
 
         let backend = Self::build_in_process_backend(
             registry.clone(),
@@ -956,7 +944,10 @@ impl Server {
                 self.handle_agent_spawn(&request.params, request.id.clone())
                     .await
             }
-            "agent.stop" => self.handle_agent_stop(&request.params, request.id.clone()).await,
+            "agent.stop" => {
+                self.handle_agent_stop(&request.params, request.id.clone())
+                    .await
+            }
             "agent.list" => self.handle_agent_list(request.id.clone()),
             "agent.status" => self.handle_agent_status(&request.params, request.id.clone()),
             "tool.list" => self.handle_tool_list(request.id.clone()),
@@ -1022,13 +1013,10 @@ impl Server {
         if !catalog.is_empty() {
             let original_prompt = match &manifest.system_prompt {
                 aaos_core::PromptSource::Inline(s) => s.clone(),
-                aaos_core::PromptSource::File(p) => {
-                    std::fs::read_to_string(p).unwrap_or_default()
-                }
+                aaos_core::PromptSource::File(p) => std::fs::read_to_string(p).unwrap_or_default(),
             };
-            manifest.system_prompt = aaos_core::PromptSource::Inline(format!(
-                "{original_prompt}\n\n{catalog}"
-            ));
+            manifest.system_prompt =
+                aaos_core::PromptSource::Inline(format!("{original_prompt}\n\n{catalog}"));
         }
 
         let is_persistent = manifest.lifecycle == aaos_core::Lifecycle::Persistent;
@@ -1257,16 +1245,21 @@ impl Server {
 
         if manifest.lifecycle == aaos_core::Lifecycle::Persistent {
             let msg = aaos_ipc::McpMessage::new(
-                agent_id, agent_id, "agent.run",
+                agent_id,
+                agent_id,
+                "agent.run",
                 json!({"message": message}),
             );
             let trace_id = msg.metadata.trace_id;
 
             match self.router.route(msg).await {
-                Ok(()) => JsonRpcResponse::success(id, json!({
-                    "trace_id": trace_id.to_string(),
-                    "status": "delivered",
-                })),
+                Ok(()) => JsonRpcResponse::success(
+                    id,
+                    json!({
+                        "trace_id": trace_id.to_string(),
+                        "status": "delivered",
+                    }),
+                ),
                 Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
             }
         } else {
@@ -1307,7 +1300,9 @@ impl Server {
         let agent_id: aaos_core::AgentId = serde_json::from_value(json!(agent_id_str))
             .expect("agent_id_str just returned from successful spawn is a valid AgentId");
 
-        let manifest = self.registry.get_manifest(agent_id)
+        let manifest = self
+            .registry
+            .get_manifest(agent_id)
             .expect("agent just spawned successfully must have a manifest in the registry");
         let mut result = self.execute_agent(agent_id, &manifest, &message, id).await;
 
@@ -1432,12 +1427,8 @@ impl Server {
         writer: &mut W,
     ) {
         match request.method.as_str() {
-            "agent.submit_streaming" => {
-                self.handle_submit_streaming(&request.params, writer).await
-            }
-            "agent.logs_streaming" => {
-                self.handle_logs_streaming(&request.params, writer).await
-            }
+            "agent.submit_streaming" => self.handle_submit_streaming(&request.params, writer).await,
+            "agent.logs_streaming" => self.handle_logs_streaming(&request.params, writer).await,
             other => {
                 let err = json!({
                     "kind": "end",
@@ -1648,8 +1639,7 @@ impl Server {
                         continue;
                     }
 
-                    let frame =
-                        serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+                    let frame = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
                     let frame = json!({ "kind": "event", "event": frame });
                     if write_ndjson(writer, &frame).await.is_err() {
                         return;
@@ -1809,8 +1799,7 @@ impl Server {
                         continue;
                     }
 
-                    let frame =
-                        serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
+                    let frame = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
                     let frame = json!({ "kind": "event", "event": frame });
                     if write_ndjson(writer, &frame).await.is_err() {
                         return;
@@ -1916,17 +1905,9 @@ impl Server {
 
     /// Deliver a goal message to an already-running agent via the router.
     /// Mirrors the persistent-agent branch of `handle_agent_run`.
-    async fn route_goal_to(
-        &self,
-        target: aaos_core::AgentId,
-        goal: &str,
-    ) -> anyhow::Result<()> {
-        let msg = aaos_ipc::McpMessage::new(
-            target,
-            target,
-            "agent.run",
-            json!({ "message": goal }),
-        );
+    async fn route_goal_to(&self, target: aaos_core::AgentId, goal: &str) -> anyhow::Result<()> {
+        let msg =
+            aaos_ipc::McpMessage::new(target, target, "agent.run", json!({ "message": goal }));
         self.router
             .route(msg)
             .await
@@ -2295,10 +2276,7 @@ lifecycle: persistent
         // still wires a PlanExecutor; we need the load to fail so
         // plan_executor stays None.
         let absent_roles = tmp.path().join("no-such-roles-dir");
-        std::env::set_var(
-            "AAOS_ROLES_DIR",
-            absent_roles.to_string_lossy().to_string(),
-        );
+        std::env::set_var("AAOS_ROLES_DIR", absent_roles.to_string_lossy().to_string());
 
         // Use a hanging LLM client so the persistent bootstrap agent launches
         // but never actually completes execution on its own. That gives our
@@ -2343,10 +2321,7 @@ lifecycle: persistent
             let bid = {
                 let mut found = None;
                 for _ in 0..100 {
-                    if let Some(info) = registry
-                        .list()
-                        .into_iter()
-                        .find(|i| i.name == "bootstrap")
+                    if let Some(info) = registry.list().into_iter().find(|i| i.name == "bootstrap")
                     {
                         found = Some(info.id);
                         break;
@@ -2390,8 +2365,7 @@ lifecycle: persistent
         tokio::time::timeout(Duration::from_secs(5), async {
             while let Ok(Some(text)) = lines.next_line().await {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                    let is_end =
-                        v.get("kind").and_then(|k| k.as_str()) == Some("end");
+                    let is_end = v.get("kind").and_then(|k| k.as_str()) == Some("end");
                     frames.push(v);
                     if is_end {
                         break;
@@ -2424,7 +2398,10 @@ lifecycle: persistent
                 .and_then(|k| k.as_str())
                 == Some("usage_reported")
         });
-        assert!(!has_usage, "UsageReported should be aggregated, not forwarded");
+        assert!(
+            !has_usage,
+            "UsageReported should be aggregated, not forwarded"
+        );
 
         // ToolInvoked should be forwarded as an event frame.
         let has_tool = frames.iter().any(|f| {
@@ -2684,12 +2661,7 @@ model: claude-haiku-4-5-20251001
 system_prompt: "test subtask"
 "#;
         let result = server
-            .run_subtask_inline(
-                "t1",
-                yaml,
-                "hello",
-                SubtaskExecutorOverrides::default(),
-            )
+            .run_subtask_inline("t1", yaml, "hello", SubtaskExecutorOverrides::default())
             .await
             .expect("subtask should run to completion");
         assert_eq!(result.subtask_id, "t1");
@@ -2794,5 +2766,9 @@ fn create_memory_store(embedding_model: &str) -> Arc<dyn aaos_memory::MemoryStor
         }
     }
     tracing::info!("using in-memory memory store (non-persistent)");
-    Arc::new(aaos_memory::InMemoryMemoryStore::new(10_000, 768, embedding_model))
+    Arc::new(aaos_memory::InMemoryMemoryStore::new(
+        10_000,
+        768,
+        embedding_model,
+    ))
 }

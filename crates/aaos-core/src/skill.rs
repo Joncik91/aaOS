@@ -45,10 +45,7 @@ impl Skill {
         }
 
         let content = std::fs::read_to_string(&skill_md).map_err(|e| {
-            CoreError::InvalidManifest(format!(
-                "failed to read {}: {e}",
-                skill_md.display()
-            ))
+            CoreError::InvalidManifest(format!("failed to read {}: {e}", skill_md.display()))
         })?;
 
         let (meta, body) = parse_skill_md(&content)?;
@@ -62,10 +59,7 @@ impl Skill {
 
     /// Generate the catalog entry (~50-100 tokens) for system prompt injection.
     pub fn catalog_entry(&self) -> String {
-        format!(
-            "- **{}**: {}",
-            self.meta.name, self.meta.description
-        )
+        format!("- **{}**: {}", self.meta.name, self.meta.description)
     }
 
     /// Generate the full activation prompt for injection into agent system prompt.
@@ -98,10 +92,7 @@ impl Skill {
     /// Format: "Bash(git:*) Bash(jq:*) Read" → vec of tool permission strings.
     pub fn allowed_tool_list(&self) -> Vec<String> {
         match &self.meta.allowed_tools {
-            Some(tools) => tools
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect(),
+            Some(tools) => tools.split_whitespace().map(|s| s.to_string()).collect(),
             None => Vec::new(),
         }
     }
@@ -163,9 +154,8 @@ fn parse_skill_md(content: &str) -> Result<(SkillMetadata, String)> {
     let yaml_str = &after_first[..closing];
     let body = after_first[closing + 4..].trim().to_string();
 
-    let meta: SkillMetadata = serde_yaml::from_str(yaml_str).map_err(|e| {
-        CoreError::InvalidManifest(format!("invalid SKILL.md frontmatter: {e}"))
-    })?;
+    let meta: SkillMetadata = serde_yaml::from_str(yaml_str)
+        .map_err(|e| CoreError::InvalidManifest(format!("invalid SKILL.md frontmatter: {e}")))?;
 
     if meta.name.is_empty() {
         return Err(CoreError::InvalidManifest(
@@ -265,11 +255,19 @@ Step 1: Use pdfplumber.
         // Create two skill directories
         let s1 = dir.path().join("skill-a");
         fs::create_dir(&s1).unwrap();
-        fs::write(s1.join("SKILL.md"), "---\nname: skill-a\ndescription: A.\n---\nBody A").unwrap();
+        fs::write(
+            s1.join("SKILL.md"),
+            "---\nname: skill-a\ndescription: A.\n---\nBody A",
+        )
+        .unwrap();
 
         let s2 = dir.path().join("skill-b");
         fs::create_dir(&s2).unwrap();
-        fs::write(s2.join("SKILL.md"), "---\nname: skill-b\ndescription: B.\n---\nBody B").unwrap();
+        fs::write(
+            s2.join("SKILL.md"),
+            "---\nname: skill-b\ndescription: B.\n---\nBody B",
+        )
+        .unwrap();
 
         // Non-skill directory (no SKILL.md)
         let s3 = dir.path().join("not-a-skill");
@@ -297,7 +295,8 @@ Step 1: Use pdfplumber.
 
     #[test]
     fn allowed_tools_parsing() {
-        let content = "---\nname: t\ndescription: d\nallowed-tools: Bash(git:*) Bash(jq:*) Read\n---\nbody";
+        let content =
+            "---\nname: t\ndescription: d\nallowed-tools: Bash(git:*) Bash(jq:*) Read\n---\nbody";
         let (meta, _) = parse_skill_md(content).unwrap();
         let skill = Skill {
             meta,
@@ -313,7 +312,11 @@ Step 1: Use pdfplumber.
         let dir = tempdir().unwrap();
         let skill_dir = dir.path().join("my-skill");
         fs::create_dir(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "---\nname: my-skill\ndescription: d.\n---\nbody").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: d.\n---\nbody",
+        )
+        .unwrap();
 
         let scripts = skill_dir.join("scripts");
         fs::create_dir(&scripts).unwrap();

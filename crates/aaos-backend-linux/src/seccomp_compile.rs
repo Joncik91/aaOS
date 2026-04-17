@@ -46,25 +46,39 @@ mod linux_impl {
         let mut v: Vec<i64> = Vec::new();
         // Runtime
         v.extend([
-            libc::SYS_futex, libc::SYS_mmap, libc::SYS_munmap,
-            libc::SYS_mprotect, libc::SYS_brk,
-            libc::SYS_rt_sigreturn, libc::SYS_rt_sigaction,
+            libc::SYS_futex,
+            libc::SYS_mmap,
+            libc::SYS_munmap,
+            libc::SYS_mprotect,
+            libc::SYS_brk,
+            libc::SYS_rt_sigreturn,
+            libc::SYS_rt_sigaction,
             libc::SYS_rt_sigprocmask,
-            libc::SYS_exit, libc::SYS_exit_group,
-            libc::SYS_clock_gettime, libc::SYS_clock_nanosleep,
-            libc::SYS_gettid, libc::SYS_getpid, libc::SYS_tgkill,
-            libc::SYS_sched_yield, libc::SYS_restart_syscall,
-            libc::SYS_nanosleep, libc::SYS_prctl,
+            libc::SYS_exit,
+            libc::SYS_exit_group,
+            libc::SYS_clock_gettime,
+            libc::SYS_clock_nanosleep,
+            libc::SYS_gettid,
+            libc::SYS_getpid,
+            libc::SYS_tgkill,
+            libc::SYS_sched_yield,
+            libc::SYS_restart_syscall,
+            libc::SYS_nanosleep,
+            libc::SYS_prctl,
             // seccomp() must be allowed by the allowlist filter so the
             // subsequent kill-on-dangerous filter can be installed on top.
             // The kill filter itself denies future seccomp() invocations.
             libc::SYS_seccomp,
             libc::SYS_getrandom,
-            libc::SYS_getuid, libc::SYS_geteuid,
-            libc::SYS_getgid, libc::SYS_getegid,
+            libc::SYS_getuid,
+            libc::SYS_geteuid,
+            libc::SYS_getgid,
+            libc::SYS_getegid,
             libc::SYS_uname,
-            libc::SYS_set_robust_list, libc::SYS_set_tid_address,
-            libc::SYS_sigaltstack, libc::SYS_madvise,
+            libc::SYS_set_robust_list,
+            libc::SYS_set_tid_address,
+            libc::SYS_sigaltstack,
+            libc::SYS_madvise,
         ]);
         #[cfg(target_arch = "x86_64")]
         v.push(libc::SYS_arch_prctl);
@@ -74,52 +88,75 @@ mod linux_impl {
         }
         // Tokio / stdio
         v.extend([
-            libc::SYS_epoll_create1, libc::SYS_epoll_ctl,
-            libc::SYS_epoll_pwait, libc::SYS_eventfd2, libc::SYS_pipe2,
-            libc::SYS_read, libc::SYS_write, libc::SYS_close,
-            libc::SYS_dup3, libc::SYS_fcntl, libc::SYS_ioctl,
-            libc::SYS_readv, libc::SYS_writev,
-            libc::SYS_lseek, libc::SYS_ppoll,
-            libc::SYS_pread64, libc::SYS_pwrite64,
-            libc::SYS_openat, libc::SYS_statx, libc::SYS_newfstatat,
-            libc::SYS_fstat, libc::SYS_fstatfs,
+            libc::SYS_epoll_create1,
+            libc::SYS_epoll_ctl,
+            libc::SYS_epoll_pwait,
+            libc::SYS_eventfd2,
+            libc::SYS_pipe2,
+            libc::SYS_read,
+            libc::SYS_write,
+            libc::SYS_close,
+            libc::SYS_dup3,
+            libc::SYS_fcntl,
+            libc::SYS_ioctl,
+            libc::SYS_readv,
+            libc::SYS_writev,
+            libc::SYS_lseek,
+            libc::SYS_ppoll,
+            libc::SYS_pread64,
+            libc::SYS_pwrite64,
+            libc::SYS_openat,
+            libc::SYS_statx,
+            libc::SYS_newfstatat,
+            libc::SYS_fstat,
+            libc::SYS_fstatfs,
             libc::SYS_getdents64,
         ]);
         // `epoll_pwait2`, `poll` aren't present on all arches in
         // libc 0.2; try via libc::SYS_epoll_pwait2 behind cfg.
         #[cfg(target_arch = "x86_64")]
         {
-            v.extend([
-                libc::SYS_poll,
-                libc::SYS_stat,
-                libc::SYS_lstat,
-            ]);
+            v.extend([libc::SYS_poll, libc::SYS_stat, libc::SYS_lstat]);
         }
         // Filesystem (Landlock gates further)
         v.extend([
-            libc::SYS_mkdirat, libc::SYS_unlinkat,
-            libc::SYS_renameat2, libc::SYS_ftruncate,
-            libc::SYS_faccessat2, libc::SYS_readlinkat,
-            libc::SYS_chdir, libc::SYS_getcwd,
+            libc::SYS_mkdirat,
+            libc::SYS_unlinkat,
+            libc::SYS_renameat2,
+            libc::SYS_ftruncate,
+            libc::SYS_faccessat2,
+            libc::SYS_readlinkat,
+            libc::SYS_chdir,
+            libc::SYS_getcwd,
         ]);
         #[cfg(target_arch = "x86_64")]
         {
             v.extend([
-                libc::SYS_mkdir, libc::SYS_rmdir,
-                libc::SYS_unlink, libc::SYS_rename,
+                libc::SYS_mkdir,
+                libc::SYS_rmdir,
+                libc::SYS_unlink,
+                libc::SYS_rename,
                 libc::SYS_truncate,
             ]);
         }
         // Broker IPC (AF_UNIX); see module-level doc on the
         // argument-filtering simplification.
         v.extend([
-            libc::SYS_socket, libc::SYS_socketpair, libc::SYS_connect,
-            libc::SYS_accept4, libc::SYS_sendmsg, libc::SYS_recvmsg,
-            libc::SYS_sendto, libc::SYS_recvfrom,
+            libc::SYS_socket,
+            libc::SYS_socketpair,
+            libc::SYS_connect,
+            libc::SYS_accept4,
+            libc::SYS_sendmsg,
+            libc::SYS_recvmsg,
+            libc::SYS_sendto,
+            libc::SYS_recvfrom,
             libc::SYS_shutdown,
-            libc::SYS_getsockopt, libc::SYS_setsockopt,
-            libc::SYS_getsockname, libc::SYS_getpeername,
-            libc::SYS_bind, libc::SYS_listen,
+            libc::SYS_getsockopt,
+            libc::SYS_setsockopt,
+            libc::SYS_getsockname,
+            libc::SYS_getpeername,
+            libc::SYS_bind,
+            libc::SYS_listen,
         ]);
         #[cfg(target_arch = "x86_64")]
         {
@@ -135,19 +172,32 @@ mod linux_impl {
     pub fn denied_kill_syscall_numbers() -> Vec<i64> {
         let mut v: Vec<i64> = Vec::new();
         v.extend([
-            libc::SYS_execve, libc::SYS_execveat,
+            libc::SYS_execve,
+            libc::SYS_execveat,
             libc::SYS_ptrace,
-            libc::SYS_process_vm_readv, libc::SYS_process_vm_writev,
-            libc::SYS_mount, libc::SYS_umount2,
-            libc::SYS_pivot_root, libc::SYS_chroot, libc::SYS_setns,
-            libc::SYS_setuid, libc::SYS_setgid,
-            libc::SYS_setresuid, libc::SYS_setresgid,
-            libc::SYS_capset, libc::SYS_unshare,
-            libc::SYS_kexec_load, libc::SYS_kexec_file_load,
-            libc::SYS_init_module, libc::SYS_finit_module,
+            libc::SYS_process_vm_readv,
+            libc::SYS_process_vm_writev,
+            libc::SYS_mount,
+            libc::SYS_umount2,
+            libc::SYS_pivot_root,
+            libc::SYS_chroot,
+            libc::SYS_setns,
+            libc::SYS_setuid,
+            libc::SYS_setgid,
+            libc::SYS_setresuid,
+            libc::SYS_setresgid,
+            libc::SYS_capset,
+            libc::SYS_unshare,
+            libc::SYS_kexec_load,
+            libc::SYS_kexec_file_load,
+            libc::SYS_init_module,
+            libc::SYS_finit_module,
             libc::SYS_delete_module,
-            libc::SYS_bpf, libc::SYS_perf_event_open,
-            libc::SYS_reboot, libc::SYS_swapon, libc::SYS_swapoff,
+            libc::SYS_bpf,
+            libc::SYS_perf_event_open,
+            libc::SYS_reboot,
+            libc::SYS_swapon,
+            libc::SYS_swapoff,
         ]);
         v
     }
@@ -211,9 +261,7 @@ mod linux_impl {
 
     /// Compile both filters. Exposed for tests that want to verify
     /// the full pipeline compiles.
-    pub fn compile_worker_filter()
-        -> Result<(BpfProgram, BpfProgram), SeccompCompileError>
-    {
+    pub fn compile_worker_filter() -> Result<(BpfProgram, BpfProgram), SeccompCompileError> {
         let allow = compile_allowlist_filter()?;
         let kill = compile_kill_filter()?;
         Ok((allow, kill))
@@ -227,8 +275,7 @@ mod linux_impl {
         fn seccomp_allows_futex() {
             let allowed = allowed_syscall_numbers();
             assert!(allowed.contains(&libc::SYS_futex));
-            let _ = compile_allowlist_filter()
-                .expect("allowlist filter must compile");
+            let _ = compile_allowlist_filter().expect("allowlist filter must compile");
         }
 
         #[test]
@@ -236,8 +283,7 @@ mod linux_impl {
             let denied = denied_kill_syscall_numbers();
             assert!(denied.contains(&libc::SYS_execve));
             assert!(denied.contains(&libc::SYS_execveat));
-            let _ = compile_kill_filter()
-                .expect("kill filter must compile");
+            let _ = compile_kill_filter().expect("kill filter must compile");
         }
 
         #[test]
@@ -275,8 +321,7 @@ mod linux_impl {
 
         #[test]
         fn full_worker_filter_compiles() {
-            let _ = compile_worker_filter()
-                .expect("full worker filter must compile");
+            let _ = compile_worker_filter().expect("full worker filter must compile");
         }
     }
 }

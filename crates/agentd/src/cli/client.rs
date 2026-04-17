@@ -14,14 +14,10 @@ use crate::cli::errors::CliError;
 
 /// Send one JSON-RPC request, read one newline-delimited response, and return
 /// the `result` field. Server-reported `error` objects become `CliError::ServerError`.
-pub async fn call_sync(
-    socket: &Path,
-    method: &str,
-    params: Value,
-) -> Result<Value, CliError> {
-    let mut stream = UnixStream::connect(socket).await.map_err(|e| {
-        CliError::DaemonUnreachable(socket.display().to_string(), e.to_string())
-    })?;
+pub async fn call_sync(socket: &Path, method: &str, params: Value) -> Result<Value, CliError> {
+    let mut stream = UnixStream::connect(socket)
+        .await
+        .map_err(|e| CliError::DaemonUnreachable(socket.display().to_string(), e.to_string()))?;
 
     let req = json!({
         "jsonrpc": "2.0",
@@ -65,9 +61,9 @@ pub async fn call_streaming(
     method: &str,
     params: Value,
 ) -> Result<BufReader<UnixStream>, CliError> {
-    let mut stream = UnixStream::connect(socket).await.map_err(|e| {
-        CliError::DaemonUnreachable(socket.display().to_string(), e.to_string())
-    })?;
+    let mut stream = UnixStream::connect(socket)
+        .await
+        .map_err(|e| CliError::DaemonUnreachable(socket.display().to_string(), e.to_string()))?;
 
     let req = json!({
         "jsonrpc": "2.0",
@@ -110,11 +106,16 @@ mod tests {
                 "id": 1,
                 "result": { "ok": true, "n": 42 }
             });
-            stream.write_all((resp.to_string() + "\n").as_bytes()).await.unwrap();
+            stream
+                .write_all((resp.to_string() + "\n").as_bytes())
+                .await
+                .unwrap();
             stream.flush().await.unwrap();
         });
 
-        let result = call_sync(&sock, "agent.list", serde_json::json!({})).await.unwrap();
+        let result = call_sync(&sock, "agent.list", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["n"], 42);
         server.await.unwrap();
@@ -135,7 +136,10 @@ mod tests {
                 "id": 1,
                 "error": { "code": -32603, "message": "agent not found" }
             });
-            stream.write_all((resp.to_string() + "\n").as_bytes()).await.unwrap();
+            stream
+                .write_all((resp.to_string() + "\n").as_bytes())
+                .await
+                .unwrap();
             stream.flush().await.unwrap();
         });
 
@@ -177,13 +181,21 @@ mod tests {
             // Emit 3 NDJSON lines then close.
             for i in 0..3 {
                 let frame = serde_json::json!({"kind": "event", "i": i});
-                stream.write_all((frame.to_string() + "\n").as_bytes()).await.unwrap();
+                stream
+                    .write_all((frame.to_string() + "\n").as_bytes())
+                    .await
+                    .unwrap();
             }
             stream.flush().await.unwrap();
         });
 
-        let mut reader = call_streaming(&sock, "agent.submit_streaming",
-            serde_json::json!({"goal": "x"})).await.unwrap();
+        let mut reader = call_streaming(
+            &sock,
+            "agent.submit_streaming",
+            serde_json::json!({"goal": "x"}),
+        )
+        .await
+        .unwrap();
         let mut frames = Vec::new();
         let mut line = String::new();
         while reader.read_line(&mut line).await.unwrap() > 0 {

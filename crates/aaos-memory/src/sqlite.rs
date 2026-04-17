@@ -12,9 +12,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use aaos_core::AgentId;
-use crate::store::{MemoryError, MemoryStoreResult, MemoryStore};
+use crate::store::{MemoryError, MemoryStore, MemoryStoreResult};
 use crate::types::{MemoryCategory, MemoryRecord, MemoryResult, MemoryScope};
+use aaos_core::AgentId;
 
 /// SQLite-backed memory store. Thread-safe via Mutex around the connection.
 pub struct SqliteMemoryStore {
@@ -148,7 +148,10 @@ fn str_to_scope(s: &str) -> MemoryScope {
 #[async_trait]
 impl MemoryStore for SqliteMemoryStore {
     async fn store(&self, record: MemoryRecord) -> MemoryStoreResult<Uuid> {
-        let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
         // Atomic replace: delete old record if this one replaces it
         if let Some(replaces_id) = &record.replaces {
@@ -191,7 +194,10 @@ impl MemoryStore for SqliteMemoryStore {
         limit: usize,
         category: Option<MemoryCategory>,
     ) -> MemoryStoreResult<Vec<MemoryResult>> {
-        let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
         let (sql, params): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = match &category {
             Some(cat) => (
@@ -204,10 +210,12 @@ impl MemoryStore for SqliteMemoryStore {
             ),
         };
 
-        let mut stmt = conn.prepare(sql)
+        let mut stmt = conn
+            .prepare(sql)
             .map_err(|e| MemoryError::Storage(format!("failed to prepare query: {e}")))?;
 
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
         let rows: Vec<(String, String, String, String, String, Vec<u8>)> = stmt
             .query_map(param_refs.as_slice(), |row| {
                 Ok((
@@ -254,7 +262,10 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     async fn delete(&self, agent_id: &AgentId, memory_id: &Uuid) -> MemoryStoreResult<()> {
-        let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
         let deleted = conn
             .execute(
                 "DELETE FROM memories WHERE id = ?1 AND agent_id = ?2",
@@ -273,7 +284,10 @@ impl MemoryStore for SqliteMemoryStore {
         offset: usize,
         limit: usize,
     ) -> MemoryStoreResult<Vec<MemoryResult>> {
-        let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, content, category, metadata, created_at FROM memories
@@ -313,7 +327,10 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     async fn count(&self, agent_id: &AgentId) -> MemoryStoreResult<usize> {
-        let conn = self.conn.lock().map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM memories WHERE agent_id = ?1",
@@ -359,11 +376,23 @@ mod tests {
         let store = SqliteMemoryStore::in_memory().unwrap();
         let agent = AgentId::new();
 
-        store.store(test_record(agent, "cats are great", vec![1.0, 0.0, 0.0])).await.unwrap();
-        store.store(test_record(agent, "dogs are nice", vec![0.0, 1.0, 0.0])).await.unwrap();
-        store.store(test_record(agent, "fish swim", vec![0.0, 0.0, 1.0])).await.unwrap();
+        store
+            .store(test_record(agent, "cats are great", vec![1.0, 0.0, 0.0]))
+            .await
+            .unwrap();
+        store
+            .store(test_record(agent, "dogs are nice", vec![0.0, 1.0, 0.0]))
+            .await
+            .unwrap();
+        store
+            .store(test_record(agent, "fish swim", vec![0.0, 0.0, 1.0]))
+            .await
+            .unwrap();
 
-        let results = store.query(&agent, &[0.9, 0.1, 0.0], 2, None).await.unwrap();
+        let results = store
+            .query(&agent, &[0.9, 0.1, 0.0], 2, None)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].content, "cats are great");
     }
@@ -374,8 +403,14 @@ mod tests {
         let a1 = AgentId::new();
         let a2 = AgentId::new();
 
-        store.store(test_record(a1, "agent 1 secret", vec![1.0, 0.0])).await.unwrap();
-        store.store(test_record(a2, "agent 2 data", vec![1.0, 0.0])).await.unwrap();
+        store
+            .store(test_record(a1, "agent 1 secret", vec![1.0, 0.0]))
+            .await
+            .unwrap();
+        store
+            .store(test_record(a2, "agent 2 data", vec![1.0, 0.0]))
+            .await
+            .unwrap();
 
         let r1 = store.query(&a1, &[1.0, 0.0], 10, None).await.unwrap();
         assert_eq!(r1.len(), 1);
@@ -415,9 +450,15 @@ mod tests {
         let store = SqliteMemoryStore::in_memory().unwrap();
         let agent = AgentId::new();
 
-        store.store(test_record(agent, "first", vec![1.0])).await.unwrap();
+        store
+            .store(test_record(agent, "first", vec![1.0]))
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        store.store(test_record(agent, "second", vec![1.0])).await.unwrap();
+        store
+            .store(test_record(agent, "second", vec![1.0]))
+            .await
+            .unwrap();
 
         let results = store.list(&agent, 0, 10).await.unwrap();
         assert_eq!(results[0].content, "first");
@@ -437,7 +478,10 @@ mod tests {
         obs.category = MemoryCategory::Observation;
         store.store(obs).await.unwrap();
 
-        let facts = store.query(&agent, &[0.5, 0.5], 10, Some(MemoryCategory::Fact)).await.unwrap();
+        let facts = store
+            .query(&agent, &[0.5, 0.5], 10, Some(MemoryCategory::Fact))
+            .await
+            .unwrap();
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].content, "a fact");
     }

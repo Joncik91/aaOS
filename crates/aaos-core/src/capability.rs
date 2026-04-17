@@ -261,15 +261,11 @@ impl CapabilityToken {
                 .iter()
                 .all(|a| granted.iter().any(|g| g == "*" || g == a)),
             (
-                Capability::CargoRun {
-                    workspace: granted,
-                },
+                Capability::CargoRun { workspace: granted },
                 Capability::CargoRun { workspace: req },
             ) => glob_matches(granted, req),
             (
-                Capability::GitCommit {
-                    workspace: granted,
-                },
+                Capability::GitCommit { workspace: granted },
                 Capability::GitCommit { workspace: req },
             ) => glob_matches(granted, req),
             (Capability::Custom { name: gn, .. }, Capability::Custom { name: rn, .. }) => gn == rn,
@@ -373,12 +369,18 @@ mod extract_host_tests {
 
     #[test]
     fn url_with_port_stripped() {
-        assert_eq!(extract_host("http://api.example.com:8080/"), "api.example.com");
+        assert_eq!(
+            extract_host("http://api.example.com:8080/"),
+            "api.example.com"
+        );
     }
 
     #[test]
     fn url_with_userinfo_stripped() {
-        assert_eq!(extract_host("https://user:pass@example.com/"), "example.com");
+        assert_eq!(
+            extract_host("https://user:pass@example.com/"),
+            "example.com"
+        );
     }
 
     #[test]
@@ -475,7 +477,9 @@ fn normalize_path(path: &str) -> String {
     for component in path.split('/') {
         match component {
             "" | "." => {}
-            ".." => { parts.pop(); }
+            ".." => {
+                parts.pop();
+            }
             other => parts.push(other),
         }
     }
@@ -589,7 +593,9 @@ mod tests {
     fn path_traversal_blocked() {
         let token = CapabilityToken::issue(
             test_agent(),
-            Capability::FileRead { path_glob: "/data/*".into() },
+            Capability::FileRead {
+                path_glob: "/data/*".into(),
+            },
             Constraints::default(),
         );
         // Direct traversal
@@ -659,11 +665,15 @@ mod tests {
     fn revoked_token_denies_access() {
         let mut token = CapabilityToken::issue(
             test_agent(),
-            Capability::FileRead { path_glob: "/data/*".into() },
+            Capability::FileRead {
+                path_glob: "/data/*".into(),
+            },
             Constraints::default(),
         );
         // Before revocation: permits
-        assert!(token.permits(&Capability::FileRead { path_glob: "/data/file.txt".into() }));
+        assert!(token.permits(&Capability::FileRead {
+            path_glob: "/data/file.txt".into()
+        }));
         assert!(!token.is_revoked());
 
         // Revoke
@@ -672,16 +682,15 @@ mod tests {
         // After revocation: denies
         assert!(token.is_revoked());
         assert!(token.revoked_at.is_some());
-        assert!(!token.permits(&Capability::FileRead { path_glob: "/data/file.txt".into() }));
+        assert!(!token.permits(&Capability::FileRead {
+            path_glob: "/data/file.txt".into()
+        }));
     }
 
     #[test]
     fn revoked_token_roundtrips_json() {
-        let mut token = CapabilityToken::issue(
-            test_agent(),
-            Capability::WebSearch,
-            Constraints::default(),
-        );
+        let mut token =
+            CapabilityToken::issue(test_agent(), Capability::WebSearch, Constraints::default());
         token.revoke();
         let json = serde_json::to_string(&token).unwrap();
         let parsed: CapabilityToken = serde_json::from_str(&json).unwrap();
@@ -730,7 +739,9 @@ mod tests {
         let grant = format!("{}/*", base.to_string_lossy());
         let token = CapabilityToken::issue(
             test_agent(),
-            Capability::FileRead { path_glob: grant.clone() },
+            Capability::FileRead {
+                path_glob: grant.clone(),
+            },
             Constraints::default(),
         );
 
@@ -738,7 +749,9 @@ mod tests {
         // we canonicalize the parent and re-attach the tail).
         let legit = format!("{}/some-file.txt", base.to_string_lossy());
         assert!(
-            token.permits(&Capability::FileRead { path_glob: legit.clone() }),
+            token.permits(&Capability::FileRead {
+                path_glob: legit.clone()
+            }),
             "legitimate path in granted dir must still match: {legit} vs {grant}"
         );
 
@@ -746,7 +759,9 @@ mod tests {
         // /etc/passwd, which is OUTSIDE the grant. Must be denied.
         let bypass = format!("{}/evil-link/passwd", base.to_string_lossy());
         assert!(
-            !token.permits(&Capability::FileRead { path_glob: bypass.clone() }),
+            !token.permits(&Capability::FileRead {
+                path_glob: bypass.clone()
+            }),
             "symlink bypass must be blocked: {bypass} reaches /etc/passwd"
         );
 

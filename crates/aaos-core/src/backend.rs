@@ -208,16 +208,12 @@ system_prompt: "test"
         };
 
         let json = serde_json::to_string(&spec).expect("spec must serialize");
-        let round: AgentLaunchSpec =
-            serde_json::from_str(&json).expect("spec must deserialize");
+        let round: AgentLaunchSpec = serde_json::from_str(&json).expect("spec must deserialize");
 
         assert_eq!(round.agent_id, spec.agent_id);
         assert_eq!(round.capability_handles, spec.capability_handles);
         assert_eq!(round.workspace_path, spec.workspace_path);
-        assert_eq!(
-            round.budget_config.map(|b| b.max_tokens),
-            Some(5_000)
-        );
+        assert_eq!(round.budget_config.map(|b| b.max_tokens), Some(5_000));
         assert_eq!(round.manifest.name, "spec-sample");
     }
 

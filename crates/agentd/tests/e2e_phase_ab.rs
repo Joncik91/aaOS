@@ -49,19 +49,30 @@ async fn full_e2e_phase_a_and_b() {
         "manifest": "name: tool-user\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"You have an echo tool. When asked to echo something, use it. Be concise.\"\ncapabilities:\n  - \"tool: echo\""
     }))).await;
     assert!(resp.error.is_none(), "spawn failed: {:?}", resp.error);
-    let ephemeral_id = resp.result.as_ref().unwrap()["agent_id"].as_str().unwrap().to_string();
+    let ephemeral_id = resp.result.as_ref().unwrap()["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     eprintln!("   ID: {ephemeral_id}");
 
     // 2. Run ephemeral agent — should use the echo tool
     eprintln!("2. Run ephemeral agent: 'Echo the word hello'...");
-    let resp = server.handle_request(&rpc("agent.run", json!({
-        "agent_id": ephemeral_id,
-        "message": "Use the echo tool to echo the word hello"
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.run",
+            json!({
+                "agent_id": ephemeral_id,
+                "message": "Use the echo tool to echo the word hello"
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
     let result = resp.result.unwrap();
     eprintln!("   Response: {}", result["response"]);
-    eprintln!("   Iterations: {}, Stop: {}", result["iterations"], result["stop_reason"]);
+    eprintln!(
+        "   Iterations: {}, Stop: {}",
+        result["iterations"], result["stop_reason"]
+    );
     // Should have used the tool (2+ iterations)
     assert!(result["iterations"].as_u64().unwrap() >= 1);
 
@@ -70,21 +81,38 @@ async fn full_e2e_phase_a_and_b() {
     let resp = server.handle_request(&rpc("agent.spawn", json!({
         "manifest": "name: no-tools\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"test\"\ncapabilities:\n  - web_search"
     }))).await;
-    let no_tool_id = resp.result.as_ref().unwrap()["agent_id"].as_str().unwrap().to_string();
+    let no_tool_id = resp.result.as_ref().unwrap()["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": no_tool_id,
-        "tool": "echo",
-        "input": {"message": "should fail"}
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": no_tool_id,
+                "tool": "echo",
+                "input": {"message": "should fail"}
+            }),
+        ))
+        .await;
     assert!(resp.error.is_some(), "should have been denied");
-    eprintln!("   Correctly denied: {}", resp.error.as_ref().unwrap().message);
+    eprintln!(
+        "   Correctly denied: {}",
+        resp.error.as_ref().unwrap().message
+    );
 
     // 4. Tool list filtered by capability
     eprintln!("\n4. Verify tool listing (spawn_and_run agent sees its tools)...");
     let resp = server.handle_request(&rpc("tool.list", json!({}))).await;
     let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
-    eprintln!("   Available tools: {:?}", tools.iter().map(|t| t["name"].as_str().unwrap()).collect::<Vec<_>>());
+    eprintln!(
+        "   Available tools: {:?}",
+        tools
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
     assert!(tools.len() >= 1);
 
     // ─── Phase B: Persistent agent with conversation memory ───
@@ -97,7 +125,10 @@ async fn full_e2e_phase_a_and_b() {
         "manifest": "name: memory-agent\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"You have perfect memory. Always be concise (1 sentence). Remember everything you're told.\"\nlifecycle: persistent\nmemory:\n  max_history_messages: 50"
     }))).await;
     assert!(resp.error.is_none(), "spawn failed: {:?}", resp.error);
-    let persistent_id = resp.result.as_ref().unwrap()["agent_id"].as_str().unwrap().to_string();
+    let persistent_id = resp.result.as_ref().unwrap()["agent_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     eprintln!("   ID: {persistent_id}");
 
     // 6. Both agents visible in agent.list
@@ -105,7 +136,10 @@ async fn full_e2e_phase_a_and_b() {
     let resp = server.handle_request(&rpc("agent.list", json!({}))).await;
     let agents = resp.result.unwrap()["agents"].as_array().unwrap().clone();
     eprintln!("   {} agents running", agents.len());
-    assert!(agents.len() >= 3, "expected at least 3 agents (ephemeral + no-tools + persistent)");
+    assert!(
+        agents.len() >= 3,
+        "expected at least 3 agents (ephemeral + no-tools + persistent)"
+    );
 
     // 7. Send 3 messages to persistent agent
     let messages = [
@@ -116,10 +150,15 @@ async fn full_e2e_phase_a_and_b() {
 
     for (i, msg) in messages.iter().enumerate() {
         eprintln!("\n7.{}: Sending: '{msg}'", i + 1);
-        let resp = server.handle_request(&rpc("agent.run", json!({
-            "agent_id": persistent_id,
-            "message": msg
-        }))).await;
+        let resp = server
+            .handle_request(&rpc(
+                "agent.run",
+                json!({
+                    "agent_id": persistent_id,
+                    "message": msg
+                }),
+            ))
+            .await;
         assert!(resp.error.is_none(), "run failed: {:?}", resp.error);
         let result = resp.result.unwrap();
         eprintln!("   Delivered: trace_id={}", result["trace_id"]);
@@ -130,17 +169,25 @@ async fn full_e2e_phase_a_and_b() {
 
     // 8. Verify session history
     eprintln!("\n8. Checking conversation history...");
-    let agent_id_parsed: aaos_core::AgentId =
-        serde_json::from_value(json!(persistent_id)).unwrap();
+    let agent_id_parsed: aaos_core::AgentId = serde_json::from_value(json!(persistent_id)).unwrap();
     let history = server.session_store.load(&agent_id_parsed).unwrap();
     eprintln!("   {} messages in session store", history.len());
-    assert!(history.len() >= 6, "expected at least 6 messages, got {}", history.len());
+    assert!(
+        history.len() >= 6,
+        "expected at least 6 messages, got {}",
+        history.len()
+    );
 
     // 9. Stop persistent agent cleanly
     eprintln!("\n9. Stopping persistent agent...");
-    let resp = server.handle_request(&rpc("agent.stop", json!({
-        "agent_id": persistent_id
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "agent.stop",
+            json!({
+                "agent_id": persistent_id
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none(), "stop failed: {:?}", resp.error);
     eprintln!("   Stopped cleanly");
 
@@ -150,12 +197,19 @@ async fn full_e2e_phase_a_and_b() {
         "manifest": "name: final-check\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"Reply with one word only.\"",
         "message": "Say 'working'"
     }))).await;
-    assert!(resp.error.is_none(), "final ephemeral failed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "final ephemeral failed: {:?}",
+        resp.error
+    );
     let result = resp.result.unwrap();
     eprintln!("   Response: {}", result["response"]);
 
     eprintln!("\n=== E2E Test PASSED ===");
     eprintln!("  Phase A: ephemeral agent ran tools, capability enforcement works");
-    eprintln!("  Phase B: persistent agent processed 3 messages, {} messages in history", history.len());
+    eprintln!(
+        "  Phase B: persistent agent processed 3 messages, {} messages in history",
+        history.len()
+    );
     eprintln!("  Both: coexist, agent.list sees all, clean shutdown");
 }

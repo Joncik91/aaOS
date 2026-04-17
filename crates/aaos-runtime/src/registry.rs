@@ -263,13 +263,12 @@ impl AgentRegistry {
         }
 
         // Await task handle
-        let task_handle = self.agents.get_mut(&id)
+        let task_handle = self
+            .agents
+            .get_mut(&id)
             .and_then(|mut e| e.value_mut().task_handle.take());
         if let Some(handle) = task_handle {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                handle,
-            ).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
         }
 
         self.stop_sync(id)
@@ -292,17 +291,26 @@ impl AgentRegistry {
 
         let process = entry.value_mut();
 
-        let msg_rx = process.message_rx.take()
+        let msg_rx = process
+            .message_rx
+            .take()
             .ok_or_else(|| CoreError::Ipc("message_rx already taken".into()))?;
-        let cmd_rx = process.take_command_rx()
+        let cmd_rx = process
+            .take_command_rx()
             .ok_or_else(|| CoreError::Ipc("command_rx already taken".into()))?;
 
         let manifest = process.manifest.clone();
         let audit_log = self.audit_log.clone();
 
         let handle = tokio::spawn(persistent_agent_loop(
-            agent_id, manifest, msg_rx, cmd_rx,
-            executor, session_store, router, audit_log,
+            agent_id,
+            manifest,
+            msg_rx,
+            cmd_rx,
+            executor,
+            session_store,
+            router,
+            audit_log,
             context_manager,
         ));
 
@@ -353,7 +361,11 @@ impl AgentRegistry {
     pub fn check_capability(&self, id: AgentId, capability: &Capability) -> Result<bool> {
         self.agents
             .get(&id)
-            .map(|entry| entry.value().has_capability(capability, &self.capability_registry))
+            .map(|entry| {
+                entry
+                    .value()
+                    .has_capability(capability, &self.capability_registry)
+            })
             .ok_or(CoreError::AgentNotFound(id))
     }
 
@@ -541,7 +553,9 @@ impl AgentRegistry {
             let token = CapabilityToken::issue(agent_id, self_send.clone(), Constraints::default());
             self.audit_log.record(AuditEvent::new(
                 agent_id,
-                AuditEventKind::CapabilityGranted { capability: self_send },
+                AuditEventKind::CapabilityGranted {
+                    capability: self_send,
+                },
             ));
             let handle = self.capability_registry.insert(agent_id, token);
             handles.push(handle);
@@ -784,12 +798,15 @@ capabilities:
         let registry = Arc::new(AgentRegistry::new(log.clone()));
         registry.set_router(router.clone());
 
-        let manifest = AgentManifest::from_yaml(r#"
+        let manifest = AgentManifest::from_yaml(
+            r#"
 name: persistent-agent
 model: claude-haiku-4-5-20251001
 system_prompt: "You are persistent."
 lifecycle: persistent
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let agent_id = registry.spawn(manifest).unwrap();
         let info = registry.get_info(agent_id).unwrap();
@@ -802,12 +819,15 @@ lifecycle: persistent
     #[test]
     fn ephemeral_spawn_unchanged() {
         let (registry, _log) = test_registry();
-        let manifest = AgentManifest::from_yaml(r#"
+        let manifest = AgentManifest::from_yaml(
+            r#"
 name: ephemeral-agent
 model: claude-haiku-4-5-20251001
 system_prompt: "You are ephemeral."
 lifecycle: on-demand
-"#).unwrap();
+"#,
+        )
+        .unwrap();
 
         let id = registry.spawn(manifest).unwrap();
         let info = registry.get_info(id).unwrap();
@@ -826,7 +846,10 @@ lifecycle: on-demand
         let result = registry.spawn(test_manifest("agent-3"));
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("agent limit exceeded"), "unexpected error: {err}");
+        assert!(
+            err.contains("agent limit exceeded"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -840,7 +863,10 @@ lifecycle: on-demand
         let result = registry.spawn_with_token_handles(id, manifest, vec![], 6, None);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("spawn depth exceeded"), "unexpected error: {err}");
+        assert!(
+            err.contains("spawn depth exceeded"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -850,7 +876,9 @@ lifecycle: on-demand
 
         let id = AgentId::new();
         let manifest = test_manifest("child-agent");
-        registry.spawn_with_token_handles(id, manifest, vec![], 3, None).unwrap();
+        registry
+            .spawn_with_token_handles(id, manifest, vec![], 3, None)
+            .unwrap();
         assert_eq!(registry.get_depth(id).unwrap(), 3);
     }
 
@@ -992,7 +1020,8 @@ capabilities:
             .spawn_with_token_handles(id, test_manifest("first"), vec![], 1, None)
             .expect("first spawn succeeds");
 
-        let second = registry.spawn_with_token_handles(id, test_manifest("duplicate"), vec![], 1, None);
+        let second =
+            registry.spawn_with_token_handles(id, test_manifest("duplicate"), vec![], 1, None);
         assert!(second.is_err(), "duplicate ID must be rejected");
         let err = second.unwrap_err().to_string();
         assert!(

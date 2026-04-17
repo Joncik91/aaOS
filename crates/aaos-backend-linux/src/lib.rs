@@ -36,7 +36,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use thiserror::Error;
 
-use aaos_core::{AgentBackend, AgentLaunchHandle, AgentLaunchSpec, BackendHealth, CoreError, Result};
+use aaos_core::{
+    AgentBackend, AgentLaunchHandle, AgentLaunchSpec, BackendHealth, CoreError, Result,
+};
 
 use crate::broker_session::SessionMap;
 
@@ -154,7 +156,9 @@ mod launch_impl {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixListener;
 
-    pub(super) fn ensure_session_dir(dir: &std::path::Path) -> std::result::Result<(), BackendError> {
+    pub(super) fn ensure_session_dir(
+        dir: &std::path::Path,
+    ) -> std::result::Result<(), BackendError> {
         if !dir.exists() {
             std::fs::create_dir_all(dir).map_err(BackendError::SessionDirFailed)?;
         }
@@ -172,8 +176,7 @@ mod launch_impl {
     ) -> std::result::Result<(UnixListener, PathBuf), BackendError> {
         let socket_path = session_dir.join(format!("{}.sock", agent_id));
         let _ = std::fs::remove_file(&socket_path);
-        let listener =
-            UnixListener::bind(&socket_path).map_err(BackendError::BrokerIoFailed)?;
+        let listener = UnixListener::bind(&socket_path).map_err(BackendError::BrokerIoFailed)?;
         let mut perms = std::fs::metadata(&socket_path)
             .map_err(BackendError::BrokerIoFailed)?
             .permissions();
@@ -326,10 +329,7 @@ mod launch_impl {
             // successfully, execve replaces the image, the worker runs
             // normally. But the stderr output pollutes test runs.
             // Redirect fd 2 to /dev/null before anything else runs.
-            if let Ok(devnull) = std::fs::OpenOptions::new()
-                .write(true)
-                .open("/dev/null")
-            {
+            if let Ok(devnull) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
                 use std::os::fd::AsRawFd;
                 unsafe {
                     libc::dup2(devnull.as_raw_fd(), 2);
@@ -342,8 +342,7 @@ mod launch_impl {
             // timeout on the handshake path can be traced without a
             // waitpid round-trip. Disabled by default (no writes).
             let debug_log: Option<std::path::PathBuf> =
-                std::env::var_os("AAOS_NAMESPACED_CHILD_DEBUG")
-                    .map(std::path::PathBuf::from);
+                std::env::var_os("AAOS_NAMESPACED_CHILD_DEBUG").map(std::path::PathBuf::from);
             let log_step = |step: &str, err: Option<&str>| {
                 let Some(ref path) = debug_log else { return };
                 use std::io::Write;
@@ -390,10 +389,8 @@ mod launch_impl {
             }
 
             // Step C: new root tmpfs in a unique path.
-            let new_root = std::path::PathBuf::from(format!(
-                "/tmp/aaos-newroot-{}",
-                std::process::id()
-            ));
+            let new_root =
+                std::path::PathBuf::from(format!("/tmp/aaos-newroot-{}", std::process::id()));
             if std::fs::create_dir_all(&new_root).is_err() {
                 return 12;
             }
@@ -441,7 +438,10 @@ mod launch_impl {
                 let lib_rel = lib_path.strip_prefix("/").unwrap_or(lib_path);
                 let inside = new_root.join(lib_rel);
                 if let Err(e) = std::fs::create_dir_all(&inside) {
-                    log_step(&format!("E-mkdir-{}", lib_path.display()), Some(&e.to_string()));
+                    log_step(
+                        &format!("E-mkdir-{}", lib_path.display()),
+                        Some(&e.to_string()),
+                    );
                     return 16;
                 }
                 match nix::mount::mount::<std::path::Path, std::path::Path, str, str>(
@@ -453,7 +453,10 @@ mod launch_impl {
                 ) {
                     Ok(_) => log_step(&format!("E-bind-{}", lib_path.display()), None),
                     Err(e) => {
-                        log_step(&format!("E-bind-{}", lib_path.display()), Some(&e.to_string()));
+                        log_step(
+                            &format!("E-bind-{}", lib_path.display()),
+                            Some(&e.to_string()),
+                        );
                         return 17;
                     }
                 }
@@ -472,9 +475,7 @@ mod launch_impl {
             // Step F: bind-mount broker socket's parent dir so the worker
             // can `connect()` to the Unix socket inside the new root.
             if let Some(socket_parent) = policy_clone.broker_socket.parent() {
-                let parent_rel = socket_parent
-                    .strip_prefix("/")
-                    .unwrap_or(socket_parent);
+                let parent_rel = socket_parent.strip_prefix("/").unwrap_or(socket_parent);
                 let inside_parent = new_root.join(parent_rel);
                 if let Err(e) = std::fs::create_dir_all(&inside_parent) {
                     log_step("F-mkdir-socket-parent", Some(&e.to_string()));
@@ -580,15 +581,11 @@ mod launch_impl {
         // Child stack. 1 MiB is ample for our worker before execve replaces
         // the image.
         let mut stack = vec![0u8; 1024 * 1024];
-        let flags = CloneFlags::CLONE_NEWUSER
-            | CloneFlags::CLONE_NEWNS
-            | CloneFlags::CLONE_NEWIPC;
+        let flags = CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_NEWIPC;
 
-        let child_pid_raw: i32 = unsafe {
-            clone(child_fn, &mut stack, flags, Some(libc::SIGCHLD))
-        }
-        .map_err(|e| BackendError::CloneFailed(format!("clone: {e}")))?
-        .as_raw();
+        let child_pid_raw: i32 = unsafe { clone(child_fn, &mut stack, flags, Some(libc::SIGCHLD)) }
+            .map_err(|e| BackendError::CloneFailed(format!("clone: {e}")))?
+            .as_raw();
 
         // Parent: write uid/gid maps. Hard failure — no silent fallback.
         if let Err(e) = write_uid_gid_maps(child_pid_raw, parent_uid, parent_gid) {
@@ -613,22 +610,17 @@ mod launch_impl {
         Ok(child_pid_raw as u32)
     }
 
-    fn write_uid_gid_maps(
-        pid: i32,
-        uid: u32,
-        gid: u32,
-    ) -> std::result::Result<(), BackendError> {
+    fn write_uid_gid_maps(pid: i32, uid: u32, gid: u32) -> std::result::Result<(), BackendError> {
         use std::io::Write;
-        let write_file =
-            |path: String, content: &str| -> std::result::Result<(), BackendError> {
-                let mut f = std::fs::OpenOptions::new()
-                    .write(true)
-                    .open(&path)
-                    .map_err(|e| BackendError::UidMapFailed(format!("open {path}: {e}")))?;
-                f.write_all(content.as_bytes())
-                    .map_err(|e| BackendError::UidMapFailed(format!("write {path}: {e}")))?;
-                Ok(())
-            };
+        let write_file = |path: String, content: &str| -> std::result::Result<(), BackendError> {
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .map_err(|e| BackendError::UidMapFailed(format!("open {path}: {e}")))?;
+            f.write_all(content.as_bytes())
+                .map_err(|e| BackendError::UidMapFailed(format!("write {path}: {e}")))?;
+            Ok(())
+        };
         write_file(format!("/proc/{pid}/uid_map"), &format!("0 {uid} 1\n"))?;
         // setgroups must be 'deny' before gid_map can be written in an
         // unprivileged user namespace. See user_namespaces(7).
@@ -666,11 +658,10 @@ mod launch_impl {
             ),
         ];
 
-        let child_pid = clone_and_launch_worker(&backend.config, &policy, env)
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&socket_path);
-                CoreError::from(e)
-            })?;
+        let child_pid = clone_and_launch_worker(&backend.config, &policy, env).map_err(|e| {
+            let _ = std::fs::remove_file(&socket_path);
+            CoreError::from(e)
+        })?;
 
         let (session, sandboxed_rx) = BrokerSession::new(
             spec.agent_id,
@@ -691,9 +682,9 @@ mod launch_impl {
                 .await
                 .map_err(BackendError::BrokerIoFailed)?;
             run_handshake(stream, handshake_session).await?;
-            sandboxed_rx.await.map_err(|_| BackendError::ReadyTimeout {
-                timeout_ms,
-            })?;
+            sandboxed_rx
+                .await
+                .map_err(|_| BackendError::ReadyTimeout { timeout_ms })?;
             Ok::<_, BackendError>(())
         };
 
@@ -761,10 +752,7 @@ impl AgentBackend for NamespacedBackend {
             return BackendHealth::Unknown("handle state not NamespacedState".into());
         };
         let pid = nix::unistd::Pid::from_raw(state.pid as i32);
-        match nix::sys::wait::waitpid(
-            pid,
-            Some(nix::sys::wait::WaitPidFlag::WNOHANG),
-        ) {
+        match nix::sys::wait::waitpid(pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
             Ok(nix::sys::wait::WaitStatus::StillAlive) => BackendHealth::Healthy,
             Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => BackendHealth::Exited(code),
             Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => {
@@ -931,8 +919,7 @@ system_prompt: "x"
             .state::<NamespacedState>()
             .expect("handle carries NamespacedState");
         let status_path = format!("/proc/{}/status", state.pid);
-        let status = std::fs::read_to_string(&status_path)
-            .expect("can read child /proc status");
+        let status = std::fs::read_to_string(&status_path).expect("can read child /proc status");
         assert!(
             status.contains("Seccomp:\t2") || status.contains("Seccomp: 2"),
             "child must be seccomp-filtered (mode 2), got: {status}"

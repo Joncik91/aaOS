@@ -90,10 +90,10 @@ impl Tool for CargoRunTool {
         let requested = Capability::CargoRun {
             workspace: workspace.to_string(),
         };
-        let allowed = ctx
-            .tokens
-            .iter()
-            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
+        let allowed = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry
+                .permits(*h, ctx.agent_id, &requested)
+        });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
@@ -211,8 +211,11 @@ path = "src/lib.rs"
         )
         .unwrap();
         std::fs::create_dir_all(ws.join("src")).unwrap();
-        std::fs::write(ws.join("src/lib.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }\n")
-            .unwrap();
+        std::fs::write(
+            ws.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
         ws
     }
 

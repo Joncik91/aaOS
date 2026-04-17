@@ -23,11 +23,7 @@ use std::path::{Path, PathBuf};
 fn test_config(tmp: &Path) -> NamespacedBackendConfig {
     let manifest_dir =
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
-    let workspace_root = Path::new(&manifest_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap();
+    let workspace_root = Path::new(&manifest_dir).parent().unwrap().parent().unwrap();
     let worker = workspace_root.join("target/debug/aaos-agent-worker");
     assert!(
         worker.exists(),

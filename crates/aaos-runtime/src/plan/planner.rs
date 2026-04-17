@@ -26,11 +26,7 @@ impl Planner {
     /// structural validation. Malformed LLM output surfaces as
     /// PlannerError::Malformed; the caller (PlanExecutor) decides whether to
     /// retry, fall back to the generalist role, or give up.
-    pub async fn plan(
-        &self,
-        goal: &str,
-        catalog: &RoleCatalog,
-    ) -> Result<Plan, PlannerError> {
+    pub async fn plan(&self, goal: &str, catalog: &RoleCatalog) -> Result<Plan, PlannerError> {
         let prompt = self.build_prompt(goal, catalog, None, None);
         self.call_and_parse(&prompt, catalog).await
     }
@@ -192,10 +188,7 @@ impl Planner {
             .ok_or_else(|| PlannerError::Malformed("no text block in LLM response".into()))?;
 
         let json = extract_json(&text).ok_or_else(|| {
-            PlannerError::Malformed(format!(
-                "no JSON in response: {}",
-                truncate(&text, 200)
-            ))
+            PlannerError::Malformed(format!("no JSON in response: {}", truncate(&text, 200)))
         })?;
 
         let plan: Plan = serde_json::from_str(&json)
@@ -223,10 +216,7 @@ pub fn validate_plan_structure(plan: &Plan, catalog: &RoleCatalog) -> Result<(),
             )));
         }
         if catalog.get(&s.role).is_none() {
-            return Err(PlannerError::Malformed(format!(
-                "unknown role: {}",
-                s.role
-            )));
+            return Err(PlannerError::Malformed(format!("unknown role: {}", s.role)));
         }
     }
     for s in &plan.subtasks {

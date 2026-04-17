@@ -23,7 +23,9 @@ pub enum CliCommand {
         socket: PathBuf,
     },
     /// Send a goal to Bootstrap and stream the result.
-    #[command(long_about = "Send a goal to Bootstrap, stream audit events live, exit when the goal completes.\n\nExample:\n    agentd submit \"fetch HN top 5 stories\"")]
+    #[command(
+        long_about = "Send a goal to Bootstrap, stream audit events live, exit when the goal completes.\n\nExample:\n    agentd submit \"fetch HN top 5 stories\""
+    )]
     Submit {
         /// The goal text for Bootstrap.
         goal: String,
@@ -91,9 +93,7 @@ pub enum RolesCommand {
         dir: std::path::PathBuf,
     },
     /// Validate a single role YAML file without installing it.
-    Validate {
-        path: std::path::PathBuf,
-    },
+    Validate { path: std::path::PathBuf },
 }
 
 // ---- Stub subcommand runners. Real implementations land in Tasks 9-13. ----
@@ -126,7 +126,9 @@ mod tests {
         let c = TestCli::parse_from(&["agentd", "submit", "hello world"]);
         match c.cmd {
             CliCommand::Submit {
-                goal, verbose, socket,
+                goal,
+                verbose,
+                socket,
             } => {
                 assert_eq!(goal, "hello world");
                 assert!(!verbose);

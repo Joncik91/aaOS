@@ -31,6 +31,6 @@ pub use memory_delete_tool::MemoryDeleteTool;
 pub use memory_query_tool::MemoryQueryTool;
 pub use memory_store_tool::MemoryStoreTool;
 pub use registry::ToolRegistry;
-pub use tool::{EchoTool, Tool};
 pub use skill_read::{SkillReadTool, SkillRegistry};
+pub use tool::{EchoTool, Tool};
 pub use web_fetch::WebFetchTool;

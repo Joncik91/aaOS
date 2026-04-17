@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use aaos_core::AgentId;
 use crate::types::{MemoryCategory, MemoryRecord, MemoryResult};
+use aaos_core::AgentId;
 
 /// Error type for memory operations.
 #[derive(Debug, thiserror::Error)]

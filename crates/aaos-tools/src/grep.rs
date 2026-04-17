@@ -37,17 +37,28 @@ impl Tool for GrepTool {
     }
 
     async fn invoke(&self, input: Value, ctx: &InvocationContext) -> Result<Value> {
-        let pattern = input.get("pattern").and_then(|v| v.as_str())
+        let pattern = input
+            .get("pattern")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| CoreError::InvalidManifest("missing 'pattern' parameter".into()))?;
-        let path_str = input.get("path").and_then(|v| v.as_str())
+        let path_str = input
+            .get("path")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| CoreError::InvalidManifest("missing 'path' parameter".into()))?;
         let glob = input.get("glob").and_then(|v| v.as_str());
-        let case_insensitive = input.get("case_insensitive").and_then(|v| v.as_bool()).unwrap_or(false);
+        let case_insensitive = input
+            .get("case_insensitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         // Capability check: need FileRead on the search root.
-        let requested = Capability::FileRead { path_glob: path_str.to_string() };
-        let allowed = ctx.tokens.iter().any(|h|
-            ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
+        let requested = Capability::FileRead {
+            path_glob: path_str.to_string(),
+        };
+        let allowed = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry
+                .permits(*h, ctx.agent_id, &requested)
+        });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
@@ -82,12 +93,19 @@ async fn run_rg(
     // is the real contract.
     let mut cmd = tokio::process::Command::new("rg");
     cmd.arg("--json");
-    if case_insensitive { cmd.arg("-i"); }
-    if let Some(g) = glob { cmd.arg("--glob").arg(g); }
+    if case_insensitive {
+        cmd.arg("-i");
+    }
+    if let Some(g) = glob {
+        cmd.arg("--glob").arg(g);
+    }
     cmd.arg("--").arg(pattern).arg(path);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    cmd.stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
 
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| CoreError::Ipc(format!("failed to spawn rg: {e}")))?;
 
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
@@ -101,7 +119,9 @@ async fn run_rg(
     let exit_code = output.status.code().unwrap_or(-1);
     if exit_code >= 2 {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CoreError::Ipc(format!("rg error (exit {exit_code}): {stderr}")));
+        return Err(CoreError::Ipc(format!(
+            "rg error (exit {exit_code}): {stderr}"
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -121,7 +141,9 @@ async fn run_rg(
     let mut matches = Vec::new();
     let mut total_match_events = 0usize;
     for line in stdout.lines() {
-        let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         if ev.get("type").and_then(|v| v.as_str()) != Some("match") {
             continue;
         }
@@ -167,9 +189,13 @@ async fn run_rg(
 }
 
 fn cap(s: &str, max: usize) -> String {
-    if s.len() <= max { return s.to_string(); }
+    if s.len() <= max {
+        return s.to_string();
+    }
     let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) { end -= 1; }
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
     format!("{}…", &s[..end])
 }
 
@@ -184,12 +210,18 @@ mod tests {
         let agent_id = AgentId::new();
         let token = CapabilityToken::issue(
             agent_id,
-            Capability::FileRead { path_glob: glob.to_string() },
+            Capability::FileRead {
+                path_glob: glob.to_string(),
+            },
             Constraints::default(),
         );
         let registry = Arc::new(CapabilityRegistry::new());
         let handle = registry.insert(agent_id, token);
-        InvocationContext { agent_id, tokens: vec![handle], capability_registry: registry }
+        InvocationContext {
+            agent_id,
+            tokens: vec![handle],
+            capability_registry: registry,
+        }
     }
 
     // Gated behind --ignored because it shells out to a real `rg`
@@ -205,7 +237,10 @@ mod tests {
         let path = dir.path().to_str().unwrap();
         let ctx = ctx_with_read(path);
 
-        let result = GrepTool.invoke(json!({"pattern": "foo", "path": path}), &ctx).await.unwrap();
+        let result = GrepTool
+            .invoke(json!({"pattern": "foo", "path": path}), &ctx)
+            .await
+            .unwrap();
         let matches = result["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 2);
     }
@@ -216,7 +251,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_str().unwrap();
         let ctx = ctx_with_read("/nowhere/*");
-        let err = GrepTool.invoke(json!({"pattern": "x", "path": path}), &ctx).await.unwrap_err();
+        let err = GrepTool
+            .invoke(json!({"pattern": "x", "path": path}), &ctx)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not permitted"));
     }
 
@@ -228,7 +266,10 @@ mod tests {
         let path = dir.path().to_str().unwrap();
         let ctx = ctx_with_read(path);
 
-        let result = GrepTool.invoke(json!({"pattern": "xyz", "path": path}), &ctx).await.unwrap();
+        let result = GrepTool
+            .invoke(json!({"pattern": "xyz", "path": path}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(result["matches"].as_array().unwrap().len(), 0);
     }
 

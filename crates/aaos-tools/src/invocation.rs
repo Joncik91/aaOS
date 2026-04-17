@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use aaos_core::{
-    AgentId, AuditEvent, AuditEventKind, AuditLog, Capability, CapabilityHandle, CapabilityRegistry,
-    CapabilityToken, CoreError, Result,
+    AgentId, AuditEvent, AuditEventKind, AuditLog, Capability, CapabilityHandle,
+    CapabilityRegistry, CapabilityToken, CoreError, Result,
 };
 use serde_json::Value;
 
@@ -50,10 +50,9 @@ impl ToolInvocation {
         let required = Capability::ToolInvoke {
             tool_name: tool_name.to_string(),
         };
-        let has_permission = token_handles.iter().any(|h| {
-            self.capability_registry
-                .permits(*h, agent_id, &required)
-        });
+        let has_permission = token_handles
+            .iter()
+            .any(|h| self.capability_registry.permits(*h, agent_id, &required));
 
         if !has_permission {
             self.audit_log.record(AuditEvent::new(
@@ -79,7 +78,7 @@ impl ToolInvocation {
         let input_hash_u64 = md5_hash(&input);
         let input_hash = format!("{:x}", input_hash_u64);
         let args_preview = preview_value(&input);
-        
+
         // Track repeat counts. Map grows while agentd runs; cap at
         // REPEAT_COUNTS_MAX entries and evict arbitrary entries when full
         // to bound memory. Eviction is coarse but correctness-preserving:
@@ -116,7 +115,7 @@ impl ToolInvocation {
                 },
             ));
         }
-        
+
         self.audit_log.record(AuditEvent::new(
             agent_id,
             AuditEventKind::ToolInvoked {
@@ -299,8 +298,7 @@ mod tests {
         );
         let cap_registry = Arc::new(CapabilityRegistry::new());
         let handle = cap_registry.insert(agent_id, token);
-        let invocation =
-            ToolInvocation::new(registry, log.clone(), cap_registry.clone());
+        let invocation = ToolInvocation::new(registry, log.clone(), cap_registry.clone());
         (invocation, agent_id, vec![handle], log, cap_registry)
     }
 
@@ -343,7 +341,10 @@ mod tests {
         let long = "a".repeat(500);
         let out = super::preview_str(&long);
         assert!(out.ends_with('…'));
-        assert!(out.len() <= super::PREVIEW_CAP + 4, "utf-8 marker adds up to 3 bytes");
+        assert!(
+            out.len() <= super::PREVIEW_CAP + 4,
+            "utf-8 marker adds up to 3 bytes"
+        );
     }
 
     #[test]
@@ -396,9 +397,18 @@ mod tests {
             AuditEventKind::ToolResult { result_preview, .. } => result_preview.clone(),
             _ => None,
         });
-        assert!(invoked.as_ref().map(|s| s.contains("hello-audit")).unwrap_or(false),
-            "ToolInvoked args_preview should contain the input message; got {:?}", invoked);
-        assert!(result.is_some(), "ToolResult must carry a preview even on success");
+        assert!(
+            invoked
+                .as_ref()
+                .map(|s| s.contains("hello-audit"))
+                .unwrap_or(false),
+            "ToolInvoked args_preview should contain the input message; got {:?}",
+            invoked
+        );
+        assert!(
+            result.is_some(),
+            "ToolResult must carry a preview even on success"
+        );
     }
 
     #[tokio::test]
@@ -441,8 +451,12 @@ mod tests {
     async fn third_call_injects_repeat_guard() {
         let (invocation, agent_id, handles, _log, _) = setup();
         let input = serde_json::json!({"message": "same"});
-        let _ = invocation.invoke(agent_id, "echo", input.clone(), &handles).await;
-        let _ = invocation.invoke(agent_id, "echo", input.clone(), &handles).await;
+        let _ = invocation
+            .invoke(agent_id, "echo", input.clone(), &handles)
+            .await;
+        let _ = invocation
+            .invoke(agent_id, "echo", input.clone(), &handles)
+            .await;
         let third = invocation
             .invoke(agent_id, "echo", input.clone(), &handles)
             .await
@@ -463,9 +477,15 @@ mod tests {
         let (invocation, agent_id, handles, _log, _) = setup();
         let a = serde_json::json!({"message": "a"});
         let b = serde_json::json!({"message": "b"});
-        let _ = invocation.invoke(agent_id, "echo", a.clone(), &handles).await;
-        let _ = invocation.invoke(agent_id, "echo", a.clone(), &handles).await;
-        let _ = invocation.invoke(agent_id, "echo", b.clone(), &handles).await;
+        let _ = invocation
+            .invoke(agent_id, "echo", a.clone(), &handles)
+            .await;
+        let _ = invocation
+            .invoke(agent_id, "echo", a.clone(), &handles)
+            .await;
+        let _ = invocation
+            .invoke(agent_id, "echo", b.clone(), &handles)
+            .await;
         assert_eq!(invocation.test_repeat_count(agent_id, "echo", &a), 2);
         assert_eq!(invocation.test_repeat_count(agent_id, "echo", &b), 1);
     }
@@ -515,7 +535,9 @@ mod tests {
         let agent_id = AgentId::new();
         let token = CapabilityToken::issue(
             agent_id,
-            Capability::ToolInvoke { tool_name: "echo".into() },
+            Capability::ToolInvoke {
+                tool_name: "echo".into(),
+            },
             Constraints::default(),
         );
         let handle = cap_registry.insert(agent_id, token);

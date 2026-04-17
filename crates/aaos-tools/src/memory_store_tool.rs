@@ -79,8 +79,8 @@ impl Tool for MemoryStoreTool {
             )));
         }
 
-        let category: MemoryCategory = serde_json::from_value(json!(category_str))
-            .map_err(|_| {
+        let category: MemoryCategory =
+            serde_json::from_value(json!(category_str)).map_err(|_| {
                 CoreError::SchemaValidation(format!("invalid category: {category_str}"))
             })?;
 
@@ -146,12 +146,7 @@ mod tests {
         let store = Arc::new(InMemoryMemoryStore::new(100, 64, "mock-embed"));
         let embedding = Arc::new(MockEmbeddingSource::new(64));
         let audit = Arc::new(InMemoryAuditLog::new());
-        let tool = MemoryStoreTool::new(
-            store,
-            embedding,
-            audit.clone(),
-            4096,
-        );
+        let tool = MemoryStoreTool::new(store, embedding, audit.clone(), 4096);
         let ctx = InvocationContext {
             agent_id: AgentId::new(),
             tokens: vec![],
@@ -185,10 +180,7 @@ mod tests {
         let (tool, ctx, _) = setup();
         let big_content = "x".repeat(5000); // max is 4096
         let result = tool
-            .invoke(
-                json!({"content": big_content, "category": "fact"}),
-                &ctx,
-            )
+            .invoke(json!({"content": big_content, "category": "fact"}), &ctx)
             .await;
 
         assert!(result.is_err());
@@ -200,10 +192,7 @@ mod tests {
     async fn store_invalid_category() {
         let (tool, ctx, _) = setup();
         let result = tool
-            .invoke(
-                json!({"content": "test", "category": "invalid_cat"}),
-                &ctx,
-            )
+            .invoke(json!({"content": "test", "category": "invalid_cat"}), &ctx)
             .await;
 
         assert!(result.is_err());
@@ -214,9 +203,7 @@ mod tests {
     #[tokio::test]
     async fn store_missing_content() {
         let (tool, ctx, _) = setup();
-        let result = tool
-            .invoke(json!({"category": "fact"}), &ctx)
-            .await;
+        let result = tool.invoke(json!({"category": "fact"}), &ctx).await;
 
         assert!(result.is_err());
     }

@@ -265,7 +265,7 @@ mod tests {
 
     use aaos_core::{
         AgentId, AgentManifest, AgentServices, ApprovalResult, ApprovalService, InMemoryAuditLog,
-        NoOpApprovalService, ToolDefinition, TokenUsage,
+        NoOpApprovalService, TokenUsage, ToolDefinition,
     };
     use aaos_ipc::MessageRouter;
     use aaos_llm::{
@@ -343,19 +343,18 @@ lifecycle: persistent
         let tool_registry_for_builder = tool_registry.clone();
         let audit_for_builder = audit_log.clone();
         let router_for_builder = router.clone();
-        let services_builder: Arc<
-            dyn Fn() -> Arc<dyn AgentServices> + Send + Sync,
-        > = Arc::new(move || {
-            let approval: Arc<dyn ApprovalService> = Arc::new(NoOpApprovalService);
-            Arc::new(InProcessAgentServices::new(
-                registry_for_builder.clone(),
-                tool_invocation_for_builder.clone(),
-                tool_registry_for_builder.clone(),
-                audit_for_builder.clone(),
-                router_for_builder.clone(),
-                approval,
-            )) as Arc<dyn AgentServices>
-        });
+        let services_builder: Arc<dyn Fn() -> Arc<dyn AgentServices> + Send + Sync> =
+            Arc::new(move || {
+                let approval: Arc<dyn ApprovalService> = Arc::new(NoOpApprovalService);
+                Arc::new(InProcessAgentServices::new(
+                    registry_for_builder.clone(),
+                    tool_invocation_for_builder.clone(),
+                    tool_registry_for_builder.clone(),
+                    audit_for_builder.clone(),
+                    router_for_builder.clone(),
+                    approval,
+                )) as Arc<dyn AgentServices>
+            });
 
         let backend = Arc::new(InProcessBackend::new(
             registry.clone(),
@@ -477,9 +476,8 @@ lifecycle: persistent
         registry.set_router(router.clone());
         let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
 
-        let services_builder: Arc<
-            dyn Fn() -> Arc<dyn AgentServices> + Send + Sync,
-        > = Arc::new(|| Arc::new(StubServices) as Arc<dyn AgentServices>);
+        let services_builder: Arc<dyn Fn() -> Arc<dyn AgentServices> + Send + Sync> =
+            Arc::new(|| Arc::new(StubServices) as Arc<dyn AgentServices>);
 
         let backend = InProcessBackend::new(
             registry.clone(),
@@ -547,5 +545,4 @@ lifecycle: persistent
             Ok(vec![])
         }
     }
-
 }

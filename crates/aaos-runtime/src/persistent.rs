@@ -1,9 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use aaos_core::{
-    AgentId, AgentManifest, AuditEvent, AuditEventKind, AuditLog, PromptSource,
-};
+use aaos_core::{AgentId, AgentManifest, AuditEvent, AuditEventKind, AuditLog, PromptSource};
 use aaos_ipc::{McpMessage, MessageRouter};
 use aaos_llm::{AgentExecutor, ExecutionStopReason, Message};
 use tokio::sync::mpsc;
@@ -37,9 +35,7 @@ pub async fn persistent_agent_loop(
     audit_log: Arc<dyn AuditLog>,
     context_manager: Option<Arc<ContextManager>>,
 ) {
-    let mut history: Vec<Message> = session_store
-        .load(&agent_id)
-        .unwrap_or_default();
+    let mut history: Vec<Message> = session_store.load(&agent_id).unwrap_or_default();
 
     let max_history = manifest.memory.max_history_messages.unwrap_or(100);
     let mut messages_processed: u64 = 0;
@@ -50,10 +46,8 @@ pub async fn persistent_agent_loop(
     // Pre-resolve system prompt once for the loop lifetime
     let system_prompt_str = match &manifest.system_prompt {
         PromptSource::Inline(s) => s.clone(),
-        PromptSource::File(path) => {
-            std::fs::read_to_string(path)
-                .unwrap_or_else(|_| format!("Failed to read prompt from {}", path.display()))
-        }
+        PromptSource::File(path) => std::fs::read_to_string(path)
+            .unwrap_or_else(|_| format!("Failed to read prompt from {}", path.display())),
     };
 
     audit_log.record(AuditEvent::new(
@@ -275,14 +269,14 @@ pub async fn persistent_agent_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::InMemorySessionStore;
     use aaos_core::{InMemoryAuditLog, TokenUsage};
     use aaos_llm::{
-        CompletionRequest, CompletionResponse, ContentBlock, LlmClient, LlmResult, LlmStopReason,
-        ExecutorConfig,
+        CompletionRequest, CompletionResponse, ContentBlock, ExecutorConfig, LlmClient, LlmResult,
+        LlmStopReason,
     };
     use async_trait::async_trait;
     use std::sync::Mutex;
-    use crate::session::InMemorySessionStore;
 
     struct MockLlmClient {
         responses: Mutex<Vec<LlmResult<CompletionResponse>>>,
@@ -294,7 +288,10 @@ mod tests {
                 responses: Mutex::new(vec![Ok(CompletionResponse {
                     content: vec![ContentBlock::Text { text: text.into() }],
                     stop_reason: LlmStopReason::EndTurn,
-                    usage: TokenUsage { input_tokens: 10, output_tokens: 5 },
+                    usage: TokenUsage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
                 })]),
             }
         }
@@ -316,9 +313,14 @@ mod tests {
             let mut responses = self.responses.lock().unwrap();
             if responses.is_empty() {
                 Ok(CompletionResponse {
-                    content: vec![ContentBlock::Text { text: "default".into() }],
+                    content: vec![ContentBlock::Text {
+                        text: "default".into(),
+                    }],
                     stop_reason: LlmStopReason::EndTurn,
-                    usage: TokenUsage { input_tokens: 5, output_tokens: 3 },
+                    usage: TokenUsage {
+                        input_tokens: 5,
+                        output_tokens: 3,
+                    },
                 })
             } else {
                 responses.remove(0)
@@ -330,19 +332,36 @@ mod tests {
 
     #[async_trait]
     impl aaos_core::AgentServices for MockAgentServices {
-        async fn invoke_tool(&self, _: AgentId, _: &str, _: serde_json::Value) -> aaos_core::Result<serde_json::Value> {
+        async fn invoke_tool(
+            &self,
+            _: AgentId,
+            _: &str,
+            _: serde_json::Value,
+        ) -> aaos_core::Result<serde_json::Value> {
             Ok(serde_json::json!({"ok": true}))
         }
-        async fn send_message(&self, _: AgentId, _: serde_json::Value) -> aaos_core::Result<serde_json::Value> {
+        async fn send_message(
+            &self,
+            _: AgentId,
+            _: serde_json::Value,
+        ) -> aaos_core::Result<serde_json::Value> {
             Ok(serde_json::json!({"status": "delivered"}))
         }
-        async fn request_approval(&self, _: AgentId, _: String, _: std::time::Duration) -> aaos_core::Result<aaos_core::ApprovalResult> {
+        async fn request_approval(
+            &self,
+            _: AgentId,
+            _: String,
+            _: std::time::Duration,
+        ) -> aaos_core::Result<aaos_core::ApprovalResult> {
             Ok(aaos_core::ApprovalResult::Approved)
         }
         async fn report_usage(&self, _: AgentId, _: TokenUsage) -> aaos_core::Result<()> {
             Ok(())
         }
-        async fn list_tools(&self, _: AgentId) -> aaos_core::Result<Vec<aaos_core::ToolDefinition>> {
+        async fn list_tools(
+            &self,
+            _: AgentId,
+        ) -> aaos_core::Result<Vec<aaos_core::ToolDefinition>> {
             Ok(vec![])
         }
 
@@ -359,12 +378,15 @@ mod tests {
     }
 
     fn test_manifest() -> AgentManifest {
-        AgentManifest::from_yaml(r#"
+        AgentManifest::from_yaml(
+            r#"
 name: persistent-test
 model: claude-haiku-4-5-20251001
 system_prompt: "You are a test assistant."
 lifecycle: persistent
-"#).unwrap()
+"#,
+        )
+        .unwrap()
     }
 
     #[tokio::test]
@@ -381,22 +403,32 @@ lifecycle: persistent
         let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
 
         let handle = tokio::spawn(persistent_agent_loop(
-            agent_id, test_manifest(), msg_rx, cmd_rx,
-            executor, session_store.clone(), router.clone(), audit_log.clone(),
+            agent_id,
+            test_manifest(),
+            msg_rx,
+            cmd_rx,
+            executor,
+            session_store.clone(),
+            router.clone(),
+            audit_log.clone(),
             None,
         ));
 
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-        let msg = McpMessage::new(AgentId::new(), agent_id, "agent.run",
-            serde_json::json!({"message": "Hello"}));
+        let msg = McpMessage::new(
+            AgentId::new(),
+            agent_id,
+            "agent.run",
+            serde_json::json!({"message": "Hello"}),
+        );
         let trace_id = msg.metadata.trace_id;
         router.register_pending(trace_id, resp_tx);
         msg_tx.send(msg).await.unwrap();
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            resp_rx,
-        ).await.unwrap().unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), resp_rx)
+            .await
+            .unwrap()
+            .unwrap();
 
         assert!(response.result.is_some());
         let result = response.result.unwrap();
@@ -421,42 +453,65 @@ lifecycle: persistent
         let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::with_responses(vec![
             Err(aaos_llm::LlmError::Other("simulated failure".into())),
             Ok(CompletionResponse {
-                content: vec![ContentBlock::Text { text: "Recovered!".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "Recovered!".into(),
+                }],
                 stop_reason: LlmStopReason::EndTurn,
-                usage: TokenUsage { input_tokens: 10, output_tokens: 5 },
+                usage: TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                },
             }),
         ]));
         let services: Arc<dyn aaos_core::AgentServices> = Arc::new(MockAgentServices);
         let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
 
         let handle = tokio::spawn(persistent_agent_loop(
-            agent_id, test_manifest(), msg_rx, cmd_rx,
-            executor, session_store.clone(), router.clone(), audit_log.clone(),
+            agent_id,
+            test_manifest(),
+            msg_rx,
+            cmd_rx,
+            executor,
+            session_store.clone(),
+            router.clone(),
+            audit_log.clone(),
             None,
         ));
 
         // First message: will fail
-        let msg1 = McpMessage::new(AgentId::new(), agent_id, "agent.run",
-            serde_json::json!({"message": "Fail please"}));
+        let msg1 = McpMessage::new(
+            AgentId::new(),
+            agent_id,
+            "agent.run",
+            serde_json::json!({"message": "Fail please"}),
+        );
         let trace1 = msg1.metadata.trace_id;
         let (tx1, rx1) = tokio::sync::oneshot::channel();
         router.register_pending(trace1, tx1);
         msg_tx.send(msg1).await.unwrap();
 
         let resp1 = tokio::time::timeout(std::time::Duration::from_secs(5), rx1)
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert!(resp1.error.is_some());
 
         // Second message: should succeed (loop survived)
-        let msg2 = McpMessage::new(AgentId::new(), agent_id, "agent.run",
-            serde_json::json!({"message": "Recover"}));
+        let msg2 = McpMessage::new(
+            AgentId::new(),
+            agent_id,
+            "agent.run",
+            serde_json::json!({"message": "Recover"}),
+        );
         let trace2 = msg2.metadata.trace_id;
         let (tx2, rx2) = tokio::sync::oneshot::channel();
         router.register_pending(trace2, tx2);
         msg_tx.send(msg2).await.unwrap();
 
         let resp2 = tokio::time::timeout(std::time::Duration::from_secs(5), rx2)
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert!(resp2.result.is_some());
         assert_eq!(resp2.result.unwrap()["response"], "Recovered!");
 
@@ -478,8 +533,14 @@ lifecycle: persistent
         let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
 
         let handle = tokio::spawn(persistent_agent_loop(
-            agent_id, test_manifest(), msg_rx, cmd_rx,
-            executor, session_store, router, audit_log.clone(),
+            agent_id,
+            test_manifest(),
+            msg_rx,
+            cmd_rx,
+            executor,
+            session_store,
+            router,
+            audit_log.clone(),
             None,
         ));
 
@@ -487,11 +548,17 @@ lifecycle: persistent
 
         cmd_tx.send(AgentCommand::Stop).await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), handle)
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
 
         let events = audit_log.events();
-        let loop_started = events.iter().any(|e| matches!(&e.event, AuditEventKind::AgentLoopStarted { .. }));
-        let loop_stopped = events.iter().any(|e| matches!(&e.event, AuditEventKind::AgentLoopStopped { .. }));
+        let loop_started = events
+            .iter()
+            .any(|e| matches!(&e.event, AuditEventKind::AgentLoopStarted { .. }));
+        let loop_stopped = events
+            .iter()
+            .any(|e| matches!(&e.event, AuditEventKind::AgentLoopStopped { .. }));
         assert!(loop_started);
         assert!(loop_stopped);
     }
@@ -511,7 +578,10 @@ lifecycle: persistent
             },
         );
         let json = serde_json::to_string(&ev.event).unwrap();
-        assert!(json.contains("\"kind\":\"session_store_error\""), "unexpected: {json}");
+        assert!(
+            json.contains("\"kind\":\"session_store_error\""),
+            "unexpected: {json}"
+        );
         assert!(json.contains("\"operation\":\"clear\""));
         assert!(json.contains("\"message\":\"disk full\""));
     }

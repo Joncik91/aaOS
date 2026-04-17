@@ -38,7 +38,9 @@ pub fn format_error(e: &CliError) -> String {
             let mut out = format!("error: daemon not reachable at {}\n\n", path);
             if inner.to_lowercase().contains("permission denied") {
                 out.push_str("  Are you in the aaos group?   groups\n");
-                out.push_str("  If not:                       sudo adduser $USER aaos  (log out + in)\n");
+                out.push_str(
+                    "  If not:                       sudo adduser $USER aaos  (log out + in)\n",
+                );
             } else {
                 out.push_str("  Is agentd running?   systemctl status agentd\n");
                 out.push_str("  Check the journal:   journalctl -u agentd -n 50\n");
@@ -48,7 +50,8 @@ pub fn format_error(e: &CliError) -> String {
         CliError::Usage(msg) => format!("error: {}\n", msg),
         CliError::AgentFailed(msg) => format!("error: agent failed: {}\n", msg),
         CliError::BrokenPipe => {
-            "error: connection closed mid-stream\n\n  Daemon may have restarted. Try again.\n".into()
+            "error: connection closed mid-stream\n\n  Daemon may have restarted. Try again.\n"
+                .into()
         }
         CliError::Protocol(msg) => format!(
             "error: protocol: {}\n\n  Version skew: upgrade CLI or daemon to matching versions.\n",
@@ -71,7 +74,10 @@ mod tests {
 
     #[test]
     fn daemon_unreachable_exit_code_is_3() {
-        let e = CliError::DaemonUnreachable("/run/agentd/agentd.sock".into(), "Connection refused".into());
+        let e = CliError::DaemonUnreachable(
+            "/run/agentd/agentd.sock".into(),
+            "Connection refused".into(),
+        );
         assert_eq!(exit_code(&e), 3);
     }
 
@@ -112,8 +118,11 @@ mod tests {
             "Connection refused".into(),
         );
         let rendered = format_error(&e);
-        assert!(rendered.contains("systemctl status agentd"),
-                "rendered: {}", rendered);
+        assert!(
+            rendered.contains("systemctl status agentd"),
+            "rendered: {}",
+            rendered
+        );
         assert!(rendered.contains("/run/agentd/agentd.sock"));
         assert!(rendered.contains("journalctl"));
     }
@@ -151,8 +160,13 @@ mod tests {
     fn broken_pipe_hint_mentions_restart() {
         let e = CliError::BrokenPipe;
         let rendered = format_error(&e);
-        assert!(rendered.to_lowercase().contains("daemon may have restarted"),
-                "rendered: {}", rendered);
+        assert!(
+            rendered
+                .to_lowercase()
+                .contains("daemon may have restarted"),
+            "rendered: {}",
+            rendered
+        );
     }
 
     #[test]
@@ -175,7 +189,12 @@ mod tests {
         ];
         for e in samples {
             let r = format_error(&e);
-            assert!(r.ends_with('\n'), "missing trailing newline for {:?}: {:?}", e, r);
+            assert!(
+                r.ends_with('\n'),
+                "missing trailing newline for {:?}: {:?}",
+                e,
+                r
+            );
         }
     }
 }

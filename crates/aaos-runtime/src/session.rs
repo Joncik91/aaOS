@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use aaos_core::{AgentId, Result, CoreError};
+use aaos_core::{AgentId, CoreError, Result};
 use aaos_llm::Message;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -45,7 +45,10 @@ pub struct JsonlSessionStore {
 impl JsonlSessionStore {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&data_dir).map_err(|e| {
-            CoreError::Ipc(format!("failed to create session dir {}: {e}", data_dir.display()))
+            CoreError::Ipc(format!(
+                "failed to create session dir {}: {e}",
+                data_dir.display()
+            ))
         })?;
         Ok(Self { data_dir })
     }
@@ -61,9 +64,8 @@ impl SessionStore for JsonlSessionStore {
         if !path.exists() {
             return Ok(vec![]);
         }
-        let file = fs::File::open(&path).map_err(|e| {
-            CoreError::Ipc(format!("failed to open session file: {e}"))
-        })?;
+        let file = fs::File::open(&path)
+            .map_err(|e| CoreError::Ipc(format!("failed to open session file: {e}")))?;
         let reader = BufReader::new(file);
         let mut messages = Vec::new();
         for line in reader.lines() {
@@ -90,9 +92,8 @@ impl SessionStore for JsonlSessionStore {
             .map_err(|e| CoreError::Ipc(format!("failed to open session file for append: {e}")))?;
         for msg in messages {
             let json = serde_json::to_string(msg)?;
-            writeln!(file, "{json}").map_err(|e| {
-                CoreError::Ipc(format!("failed to write session line: {e}"))
-            })?;
+            writeln!(file, "{json}")
+                .map_err(|e| CoreError::Ipc(format!("failed to write session line: {e}")))?;
         }
         Ok(())
     }
@@ -100,9 +101,8 @@ impl SessionStore for JsonlSessionStore {
     fn clear(&self, agent_id: &AgentId) -> Result<()> {
         let path = self.path_for(agent_id);
         if path.exists() {
-            fs::write(&path, b"").map_err(|e| {
-                CoreError::Ipc(format!("failed to clear session file: {e}"))
-            })?;
+            fs::write(&path, b"")
+                .map_err(|e| CoreError::Ipc(format!("failed to clear session file: {e}")))?;
         }
         Ok(())
     }
@@ -115,9 +115,8 @@ impl SessionStore for JsonlSessionStore {
         );
         let path = self.data_dir.join(filename);
         let json = serde_json::to_string(segment)?;
-        std::fs::write(&path, json).map_err(|e| {
-            CoreError::Ipc(format!("failed to write archive file: {e}"))
-        })?;
+        std::fs::write(&path, json)
+            .map_err(|e| CoreError::Ipc(format!("failed to write archive file: {e}")))?;
         Ok(())
     }
 
@@ -125,17 +124,15 @@ impl SessionStore for JsonlSessionStore {
         let prefix = format!("{}.archive.", agent_id.as_uuid());
         let mut archives = Vec::new();
 
-        let entries = std::fs::read_dir(&self.data_dir).map_err(|e| {
-            CoreError::Ipc(format!("failed to read session dir: {e}"))
-        })?;
+        let entries = std::fs::read_dir(&self.data_dir)
+            .map_err(|e| CoreError::Ipc(format!("failed to read session dir: {e}")))?;
 
         for entry in entries {
             let entry = entry.map_err(|e| CoreError::Ipc(format!("dir entry error: {e}")))?;
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with(&prefix) && name.ends_with(".json") {
-                let content = std::fs::read_to_string(entry.path()).map_err(|e| {
-                    CoreError::Ipc(format!("failed to read archive file: {e}"))
-                })?;
+                let content = std::fs::read_to_string(entry.path())
+                    .map_err(|e| CoreError::Ipc(format!("failed to read archive file: {e}")))?;
                 let segment: ArchiveSegment = serde_json::from_str(&content)?;
                 archives.push(segment);
             }
@@ -147,13 +144,12 @@ impl SessionStore for JsonlSessionStore {
 
     fn prune_archives(&self, agent_id: &AgentId, max_age: std::time::Duration) -> Result<usize> {
         let prefix = format!("{}.archive.", agent_id.as_uuid());
-        let cutoff = Utc::now() - chrono::Duration::from_std(max_age)
-            .unwrap_or_else(|_| chrono::Duration::days(365));
+        let cutoff = Utc::now()
+            - chrono::Duration::from_std(max_age).unwrap_or_else(|_| chrono::Duration::days(365));
         let mut pruned = 0;
 
-        let entries = std::fs::read_dir(&self.data_dir).map_err(|e| {
-            CoreError::Ipc(format!("failed to read session dir: {e}"))
-        })?;
+        let entries = std::fs::read_dir(&self.data_dir)
+            .map_err(|e| CoreError::Ipc(format!("failed to read session dir: {e}")))?;
 
         for entry in entries {
             let entry = entry.map_err(|e| CoreError::Ipc(format!("dir entry error: {e}")))?;
@@ -224,7 +220,9 @@ impl SessionStore for InMemorySessionStore {
 
     fn load_archives(&self, agent_id: &AgentId) -> Result<Vec<ArchiveSegment>> {
         let key = agent_id.as_uuid().to_string();
-        let mut archives = self.archives.get(&key)
+        let mut archives = self
+            .archives
+            .get(&key)
             .map(|v| v.clone())
             .unwrap_or_default();
         archives.sort_by_key(|a| a.archived_at);
@@ -233,8 +231,8 @@ impl SessionStore for InMemorySessionStore {
 
     fn prune_archives(&self, agent_id: &AgentId, max_age: std::time::Duration) -> Result<usize> {
         let key = agent_id.as_uuid().to_string();
-        let cutoff = Utc::now() - chrono::Duration::from_std(max_age)
-            .unwrap_or_else(|_| chrono::Duration::days(365));
+        let cutoff = Utc::now()
+            - chrono::Duration::from_std(max_age).unwrap_or_else(|_| chrono::Duration::days(365));
         let mut pruned = 0;
 
         if let Some(mut entry) = self.archives.get_mut(&key) {
@@ -260,9 +258,13 @@ mod tests {
         let agent_id = AgentId::new();
 
         let messages = vec![
-            Message::User { content: "hello".into() },
+            Message::User {
+                content: "hello".into(),
+            },
             Message::Assistant {
-                content: vec![ContentBlock::Text { text: "hi there".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "hi there".into(),
+                }],
             },
         ];
 
@@ -281,9 +283,30 @@ mod tests {
         let store = JsonlSessionStore::new(dir.path().to_path_buf()).unwrap();
         let agent_id = AgentId::new();
 
-        store.append(&agent_id, &[Message::User { content: "first".into() }]).unwrap();
-        store.append(&agent_id, &[Message::User { content: "second".into() }]).unwrap();
-        store.append(&agent_id, &[Message::User { content: "third".into() }]).unwrap();
+        store
+            .append(
+                &agent_id,
+                &[Message::User {
+                    content: "first".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .append(
+                &agent_id,
+                &[Message::User {
+                    content: "second".into(),
+                }],
+            )
+            .unwrap();
+        store
+            .append(
+                &agent_id,
+                &[Message::User {
+                    content: "third".into(),
+                }],
+            )
+            .unwrap();
 
         let loaded = store.load(&agent_id).unwrap();
         assert_eq!(loaded.len(), 3);
@@ -307,7 +330,14 @@ mod tests {
         let store = JsonlSessionStore::new(dir.path().to_path_buf()).unwrap();
         let agent_id = AgentId::new();
 
-        store.append(&agent_id, &[Message::User { content: "data".into() }]).unwrap();
+        store
+            .append(
+                &agent_id,
+                &[Message::User {
+                    content: "data".into(),
+                }],
+            )
+            .unwrap();
         store.clear(&agent_id).unwrap();
         let loaded = store.load(&agent_id).unwrap();
         assert!(loaded.is_empty());
@@ -321,9 +351,14 @@ mod tests {
 
         {
             let store = JsonlSessionStore::new(path.clone()).unwrap();
-            store.append(&agent_id, &[
-                Message::User { content: "session 1 msg".into() },
-            ]).unwrap();
+            store
+                .append(
+                    &agent_id,
+                    &[Message::User {
+                        content: "session 1 msg".into(),
+                    }],
+                )
+                .unwrap();
         }
 
         {
@@ -342,7 +377,14 @@ mod tests {
         let store = InMemorySessionStore::new();
         let agent_id = AgentId::new();
 
-        store.append(&agent_id, &[Message::User { content: "test".into() }]).unwrap();
+        store
+            .append(
+                &agent_id,
+                &[Message::User {
+                    content: "test".into(),
+                }],
+            )
+            .unwrap();
         let loaded = store.load(&agent_id).unwrap();
         assert_eq!(loaded.len(), 1);
 
@@ -360,8 +402,12 @@ mod tests {
         let segment = ArchiveSegment {
             source_range: (0, 2),
             messages: vec![
-                Message::User { content: "old message 1".into() },
-                Message::User { content: "old message 2".into() },
+                Message::User {
+                    content: "old message 1".into(),
+                },
+                Message::User {
+                    content: "old message 2".into(),
+                },
             ],
             archived_at: chrono::Utc::now(),
         };
@@ -381,12 +427,16 @@ mod tests {
 
         let seg1 = ArchiveSegment {
             source_range: (0, 5),
-            messages: vec![Message::User { content: "batch 1".into() }],
+            messages: vec![Message::User {
+                content: "batch 1".into(),
+            }],
             archived_at: chrono::Utc::now() - chrono::Duration::hours(2),
         };
         let seg2 = ArchiveSegment {
             source_range: (6, 10),
-            messages: vec![Message::User { content: "batch 2".into() }],
+            messages: vec![Message::User {
+                content: "batch 2".into(),
+            }],
             archived_at: chrono::Utc::now(),
         };
 
@@ -405,19 +455,25 @@ mod tests {
 
         let old_seg = ArchiveSegment {
             source_range: (0, 5),
-            messages: vec![Message::User { content: "old".into() }],
+            messages: vec![Message::User {
+                content: "old".into(),
+            }],
             archived_at: chrono::Utc::now() - chrono::Duration::days(60),
         };
         let new_seg = ArchiveSegment {
             source_range: (6, 10),
-            messages: vec![Message::User { content: "new".into() }],
+            messages: vec![Message::User {
+                content: "new".into(),
+            }],
             archived_at: chrono::Utc::now(),
         };
 
         store.archive_segment(&agent_id, &old_seg).unwrap();
         store.archive_segment(&agent_id, &new_seg).unwrap();
 
-        let pruned = store.prune_archives(&agent_id, std::time::Duration::from_secs(30 * 86400)).unwrap();
+        let pruned = store
+            .prune_archives(&agent_id, std::time::Duration::from_secs(30 * 86400))
+            .unwrap();
         assert_eq!(pruned, 1);
 
         let remaining = store.load_archives(&agent_id).unwrap();
@@ -431,7 +487,9 @@ mod tests {
 
         let segment = ArchiveSegment {
             source_range: (0, 3),
-            messages: vec![Message::User { content: "archived".into() }],
+            messages: vec![Message::User {
+                content: "archived".into(),
+            }],
             archived_at: chrono::Utc::now(),
         };
 

@@ -57,10 +57,10 @@ impl Tool for FileWriteTool {
         let requested = Capability::FileWrite {
             path_glob: path_str.to_string(),
         };
-        let allowed = ctx
-            .tokens
-            .iter()
-            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
+        let allowed = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry
+                .permits(*h, ctx.agent_id, &requested)
+        });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,

@@ -132,9 +132,7 @@ mod tests {
 
         fn ok_response() -> CompletionResponse {
             CompletionResponse {
-                content: vec![ContentBlock::Text {
-                    text: "ok".into(),
-                }],
+                content: vec![ContentBlock::Text { text: "ok".into() }],
                 stop_reason: LlmStopReason::EndTurn,
                 usage: TokenUsage {
                     input_tokens: 1,
@@ -178,8 +176,7 @@ mod tests {
 
     #[tokio::test]
     async fn semaphore_limits_concurrency() {
-        let (tracker, _active, max_seen) =
-            ConcurrencyTracker::new(Duration::from_millis(50));
+        let (tracker, _active, max_seen) = ConcurrencyTracker::new(Duration::from_millis(50));
         let client = Arc::new(ScheduledLlmClient::new(
             Arc::new(tracker),
             InferenceSchedulingConfig {
@@ -208,10 +205,8 @@ mod tests {
     #[tokio::test]
     async fn passthrough_max_context_tokens() {
         let (tracker, _, _) = ConcurrencyTracker::new(Duration::ZERO);
-        let client = ScheduledLlmClient::new(
-            Arc::new(tracker),
-            InferenceSchedulingConfig::default(),
-        );
+        let client =
+            ScheduledLlmClient::new(Arc::new(tracker), InferenceSchedulingConfig::default());
         assert_eq!(client.max_context_tokens("anything"), 128_000);
     }
 
@@ -228,10 +223,8 @@ mod tests {
     #[tokio::test]
     async fn requests_complete_correctly() {
         let (tracker, _, _) = ConcurrencyTracker::new(Duration::ZERO);
-        let client = ScheduledLlmClient::new(
-            Arc::new(tracker),
-            InferenceSchedulingConfig::default(),
-        );
+        let client =
+            ScheduledLlmClient::new(Arc::new(tracker), InferenceSchedulingConfig::default());
         let resp = client.complete(test_request()).await.unwrap();
         assert_eq!(resp.stop_reason, LlmStopReason::EndTurn);
         assert!(matches!(&resp.content[0], ContentBlock::Text { text } if text == "ok"));

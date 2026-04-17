@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use aaos_core::{AgentId, SummarizationFailureKind, TokenBudget};
-use aaos_llm::{ContentBlock, LlmClient, Message};
 use aaos_llm::types::{CompletionRequest, CompletionResponse};
+use aaos_llm::{ContentBlock, LlmClient, Message};
 
 /// Typed classification of a summarization failure, carried inside
 /// `PreparedContext.summarization_failure` so callers can emit a structured
@@ -19,7 +19,10 @@ pub struct SummarizationFailure {
 
 impl SummarizationFailure {
     fn llm_call_failed(msg: impl Into<String>) -> Self {
-        Self { kind: SummarizationFailureKind::LlmCallFailed, message: msg.into() }
+        Self {
+            kind: SummarizationFailureKind::LlmCallFailed,
+            message: msg.into(),
+        }
     }
     fn empty_response() -> Self {
         Self {
@@ -154,8 +157,9 @@ impl ContextManager {
         let selected = &history[..selection_end];
 
         // Guard: make sure the selected messages fit in the summarization model's context
-        let summarization_model_max =
-            self.llm_client.max_context_tokens(&self.summarization_model);
+        let summarization_model_max = self
+            .llm_client
+            .max_context_tokens(&self.summarization_model);
         let selected_tokens = estimate_tokens(selected);
         let guarded_end = if selected_tokens > summarization_model_max * 9 / 10 {
             // Trim selection to fit
@@ -434,9 +438,7 @@ mod tests {
         fn with_summary(text: &str) -> Self {
             Self {
                 responses: Mutex::new(vec![Ok(CompletionResponse {
-                    content: vec![ContentBlock::Text {
-                        text: text.into(),
-                    }],
+                    content: vec![ContentBlock::Text { text: text.into() }],
                     stop_reason: LlmStopReason::EndTurn,
                     usage: TokenUsage {
                         input_tokens: 100,
@@ -448,9 +450,7 @@ mod tests {
 
         fn failing() -> Self {
             Self {
-                responses: Mutex::new(vec![Err(LlmError::Other(
-                    "simulated failure".into(),
-                ))]),
+                responses: Mutex::new(vec![Err(LlmError::Other("simulated failure".into()))]),
             }
         }
     }
@@ -554,9 +554,7 @@ mod tests {
                 content: "hello".into(),
             },
             Message::Assistant {
-                content: vec![ContentBlock::Text {
-                    text: "hi".into(),
-                }],
+                content: vec![ContentBlock::Text { text: "hi".into() }],
             },
         ];
 
@@ -589,7 +587,9 @@ mod tests {
         assert!(!summ.archived_messages.is_empty());
         assert!(summ.tokens_saved_estimate > 0);
         // System prompt should contain the summary prefix
-        assert!(result.system_prompt.contains("[Previous conversation summary]"));
+        assert!(result
+            .system_prompt
+            .contains("[Previous conversation summary]"));
     }
 
     #[tokio::test]
@@ -624,10 +624,14 @@ mod tests {
         // When history is short enough that we don't summarize, the failure
         // field should stay None.
         let llm = Arc::new(MockSummarizationLlm::with_summary("unused"));
-        let budget = TokenBudget { max_tokens: 1_000_000 };
+        let budget = TokenBudget {
+            max_tokens: 1_000_000,
+        };
         let cm = ContextManager::new(llm, budget, "test-model".into(), 0.7);
 
-        let history = vec![Message::User { content: "hello".into() }];
+        let history = vec![Message::User {
+            content: "hello".into(),
+        }];
         let result = cm
             .prepare_context(&history, "You are helpful.")
             .await
@@ -664,7 +668,9 @@ mod tests {
             .prepare_context(&history, "You are helpful.")
             .await
             .unwrap();
-        assert!(result.system_prompt.contains("Previously: User name is Alice"));
+        assert!(result
+            .system_prompt
+            .contains("Previously: User name is Alice"));
         assert!(result.system_prompt.contains("You are helpful."));
         // Summary should NOT be in the messages list
         assert_eq!(result.messages.len(), 2);
@@ -684,8 +690,14 @@ mod tests {
         let history = make_long_history(20); // 40 messages
 
         // First call: should trigger summarization
-        let result1 = cm.prepare_context(&history, "You are helpful.").await.unwrap();
-        assert!(result1.summarization.is_some(), "Expected summarization to trigger");
+        let result1 = cm
+            .prepare_context(&history, "You are helpful.")
+            .await
+            .unwrap();
+        assert!(
+            result1.summarization.is_some(),
+            "Expected summarization to trigger"
+        );
 
         let summ = result1.summarization.unwrap();
         assert!(!summ.archived_messages.is_empty());
@@ -701,13 +713,22 @@ mod tests {
 
         // Second call with new history and large budget: Summary should fold into system prompt
         let llm2 = Arc::new(MockSummarizationLlm::with_summary("unused"));
-        let budget2 = TokenBudget { max_tokens: 1_000_000 };
+        let budget2 = TokenBudget {
+            max_tokens: 1_000_000,
+        };
         let cm2 = ContextManager::new(llm2, budget2, "test-model".into(), 0.7);
 
-        let result2 = cm2.prepare_context(&new_history, "You are helpful.").await.unwrap();
+        let result2 = cm2
+            .prepare_context(&new_history, "You are helpful.")
+            .await
+            .unwrap();
         assert!(result2.summarization.is_none());
-        assert!(result2.system_prompt.contains("[Previous conversation summary]"));
-        assert!(result2.system_prompt.contains("Summary: User sent 20 pairs"));
+        assert!(result2
+            .system_prompt
+            .contains("[Previous conversation summary]"));
+        assert!(result2
+            .system_prompt
+            .contains("Summary: User sent 20 pairs"));
         // Messages should not contain Summary variant
         for msg in &result2.messages {
             assert!(!matches!(msg, Message::Summary { .. }));
@@ -776,13 +797,17 @@ mod tests {
         let boundary = ContextManager::select_summarization_boundary(&empty, 1000);
         assert!(boundary <= empty.len(), "empty: {boundary}");
 
-        let single = vec![Message::User { content: "hi".into() }];
+        let single = vec![Message::User {
+            content: "hi".into(),
+        }];
         let boundary = ContextManager::select_summarization_boundary(&single, 1);
         assert!(boundary <= single.len(), "single: {boundary}");
 
         // Tool-pair edge case: Assistant(ToolUse) + ToolResult at the tail
         let tool_tail = vec![
-            Message::User { content: "start".into() },
+            Message::User {
+                content: "start".into(),
+            },
             Message::Assistant {
                 content: vec![ContentBlock::ToolUse {
                     id: "tool-1".into(),

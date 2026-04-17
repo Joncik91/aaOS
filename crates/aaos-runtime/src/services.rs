@@ -211,10 +211,11 @@ impl AgentServices for InProcessAgentServices {
         let required = Capability::MessageSend {
             target_agents: vec![recipient.to_string()],
         };
-        if !handles
-            .iter()
-            .any(|h| self.registry.capability_registry().permits(*h, agent_id, &required))
-        {
+        if !handles.iter().any(|h| {
+            self.registry
+                .capability_registry()
+                .permits(*h, agent_id, &required)
+        }) {
             return Err(CoreError::CapabilityDenied {
                 agent_id,
                 capability: required,
@@ -242,12 +243,8 @@ impl AgentServices for InProcessAgentServices {
                     Ok(serde_json::json!({}))
                 }
             }
-            Ok(Err(_)) => {
-                Err(CoreError::Ipc("responder dropped".into()))
-            }
-            Err(_) => {
-                Err(CoreError::Timeout(timeout))
-            }
+            Ok(Err(_)) => Err(CoreError::Ipc("responder dropped".into())),
+            Err(_) => Err(CoreError::Timeout(timeout)),
         }
     }
 }

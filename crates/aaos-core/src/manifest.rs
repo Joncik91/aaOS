@@ -48,8 +48,12 @@ fn default_context_window() -> String {
     "128k".to_string()
 }
 
-fn default_episodic_max_records() -> usize { 10_000 }
-fn default_episodic_max_content_bytes() -> usize { 4096 }
+fn default_episodic_max_records() -> usize {
+    10_000
+}
+fn default_episodic_max_content_bytes() -> usize {
+    4096
+}
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -316,7 +320,10 @@ memory:
   archive_ttl_days: 14
 "#;
         let manifest = AgentManifest::from_yaml(yaml).unwrap();
-        assert_eq!(manifest.memory.summarization_model, Some("claude-haiku-4-5-20251001".into()));
+        assert_eq!(
+            manifest.memory.summarization_model,
+            Some("claude-haiku-4-5-20251001".into())
+        );
         assert_eq!(manifest.memory.summarization_threshold, Some(0.8));
         assert_eq!(manifest.memory.archive_ttl_days, Some(14));
     }

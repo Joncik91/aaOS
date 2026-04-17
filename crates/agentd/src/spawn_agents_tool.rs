@@ -212,9 +212,8 @@ impl Tool for SpawnAgentsTool {
                 Ok((idx, v)) => indexed.push((idx, v)),
                 Err(e) => {
                     if panic_err.is_none() {
-                        panic_err = Some(CoreError::Ipc(format!(
-                            "spawn_agents task panicked: {e}"
-                        )));
+                        panic_err =
+                            Some(CoreError::Ipc(format!("spawn_agents task panicked: {e}")));
                     }
                 }
             }

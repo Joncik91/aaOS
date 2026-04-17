@@ -87,10 +87,10 @@ impl Tool for GitCommitTool {
         let requested = Capability::GitCommit {
             workspace: workspace.to_string(),
         };
-        let allowed = ctx
-            .tokens
-            .iter()
-            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
+        let allowed = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry
+                .permits(*h, ctx.agent_id, &requested)
+        });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
@@ -125,20 +125,24 @@ async fn run_git_commit(ws: &Path, message: &str, paths: &[String]) -> Result<Va
     }
 
     // Step 2: git commit
-    let commit_output = run_git_command(ws, "commit", &["-m".to_string(), message.to_string()]).await?;
-    
+    let commit_output =
+        run_git_command(ws, "commit", &["-m".to_string(), message.to_string()]).await?;
+
     let duration_ms = started.elapsed().as_millis() as u64;
     let exit_code = commit_output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&commit_output.stdout);
     let stderr = String::from_utf8_lossy(&commit_output.stderr);
-    
+
     // Check if commit succeeded or if there was nothing to commit
-    let success = commit_output.status.success() || 
-                  stderr.contains("nothing to commit") || 
-                  stdout.contains("nothing to commit");
-    
+    let success = commit_output.status.success()
+        || stderr.contains("nothing to commit")
+        || stdout.contains("nothing to commit");
+
     // Get commit SHA if commit was created
-    let commit_sha = if success && !stderr.contains("nothing to commit") && !stdout.contains("nothing to commit") {
+    let commit_sha = if success
+        && !stderr.contains("nothing to commit")
+        && !stdout.contains("nothing to commit")
+    {
         match get_head_commit_sha(ws).await {
             Ok(sha) => Some(sha),
             Err(_) => None,
@@ -160,7 +164,11 @@ async fn run_git_commit(ws: &Path, message: &str, paths: &[String]) -> Result<Va
     }))
 }
 
-async fn run_git_command(ws: &Path, subcommand: &str, args: &[String]) -> Result<std::process::Output> {
+async fn run_git_command(
+    ws: &Path,
+    subcommand: &str,
+    args: &[String],
+) -> Result<std::process::Output> {
     let mut cmd = tokio::process::Command::new("git");
     cmd.arg("-C").arg(ws).arg(subcommand);
     for a in args {
@@ -171,9 +179,10 @@ async fn run_git_command(ws: &Path, subcommand: &str, args: &[String]) -> Result
         .kill_on_drop(true);
 
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| CoreError::Ipc(format!("failed to spawn git {subcommand}: {e}")))?;
-    
+
     match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(e)) => Err(CoreError::Ipc(format!("git {subcommand} wait failed: {e}"))),
@@ -182,21 +191,22 @@ async fn run_git_command(ws: &Path, subcommand: &str, args: &[String]) -> Result
 }
 
 async fn get_head_commit_sha(ws: &Path) -> Result<String> {
-    let output = run_git_command(ws, "rev-parse", &["HEAD".to_string()]).await
+    let output = run_git_command(ws, "rev-parse", &["HEAD".to_string()])
+        .await
         .map_err(|e| CoreError::Ipc(format!("failed to get commit SHA: {e}")))?;
-    
+
     if !output.status.success() {
         return Err(CoreError::Ipc(format!(
             "git rev-parse HEAD failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    
+
     let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if sha.is_empty() {
         return Err(CoreError::Ipc("empty commit SHA returned".into()));
     }
-    
+
     Ok(sha)
 }
 
@@ -239,18 +249,21 @@ mod tests {
     /// Create a temporary git repository with a dummy file.
     fn scaffold_git_repo(dir: &TempDir) -> std::path::PathBuf {
         let ws = dir.path().to_path_buf();
-        
+
         // Initialize git repo
         let output = std::process::Command::new("git")
             .arg("init")
             .arg(&ws)
             .output()
             .expect("git init failed");
-        
+
         if !output.status.success() {
-            panic!("git init failed: {}", String::from_utf8_lossy(&output.stderr));
+            panic!(
+                "git init failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
-        
+
         // Set user name and email for commits
         std::process::Command::new("git")
             .arg("-C")
@@ -260,7 +273,7 @@ mod tests {
             .arg("Test User")
             .output()
             .expect("git config user.name failed");
-            
+
         std::process::Command::new("git")
             .arg("-C")
             .arg(&ws)
@@ -269,10 +282,10 @@ mod tests {
             .arg("test@example.com")
             .output()
             .expect("git config user.email failed");
-        
+
         // Create a dummy file
         std::fs::write(ws.join("test.txt"), "test content\n").unwrap();
-        
+
         ws
     }
 
@@ -293,7 +306,10 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("must not start with '-'"), "got: {err}");
+        assert!(
+            err.to_string().contains("must not start with '-'"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -314,7 +330,10 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("not a git repository"), "got: {err}");
+        assert!(
+            err.to_string().contains("not a git repository"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -323,7 +342,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let ws = scaffold_git_repo(&dir);
         let ctx = ctx_with_git_commit(ws.to_str().unwrap());
-        
+
         // Get initial HEAD (should be the initial empty commit)
         let initial_head = std::process::Command::new("git")
             .arg("-C")
@@ -332,8 +351,10 @@ mod tests {
             .arg("HEAD")
             .output()
             .expect("git rev-parse failed");
-        let initial_sha = String::from_utf8_lossy(&initial_head.stdout).trim().to_string();
-        
+        let initial_sha = String::from_utf8_lossy(&initial_head.stdout)
+            .trim()
+            .to_string();
+
         let result = GitCommitTool
             .invoke(
                 json!({
@@ -345,10 +366,10 @@ mod tests {
             )
             .await
             .unwrap();
-        
+
         assert_eq!(result["success"], true, "git commit failed: {:?}", result);
         assert_eq!(result["nothing_to_commit"], false);
-        
+
         // Get new HEAD
         let new_head = std::process::Command::new("git")
             .arg("-C")
@@ -358,7 +379,7 @@ mod tests {
             .output()
             .expect("git rev-parse failed");
         let new_sha = String::from_utf8_lossy(&new_head.stdout).trim().to_string();
-        
+
         // Should have a new commit SHA
         assert_ne!(initial_sha, new_sha);
         assert_eq!(result["commit_sha"], new_sha);

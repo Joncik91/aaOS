@@ -73,7 +73,9 @@ mod tests {
 
     #[test]
     fn message_user_roundtrips_json() {
-        let msg = Message::User { content: "hello".into() };
+        let msg = Message::User {
+            content: "hello".into(),
+        };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: Message = serde_json::from_str(&json).unwrap();
         match parsed {
@@ -112,7 +114,11 @@ mod tests {
         assert!(json.contains("\"role\":\"summary\""));
         let parsed: Message = serde_json::from_str(&json).unwrap();
         match parsed {
-            Message::Summary { content, messages_summarized, source_range } => {
+            Message::Summary {
+                content,
+                messages_summarized,
+                source_range,
+            } => {
                 assert_eq!(content, "User discussed project deadlines.");
                 assert_eq!(messages_summarized, 15);
                 assert_eq!(source_range, (0, 14));
@@ -131,7 +137,11 @@ mod tests {
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: Message = serde_json::from_str(&json).unwrap();
         match parsed {
-            Message::ToolResult { tool_use_id, is_error, .. } => {
+            Message::ToolResult {
+                tool_use_id,
+                is_error,
+                ..
+            } => {
                 assert_eq!(tool_use_id, "call_1");
                 assert!(!is_error);
             }

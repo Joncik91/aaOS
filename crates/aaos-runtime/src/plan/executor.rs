@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use aaos_core::{AgentId, AuditEvent, AuditEventKind, AuditLog, CoreError};
 
 use crate::plan::{
-    topo_batches, Plan, PlanResult, Planner, PlannerError, RoleCatalog, Subtask,
-    SubtaskId, SubtaskResult, Substitutions,
+    topo_batches, Plan, PlanResult, Planner, PlannerError, RoleCatalog, Substitutions, Subtask,
+    SubtaskId, SubtaskResult,
 };
 
 /// Per-subtask executor overrides derived from the role's `budget` + `retry`
@@ -50,13 +50,12 @@ impl Default for SubtaskExecutorOverrides {
 /// the executor doesn't have to re-wire services.
 pub type SubtaskRunner = Arc<
     dyn Fn(
-            String,                     // subtask_id (for audit correlation)
-            String,                     // rendered manifest YAML
-            String,                     // first message for the child
-            SubtaskExecutorOverrides,   // per-role budget + iteration caps
-        ) -> Pin<
-            Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>,
-        > + Send
+            String,                   // subtask_id (for audit correlation)
+            String,                   // rendered manifest YAML
+            String,                   // first message for the child
+            SubtaskExecutorOverrides, // per-role budget + iteration caps
+        ) -> Pin<Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -71,12 +70,11 @@ pub type SubtaskRunner = Arc<
 /// role) are caught upstream in spawn_subtask.
 pub type ScaffoldRunner = Arc<
     dyn Fn(
-            String,                     // subtask_id
-            String,                     // scaffold kind (e.g. "fetcher")
-            serde_json::Value,          // resolved params
-        ) -> Pin<
-            Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>,
-        > + Send
+            String,            // subtask_id
+            String,            // scaffold kind (e.g. "fetcher")
+            serde_json::Value, // resolved params
+        ) -> Pin<Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>>
+        + Send
         + Sync,
 >;
 
@@ -179,11 +177,7 @@ impl PlanExecutor {
         let path = run_root.join("plan.json");
         let json = serde_json::to_string_pretty(plan).unwrap();
         std::fs::write(&path, json).map_err(|e| {
-            ExecutorError::Terminal(CoreError::Ipc(format!(
-                "write {}: {}",
-                path.display(),
-                e
-            )))
+            ExecutorError::Terminal(CoreError::Ipc(format!("write {}: {}", path.display(), e)))
         })
     }
 
@@ -204,7 +198,8 @@ impl PlanExecutor {
                 .get(&s.role)
                 .ok_or_else(|| ExecutorError::Correctable(format!("unknown role: {}", s.role)))?;
             let resolved = subs.apply(&s.params);
-            role.validate_params(&resolved).map_err(ExecutorError::Correctable)?;
+            role.validate_params(&resolved)
+                .map_err(ExecutorError::Correctable)?;
         }
 
         let mut results: HashMap<SubtaskId, SubtaskResult> = HashMap::new();
@@ -314,13 +309,9 @@ impl PlanExecutor {
         // "Prompt contracts can't enforce tool-call side effects".
         if let Some(scaffold) = &role.scaffold {
             if let Some(runner) = &self.scaffold_runner {
-                let result = runner(
-                    subtask.id.clone(),
-                    scaffold.kind.clone(),
-                    resolved_params,
-                )
-                .await
-                .map_err(ExecutorError::Terminal)?;
+                let result = runner(subtask.id.clone(), scaffold.kind.clone(), resolved_params)
+                    .await
+                    .map_err(ExecutorError::Terminal)?;
                 return Ok(result);
             }
             // Role asked for a scaffold but none is installed — surface
@@ -414,7 +405,9 @@ fn check_declared_outputs_exist(
             None => continue,
         };
         if !Path::new(path_str).exists() {
-            return Some(format!("'{path_str}' (from {{{param_name}}}) was not written"));
+            return Some(format!(
+                "'{path_str}' (from {{{param_name}}}) was not written"
+            ));
         }
     }
     None
@@ -447,9 +440,7 @@ pub fn fallback_generalist_plan(goal: &str, catalog: &RoleCatalog) -> Result<Pla
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{
-        ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry, Subtask,
-    };
+    use crate::plan::{ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry, Subtask};
     use aaos_core::InMemoryAuditLog;
     use std::collections::HashMap as StdHashMap;
 
@@ -521,13 +512,7 @@ mod tests {
         };
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
-        let exec = PlanExecutor::new(
-            cat,
-            planner,
-            stub_runner(),
-            audit,
-            std::env::temp_dir(),
-        );
+        let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
         let tmp = tempfile::tempdir().unwrap();
         let err = exec
             .execute_plan(&bad_plan, &tmp.path().to_path_buf())
@@ -550,13 +535,7 @@ mod tests {
         };
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
-        let exec = PlanExecutor::new(
-            cat,
-            planner,
-            stub_runner(),
-            audit,
-            std::env::temp_dir(),
-        );
+        let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
         let tmp = tempfile::tempdir().unwrap();
         let err = exec
             .execute_plan(&bad_plan, &tmp.path().to_path_buf())
@@ -669,7 +648,10 @@ mod tests {
         assert_eq!(fb.subtasks.len(), 1);
         assert_eq!(fb.subtasks[0].role, "generalist");
         assert_eq!(
-            fb.subtasks[0].params.get("task_description").and_then(|v| v.as_str()),
+            fb.subtasks[0]
+                .params
+                .get("task_description")
+                .and_then(|v| v.as_str()),
             Some("do the thing")
         );
     }
@@ -703,7 +685,9 @@ mod tests {
     }
     impl ScriptedLlm {
         fn new(replies: Vec<String>) -> Self {
-            Self { replies: std::sync::Mutex::new(replies) }
+            Self {
+                replies: std::sync::Mutex::new(replies),
+            }
         }
     }
     #[async_trait::async_trait]
@@ -736,9 +720,7 @@ mod tests {
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         // Runner that always fails — simulates a fetch that blew up.
         let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o| {
-            Box::pin(async move {
-                Err(CoreError::Ipc("HTTP 404".into()))
-            })
+            Box::pin(async move { Err(CoreError::Ipc("HTTP 404".into())) })
         });
         let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
         let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());
@@ -786,8 +768,14 @@ mod tests {
             capabilities: vec!["file_write: {report}".into()],
             system_prompt: "x".into(),
             message_template: "write a report to {report}".into(),
-            budget: RoleBudget { max_input_tokens: 1000, max_output_tokens: 500 },
-            retry: RoleRetry { max_attempts: 1, on: vec![] },
+            budget: RoleBudget {
+                max_input_tokens: 1000,
+                max_output_tokens: 500,
+            },
+            retry: RoleRetry {
+                max_attempts: 1,
+                on: vec![],
+            },
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -848,9 +836,7 @@ mod tests {
             }],
             final_output: "/out".into(),
         };
-        let result = exec
-            .execute_plan(&plan, &tmp.path().to_path_buf())
-            .await;
+        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
     }
 
@@ -859,9 +845,7 @@ mod tests {
         let cat = Arc::new(fetcher_catalog());
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o| {
-            Box::pin(async move {
-                Err(CoreError::Ipc("boom".into()))
-            })
+            Box::pin(async move { Err(CoreError::Ipc("boom".into())) })
         });
         let audit_concrete = Arc::new(InMemoryAuditLog::new());
         let audit: Arc<dyn AuditLog> = audit_concrete.clone();
@@ -888,7 +872,11 @@ mod tests {
                 AuditEventKind::SubtaskCompleted { subtask_id, success: false } if subtask_id == "a"
             )
         });
-        assert!(failed.is_some(), "expected SubtaskCompleted{{success:false}} for 'a' — events: {:?}", events.iter().map(|e| &e.event).collect::<Vec<_>>());
+        assert!(
+            failed.is_some(),
+            "expected SubtaskCompleted{{success:false}} for 'a' — events: {:?}",
+            events.iter().map(|e| &e.event).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
@@ -992,13 +980,7 @@ mod tests {
         let audit_concrete = Arc::new(InMemoryAuditLog::new());
         let audit: Arc<dyn AuditLog> = audit_concrete.clone();
         let tmp = tempfile::tempdir().unwrap();
-        let exec = PlanExecutor::new(
-            cat,
-            planner,
-            runner,
-            audit,
-            tmp.path().to_path_buf(),
-        );
+        let exec = PlanExecutor::new(cat, planner, runner, audit, tmp.path().to_path_buf());
 
         let result = exec
             .run("fetch something", uuid::Uuid::new_v4())
@@ -1008,10 +990,9 @@ mod tests {
         assert!(result.results.contains_key("try2"));
 
         let events = audit_concrete.events();
-        let replanned = events.iter().any(|e| matches!(
-            &e.event,
-            AuditEventKind::PlanReplanned { .. }
-        ));
+        let replanned = events
+            .iter()
+            .any(|e| matches!(&e.event, AuditEventKind::PlanReplanned { .. }));
         assert!(replanned, "expected PlanReplanned audit event");
     }
 }

@@ -280,20 +280,19 @@ mod tests {
     #[tokio::test]
     async fn rejects_empty_paths() {
         let ctx = ctx_with_read("/tmp/*");
-        let result = FileReadManyTool
-            .invoke(json!({"paths": []}), &ctx)
-            .await;
+        let result = FileReadManyTool.invoke(json!({"paths": []}), &ctx).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("must not be empty"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must not be empty"));
     }
 
     #[tokio::test]
     async fn rejects_over_max_paths() {
         let ctx = ctx_with_read("/tmp/*");
         let paths: Vec<String> = (0..17).map(|i| format!("/tmp/file_{i}")).collect();
-        let result = FileReadManyTool
-            .invoke(json!({"paths": paths}), &ctx)
-            .await;
+        let result = FileReadManyTool.invoke(json!({"paths": paths}), &ctx).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too many paths"));
     }

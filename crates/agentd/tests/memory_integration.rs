@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use aaos_core::TokenUsage;
-use aaos_llm::{CompletionRequest, CompletionResponse, ContentBlock, LlmClient, LlmResult, LlmStopReason};
+use aaos_llm::{
+    CompletionRequest, CompletionResponse, ContentBlock, LlmClient, LlmResult, LlmStopReason,
+};
 use async_trait::async_trait;
 use serde_json::json;
 
@@ -53,7 +55,9 @@ impl LlmClient for MockLlm {
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(CompletionResponse {
-                content: vec![ContentBlock::Text { text: "fallback".into() }],
+                content: vec![ContentBlock::Text {
+                    text: "fallback".into(),
+                }],
                 stop_reason: LlmStopReason::EndTurn,
                 usage: TokenUsage {
                     input_tokens: 1,
@@ -88,15 +92,24 @@ async fn memory_tools_via_rpc() {
     // ─── 2. Store a fact via memory_store ────────────────────────────────────
 
     eprintln!("\n2. Store fact: 'The project deadline is March 15th'...");
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": agent_id,
-        "tool": "memory_store",
-        "input": {
-            "content": "The project deadline is March 15th",
-            "category": "fact"
-        }
-    }))).await;
-    assert!(resp.error.is_none(), "memory_store failed: {:?}", resp.error);
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": agent_id,
+                "tool": "memory_store",
+                "input": {
+                    "content": "The project deadline is March 15th",
+                    "category": "fact"
+                }
+            }),
+        ))
+        .await;
+    assert!(
+        resp.error.is_none(),
+        "memory_store failed: {:?}",
+        resp.error
+    );
     let result = resp.result.unwrap();
     assert_eq!(result["result"]["status"], "stored");
     let memory_id = result["result"]["memory_id"].as_str().unwrap().to_string();
@@ -104,15 +117,24 @@ async fn memory_tools_via_rpc() {
 
     // Store a second fact
     eprintln!("   Store second fact: 'We use PostgreSQL 16'...");
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": agent_id,
-        "tool": "memory_store",
-        "input": {
-            "content": "We use PostgreSQL 16 for the database",
-            "category": "fact"
-        }
-    }))).await;
-    assert!(resp.error.is_none(), "memory_store (2nd) failed: {:?}", resp.error);
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": agent_id,
+                "tool": "memory_store",
+                "input": {
+                    "content": "We use PostgreSQL 16 for the database",
+                    "category": "fact"
+                }
+            }),
+        ))
+        .await;
+    assert!(
+        resp.error.is_none(),
+        "memory_store (2nd) failed: {:?}",
+        resp.error
+    );
     let result2 = resp.result.unwrap();
     let memory_id_2 = result2["result"]["memory_id"].as_str().unwrap().to_string();
     eprintln!("   Stored: memory_id={memory_id_2}");
@@ -120,14 +142,23 @@ async fn memory_tools_via_rpc() {
     // ─── 3. Query memories via memory_query ──────────────────────────────────
 
     eprintln!("\n3. Query: 'project deadline'...");
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": agent_id,
-        "tool": "memory_query",
-        "input": {
-            "query": "project deadline"
-        }
-    }))).await;
-    assert!(resp.error.is_none(), "memory_query failed: {:?}", resp.error);
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": agent_id,
+                "tool": "memory_query",
+                "input": {
+                    "query": "project deadline"
+                }
+            }),
+        ))
+        .await;
+    assert!(
+        resp.error.is_none(),
+        "memory_query failed: {:?}",
+        resp.error
+    );
     let query_result = resp.result.unwrap();
     let count = query_result["result"]["count"].as_u64().unwrap();
     eprintln!("   Results: {count}");
@@ -147,28 +178,42 @@ async fn memory_tools_via_rpc() {
     // ─── 4. Delete a memory via memory_delete ────────────────────────────────
 
     eprintln!("\n4. Delete memory: {memory_id}...");
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": agent_id,
-        "tool": "memory_delete",
-        "input": {
-            "memory_id": memory_id
-        }
-    }))).await;
-    assert!(resp.error.is_none(), "memory_delete failed: {:?}", resp.error);
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": agent_id,
+                "tool": "memory_delete",
+                "input": {
+                    "memory_id": memory_id
+                }
+            }),
+        ))
+        .await;
+    assert!(
+        resp.error.is_none(),
+        "memory_delete failed: {:?}",
+        resp.error
+    );
     let del_result = resp.result.unwrap();
     assert_eq!(del_result["result"]["status"], "deleted");
     eprintln!("   Deleted successfully");
 
     // Verify the deleted memory is gone — query should return fewer results
     eprintln!("   Verify deleted memory is gone...");
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": agent_id,
-        "tool": "memory_query",
-        "input": {
-            "query": "project deadline",
-            "limit": 10
-        }
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": agent_id,
+                "tool": "memory_query",
+                "input": {
+                    "query": "project deadline",
+                    "limit": 10
+                }
+            }),
+        ))
+        .await;
     assert!(resp.error.is_none());
     let after_delete = resp.result.unwrap();
     let remaining_ids: Vec<&str> = after_delete["result"]["results"]
@@ -189,21 +234,34 @@ async fn memory_tools_via_rpc() {
     let resp = server.handle_request(&rpc("agent.spawn", json!({
         "manifest": "name: other-agent\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: \"test\"\ncapabilities:\n  - \"tool: memory_query\""
     }))).await;
-    assert!(resp.error.is_none(), "spawn agent2 failed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "spawn agent2 failed: {:?}",
+        resp.error
+    );
     let agent2_id = resp.result.as_ref().unwrap()["agent_id"]
         .as_str()
         .unwrap()
         .to_string();
     eprintln!("   Agent2 ID: {agent2_id}");
 
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": agent2_id,
-        "tool": "memory_query",
-        "input": {
-            "query": "project deadline"
-        }
-    }))).await;
-    assert!(resp.error.is_none(), "memory_query (agent2) failed: {:?}", resp.error);
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": agent2_id,
+                "tool": "memory_query",
+                "input": {
+                    "query": "project deadline"
+                }
+            }),
+        ))
+        .await;
+    assert!(
+        resp.error.is_none(),
+        "memory_query (agent2) failed: {:?}",
+        resp.error
+    );
     let isolated_result = resp.result.unwrap();
     let isolated_count = isolated_result["result"]["count"].as_u64().unwrap();
     eprintln!("   Agent2 results: {isolated_count}");
@@ -223,13 +281,21 @@ async fn memory_tools_via_rpc() {
         .unwrap()
         .to_string();
 
-    let resp = server.handle_request(&rpc("tool.invoke", json!({
-        "agent_id": no_mem_id,
-        "tool": "memory_store",
-        "input": {"content": "should fail", "category": "fact"}
-    }))).await;
+    let resp = server
+        .handle_request(&rpc(
+            "tool.invoke",
+            json!({
+                "agent_id": no_mem_id,
+                "tool": "memory_store",
+                "input": {"content": "should fail", "category": "fact"}
+            }),
+        ))
+        .await;
     assert!(resp.error.is_some(), "should have been denied");
-    eprintln!("   Correctly denied: {}", resp.error.as_ref().unwrap().message);
+    eprintln!(
+        "   Correctly denied: {}",
+        resp.error.as_ref().unwrap().message
+    );
 
     eprintln!("\n=== Integration Test PASSED ===");
     eprintln!("  memory_store: facts stored via RPC");

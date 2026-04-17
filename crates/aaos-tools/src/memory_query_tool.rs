@@ -213,10 +213,7 @@ mod tests {
 
         // Query with category filter
         let result = query_tool
-            .invoke(
-                json!({"query": "database", "category": "fact"}),
-                &ctx,
-            )
+            .invoke(json!({"query": "database", "category": "fact"}), &ctx)
             .await
             .unwrap();
 
@@ -239,10 +236,7 @@ mod tests {
         // (and humans) can recover without reading the source.
         let (query_tool, _, ctx, _) = setup();
         let result = query_tool
-            .invoke(
-                json!({ "query": "anything", "category": "bogus" }),
-                &ctx,
-            )
+            .invoke(json!({ "query": "anything", "category": "bogus" }), &ctx)
             .await;
         let err = result.expect_err("invalid category must error").to_string();
         for expected in ["fact", "observation", "decision", "preference"] {

@@ -20,13 +20,18 @@ impl LlmClient for EchoLlm {
     }
 
     async fn complete(&self, req: CompletionRequest) -> LlmResult<CompletionResponse> {
-        let last_user = req.messages.iter().rev().find_map(|m| {
-            if let aaos_llm::Message::User { content } = m {
-                Some(content.clone())
-            } else {
-                None
-            }
-        }).unwrap_or_else(|| "no message".into());
+        let last_user = req
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| {
+                if let aaos_llm::Message::User { content } = m {
+                    Some(content.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "no message".into());
 
         Ok(CompletionResponse {
             content: vec![ContentBlock::Text {
@@ -105,10 +110,7 @@ lifecycle: persistent
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let resp = server
-        .handle_request(&make_request(
-            "agent.stop",
-            json!({"agent_id": agent_id}),
-        ))
+        .handle_request(&make_request("agent.stop", json!({"agent_id": agent_id})))
         .await;
     assert!(resp.result.is_some());
 }
@@ -141,10 +143,7 @@ lifecycle: persistent
     }
 
     server
-        .handle_request(&make_request(
-            "agent.stop",
-            json!({"agent_id": agent_id}),
-        ))
+        .handle_request(&make_request("agent.stop", json!({"agent_id": agent_id})))
         .await;
 }
 

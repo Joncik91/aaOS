@@ -20,8 +20,8 @@ mod linux_impl {
     use super::PolicyDescription;
 
     use landlock::{
-        Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr,
-        RulesetCreated, RulesetCreatedAttr, RulesetStatus, ABI,
+        Access, AccessFs, PathBeneath, PathFd, Ruleset, RulesetAttr, RulesetCreated,
+        RulesetCreatedAttr, RulesetStatus, ABI,
     };
 
     #[derive(Debug, thiserror::Error)]
@@ -79,12 +79,11 @@ mod linux_impl {
             .map_err(|e| LandlockCompileError::CreateFailed(e.to_string()))?;
 
         if policy.scratch.exists() {
-            let fd = PathFd::new(&policy.scratch).map_err(|e| {
-                LandlockCompileError::RuleAddFailed {
+            let fd =
+                PathFd::new(&policy.scratch).map_err(|e| LandlockCompileError::RuleAddFailed {
                     path: policy.scratch.clone(),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_write))
                 .map_err(|e| LandlockCompileError::RuleAddFailed {
@@ -106,11 +105,9 @@ mod linux_impl {
                 );
                 continue;
             }
-            let fd = PathFd::new(lib_path).map_err(|e| {
-                LandlockCompileError::RuleAddFailed {
-                    path: lib_path.clone(),
-                    reason: e.to_string(),
-                }
+            let fd = PathFd::new(lib_path).map_err(|e| LandlockCompileError::RuleAddFailed {
+                path: lib_path.clone(),
+                reason: e.to_string(),
             })?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_only))
@@ -166,8 +163,7 @@ mod linux_impl {
                 return;
             }
             let policy = sample_policy();
-            let _ = build_ruleset(&policy)
-                .expect("ruleset must build for typical policy");
+            let _ = build_ruleset(&policy).expect("ruleset must build for typical policy");
         }
 
         #[test]

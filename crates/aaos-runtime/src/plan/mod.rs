@@ -6,19 +6,19 @@
 //! walks the DAG, instantiating children from per-role scaffolds. The LLM
 //! reasons about content inside each child; orchestration is pure code.
 
-pub mod role;
+pub mod executor;
 pub mod placeholders;
 pub mod planner;
-pub mod executor;
+pub mod role;
 
-pub use role::{
-    ParameterSchema, ParameterType, Role, RoleBudget, RoleCatalog, RoleCatalogError, RoleRetry,
-    RoleScaffold,
+pub use executor::{
+    ExecutorError, PlanExecutor, ScaffoldRunner, SubtaskExecutorOverrides, SubtaskRunner,
 };
 pub use placeholders::Substitutions;
 pub use planner::{validate_plan_structure, Planner, PlannerError};
-pub use executor::{
-    ExecutorError, PlanExecutor, ScaffoldRunner, SubtaskExecutorOverrides, SubtaskRunner,
+pub use role::{
+    ParameterSchema, ParameterType, Role, RoleBudget, RoleCatalog, RoleCatalogError, RoleRetry,
+    RoleScaffold,
 };
 
 use serde::{Deserialize, Serialize};
@@ -74,10 +74,7 @@ pub fn topo_batches(plan: &Plan) -> Result<Vec<Vec<Subtask>>, String> {
     for s in &plan.subtasks {
         for d in &s.depends_on {
             if !pending.contains_key(d) {
-                return Err(format!(
-                    "subtask '{}' depends on unknown id '{}'",
-                    s.id, d
-                ));
+                return Err(format!("subtask '{}' depends on unknown id '{}'", s.id, d));
             }
         }
     }
@@ -93,18 +90,11 @@ pub fn topo_batches(plan: &Plan) -> Result<Vec<Vec<Subtask>>, String> {
             .collect();
 
         if ready.is_empty() {
-            let remaining: Vec<&str> =
-                pending.keys().map(|s| s.as_str()).collect();
-            return Err(format!(
-                "dependency cycle among: {}",
-                remaining.join(", ")
-            ));
+            let remaining: Vec<&str> = pending.keys().map(|s| s.as_str()).collect();
+            return Err(format!("dependency cycle among: {}", remaining.join(", ")));
         }
 
-        let mut batch: Vec<Subtask> = ready
-            .iter()
-            .map(|id| pending.remove(id).unwrap())
-            .collect();
+        let mut batch: Vec<Subtask> = ready.iter().map(|id| pending.remove(id).unwrap()).collect();
         batch.sort_by(|a, b| a.id.cmp(&b.id));
         for s in &batch {
             done.insert(s.id.clone());

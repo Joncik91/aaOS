@@ -88,10 +88,10 @@ impl Tool for WebFetchTool {
         let requested = Capability::NetworkAccess {
             hosts: vec![aaos_core::extract_host(&host)],
         };
-        let allowed = ctx
-            .tokens
-            .iter()
-            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
+        let allowed = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry
+                .permits(*h, ctx.agent_id, &requested)
+        });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
@@ -275,7 +275,10 @@ mod tests {
         let url = spawn_mock_server(100_000, Some(100_000)).await;
         let tool = WebFetchTool::new();
         let result = tool
-            .invoke(json!({ "url": url, "max_bytes": 10_000 }), &ctx_with_hosts(&["127.0.0.1"]))
+            .invoke(
+                json!({ "url": url, "max_bytes": 10_000 }),
+                &ctx_with_hosts(&["127.0.0.1"]),
+            )
             .await
             .unwrap();
         assert_eq!(result["truncated"], true);
@@ -289,7 +292,10 @@ mod tests {
         let url = spawn_mock_server(1024, Some(600_000)).await;
         let tool = WebFetchTool::new();
         let err = tool
-            .invoke(json!({ "url": url, "max_bytes": 50_000 }), &ctx_with_hosts(&["127.0.0.1"]))
+            .invoke(
+                json!({ "url": url, "max_bytes": 50_000 }),
+                &ctx_with_hosts(&["127.0.0.1"]),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("too large"), "got: {err}");
@@ -300,7 +306,10 @@ mod tests {
         let url = spawn_mock_server(500, Some(500)).await;
         let tool = WebFetchTool::new();
         let result = tool
-            .invoke(json!({ "url": url, "max_bytes": 50_000 }), &ctx_with_hosts(&["127.0.0.1"]))
+            .invoke(
+                json!({ "url": url, "max_bytes": 50_000 }),
+                &ctx_with_hosts(&["127.0.0.1"]),
+            )
             .await
             .unwrap();
         assert_eq!(result["truncated"], false);

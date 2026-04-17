@@ -41,14 +41,17 @@ pub async fn show(name: String, dir: PathBuf) -> anyhow::Result<()> {
 
 pub async fn validate(path: PathBuf) -> anyhow::Result<()> {
     let body = std::fs::read_to_string(&path)?;
-    let role: Role = serde_yaml::from_str(&body)
-        .map_err(|e| anyhow::anyhow!("YAML parse: {e}"))?;
+    let role: Role = serde_yaml::from_str(&body).map_err(|e| anyhow::anyhow!("YAML parse: {e}"))?;
     if role.name.is_empty() {
         return Err(anyhow::anyhow!("role has empty name"));
     }
     if role.message_template.is_empty() {
         return Err(anyhow::anyhow!("role has empty message_template"));
     }
-    println!("ok: role '{}' ({} params)", role.name, role.parameters.len());
+    println!(
+        "ok: role '{}' ({} params)",
+        role.name,
+        role.parameters.len()
+    );
     Ok(())
 }
