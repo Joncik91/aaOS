@@ -1304,9 +1304,11 @@ impl Server {
                 )
             }
         };
-        let agent_id: aaos_core::AgentId = serde_json::from_value(json!(agent_id_str)).unwrap();
+        let agent_id: aaos_core::AgentId = serde_json::from_value(json!(agent_id_str))
+            .expect("agent_id_str just returned from successful spawn is a valid AgentId");
 
-        let manifest = self.registry.get_manifest(agent_id).unwrap();
+        let manifest = self.registry.get_manifest(agent_id)
+            .expect("agent just spawned successfully must have a manifest in the registry");
         let mut result = self.execute_agent(agent_id, &manifest, &message, id).await;
 
         // Inject agent_id into the result
