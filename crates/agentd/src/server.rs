@@ -391,6 +391,23 @@ impl Server {
             .tool_invocation
             .invoke(agent_id, "web_fetch", fetch_input, token_handles)
             .await?;
+        // Reject non-2xx up front — otherwise the scaffold silently
+        // writes an error page (or empty body) to disk and downstream
+        // subtasks treat it as real content.
+        let status = fetch_result
+            .get("status")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| {
+                aaos_core::CoreError::Ipc(
+                    "scaffold fetcher: web_fetch returned no status field".into(),
+                )
+            })?;
+        if !(200..300).contains(&status) {
+            return Err(aaos_core::CoreError::Ipc(format!(
+                "scaffold fetcher: {} returned HTTP {}",
+                url, status
+            )));
+        }
         let body = fetch_result
             .get("body")
             .and_then(|v| v.as_str())
@@ -400,6 +417,12 @@ impl Server {
                 )
             })?
             .to_string();
+        if body.is_empty() {
+            return Err(aaos_core::CoreError::Ipc(format!(
+                "scaffold fetcher: {} returned empty body",
+                url
+            )));
+        }
 
         // Step 2: file_write.
         let write_input = serde_json::json!({
