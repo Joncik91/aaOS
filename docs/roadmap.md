@@ -70,9 +70,18 @@ aaOS now supports the [AgentSkills](https://agentskills.io) open standard by Ant
 
 ## Self-Reflection Rounds *(ongoing)*
 
-The runtime has begun reading its own code, finding bugs, and proposing features. Seven runs to date — runs 1-3 produced real bug fixes (path traversal, capability revocation, constraint enforcement), run 4 produced a feature proposal (Meta-Cognitive Coordination Layer) shipped as a minimal version after external review, run 5 exercised the persistent-memory protocol end-to-end and produced three manifest-only tuning fixes, run 6 surfaced two kernel-level gaps in the Run-5 manifest tuning (soft rules aren't enforcement; no structured child-to-child data channel) that shipped as kernel fixes `505f559` and `5feedbe`, and run 7 validated those fixes against real behavior with a four-agent chain producing a grounded error-handling unification proposal.
+The runtime reads its own code, finds bugs, proposes features, and — as of 2026-04-17 — produces tested patches end to end. The reflection log under [`reflection/`](reflection/README.md) is the authoritative record; highlights:
 
-Full chronological detail per run lives in [`reflection/`](reflection/README.md). Cross-cutting lessons distilled from the runs (LLM calendar estimates aren't real, cost from token-math ≠ dashboard, skill adherence evolves, prompts persuade but only the kernel enforces, structured handoff beats opaque prompts) are in [`patterns.md`](patterns.md).
+- **Runs 1–3** — real bug fixes (path traversal, capability revocation, constraint enforcement).
+- **Run 4** — feature proposal (Meta-Cognitive Coordination Layer) shipped as a minimal version after external review.
+- **Runs 5–10** — memory protocol, kernel-level handoff gaps, adversarial bug-hunt finding seven bugs including a symlink-bypass of the run-1 traversal fix, four-agent chain producing a grounded error-handling proposal.
+- **Phase F-a (2026-04-15)** — `agentd` as a Debian `.deb`, CLI, computed orchestration with a structured Planner + deterministic PlanExecutor, role catalog.
+- **Phase F-a tuning (2026-04-16 / 17)** — Planner prompt fixes, role-budget wiring, enriched telemetry (args/result previews), replan-on-subtask-failure, NamespacedBackend re-verification, secret isolation (env scrub + 0600 conffile), gitleaks pre-commit + SECURITY.md.
+- **First self-build run (2026-04-17)** — `cargo_run` + `builder` role let an agent read a plan, run `cargo check/test` against aaOS from inside aaOS, and correctly report "already implemented" with zero fabricated edits.
+- **Tool-gap iteration (2026-04-17)** — runs 5–6 of the second self-build attempt failed to produce a diff — not from the model but because `file_read` returned whole files and there was no `file_edit` primitive. Diagnosis: self-build is tool-bound, not model-bound. Shipped `file_edit` + `file_read(offset, limit)` in commit `2819921`.
+- **aaOS edits aaOS (2026-04-17)** — first end-to-end self-build success. 471 s wall clock. Nine `file_read(offset, limit)` calls paged through the 2700-line file; five `file_edit` calls applied all anchors on first try; `cargo check` + `cargo test` both passed. The agent's diff was byte-identical to the maintainer's manual fix. Same LLM as the failing runs; the only difference was the tools.
+
+Cross-cutting lessons distilled from the runs (LLM calendar estimates aren't real, cost from token-math ≠ dashboard, skill adherence evolves, prompts persuade but only the kernel enforces, structured handoff beats opaque prompts, coding agents are tool-bound not model-bound) live in [`patterns.md`](patterns.md).
 
 **What's deferred pending more data:** the structured `PatternStore`, new `aaos-reflection` crate, and `CoordinationPattern` schema are still not warranted. The minimal protocol (stable Bootstrap ID + opt-in persistent memory + query-before/store-after in the manifest) is the empirical foundation. If 10-20 runs surface recurring patterns worth indexing formally, the structured system gets designed against real data — not speculation.
 
