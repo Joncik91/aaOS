@@ -278,8 +278,10 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_message_starting_with_dash() {
+        // The message check fires before the capability + .git checks,
+        // so this test does not need a scaffolded git repo or a host git binary.
         let dir = TempDir::new().unwrap();
-        let ws = scaffold_git_repo(&dir);
+        let ws = dir.path();
         let ctx = ctx_with_git_commit(ws.to_str().unwrap());
         let err = GitCommitTool
             .invoke(

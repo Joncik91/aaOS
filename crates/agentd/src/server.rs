@@ -1200,7 +1200,7 @@ impl Server {
         let input = params.get("input").cloned().unwrap_or(json!({}));
 
         // Get tokens and invoke
-        match self.registry.get_tokens(agent_id) {
+        match self.registry.get_token_handles(agent_id) {
             Ok(tokens) => {
                 match self
                     .tool_invocation
