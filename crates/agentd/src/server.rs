@@ -560,6 +560,7 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::FileListTool));
         tool_registry.register(Arc::new(aaos_tools::FileReadManyTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
+        tool_registry.register(Arc::new(aaos_tools::CargoRunTool));
 
         // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
         let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
@@ -706,6 +707,7 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::FileListTool));
         tool_registry.register(Arc::new(aaos_tools::FileReadManyTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
+        tool_registry.register(Arc::new(aaos_tools::CargoRunTool));
 
         // Memory subsystem: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise
         let embedding_source: Arc<dyn aaos_memory::EmbeddingSource> =
@@ -835,6 +837,7 @@ impl Server {
         tool_registry.register(Arc::new(aaos_tools::FileListTool));
         tool_registry.register(Arc::new(aaos_tools::FileReadManyTool));
         tool_registry.register(Arc::new(aaos_tools::FileWriteTool));
+        tool_registry.register(Arc::new(aaos_tools::CargoRunTool));
 
         // Register memory tools with the provided sources
         tool_registry.register(Arc::new(aaos_tools::MemoryStoreTool::new(

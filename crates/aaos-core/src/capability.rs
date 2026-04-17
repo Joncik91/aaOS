@@ -64,6 +64,20 @@ pub enum Capability {
     MessageSend {
         target_agents: Vec<String>,
     },
+    /// Permission to run `cargo <subcommand>` in a specific workspace directory.
+    ///
+    /// The workspace is the directory containing `Cargo.toml`; the tool
+    /// rejects anything else. The subcommand allowlist
+    /// ({check, test, clippy, fmt}) is enforced tool-side and is not part of
+    /// the grant — granting this capability grants all allowlisted
+    /// subcommands for the workspace.
+    ///
+    /// Introduced so an aaOS agent can build and test a Rust codebase
+    /// (including aaOS itself) under capability enforcement, without needing
+    /// a general shell-exec tool.
+    CargoRun {
+        workspace: String,
+    },
     Custom {
         name: String,
         params: serde_json::Value,
@@ -214,6 +228,12 @@ impl CapabilityToken {
             ) => req
                 .iter()
                 .all(|a| granted.iter().any(|g| g == "*" || g == a)),
+            (
+                Capability::CargoRun {
+                    workspace: granted,
+                },
+                Capability::CargoRun { workspace: req },
+            ) => glob_matches(granted, req),
             (Capability::Custom { name: gn, .. }, Capability::Custom { name: rn, .. }) => gn == rn,
             _ => false,
         }

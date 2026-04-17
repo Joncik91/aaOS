@@ -358,6 +358,10 @@ fn parse_capability(decl: &aaos_core::CapabilityDeclaration) -> Option<Capabilit
                 Some(Capability::SpawnChild {
                     allowed_agents: list,
                 })
+            } else if let Some(ws) = s.strip_prefix("cargo_run:") {
+                Some(Capability::CargoRun {
+                    workspace: ws.trim().to_string(),
+                })
             } else {
                 Some(Capability::Custom {
                     name: s.to_string(),
