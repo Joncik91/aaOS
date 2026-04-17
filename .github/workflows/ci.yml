@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref — keeps the queue short on force-pushes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Lower parallelism cuts peak memory on 7-GB runners without noticeably
+  # slowing release builds of this workspace.
+  CARGO_BUILD_JOBS: 2
+
+jobs:
+  # Fast job: fmt + clippy (report-only for now) + gitleaks.
+  # Runs in parallel with the test job so a lint-only regression fails fast.
+  check-lint:
+    name: fmt + clippy + gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs full history to scan the diff range
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # Clippy is advisory-only today: ~35 pre-existing warnings would fail
+      # a -D warnings gate from day 1. Track them down first, then flip the
+      # gate in a follow-up.
+      - name: cargo clippy (advisory)
+        run: cargo clippy --workspace --all-targets -- -W clippy::all
+        continue-on-error: true
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Non-ignored test suite. Mirrors what `cargo test` runs on a dev machine.
+  test:
+    name: cargo test (default)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test --workspace
+        run: cargo test --workspace --quiet
+
+  # Ignored-by-default tests. These shell out to host tools (ripgrep, git)
+  # or exercise Linux kernel primitives (user namespaces, Landlock, seccomp)
+  # that the default test runner cannot assume. CI has all of the above.
+  test-ignored:
+    name: cargo test -- --ignored
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install host tools the ignored tests need
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep git
+
+      # The namespaced-backend tests need unprivileged user namespaces
+      # (default-on in Ubuntu 24.04) and Landlock (compiled in since 5.13).
+      # Surface kernel facts so a regression in the runner image is visible
+      # in the log.
+      - name: Report kernel features
+        run: |
+          uname -a
+          sysctl kernel.unprivileged_userns_clone 2>/dev/null || true
+
+      # --ignored runs the #[ignore]-gated tests across the workspace.
+      # Picks up ripgrep-backed grep tests, git_commit tests, and other
+      # host-tool-dependent tests in aaos-tools.
+      - name: cargo test --workspace -- --ignored
+        run: cargo test --workspace --quiet -- --ignored
+
+      # The namespaced-backend integration tests live behind agentd's
+      # `namespaced-agents` feature gate, which pulls in aaos-backend-linux.
+      # Run those separately with the feature enabled.
+      - name: cargo test -p agentd --features namespaced-agents -- --ignored
+        run: cargo test -p agentd --features namespaced-agents --quiet -- --ignored
