@@ -73,3 +73,29 @@ Pattern for when to use an LLM vs. a scaffold:
 - **Scaffold-shaped work**: fetch-then-write, parse-then-file, transform-then-store. Output is mechanical. Quality is binary (did it execute or not).
 
 Fetcher is scaffold-shaped. Analyzer and writer are LLM-shaped. Mixing them into the same role-abstraction was the original sin.
+
+## Addendum — scaffold verified *(same day)*
+
+Scaffold commit: `2b8ed6d` — `RoleScaffold { kind }` on the `Role` struct, `ScaffoldRunner` closure type parallel to `SubtaskRunner`, `PlanExecutor::set_scaffold_runner`, branching in `spawn_subtask`. The fetcher role YAML gets a `scaffold: { kind: fetcher }` header. When the executor encounters it, it dispatches to `Server::scaffold_fetcher` which does `web_fetch` → `file_write` directly through the capability-checked `ToolInvocation` in Rust — no LLM call.
+
+v5 run (commit `2b8ed6d`, same container recipe, canonical goal):
+
+| Phase | Timing | Evidence |
+|-------|-------:|----------|
+| Both fetchers spawn + web_fetch + file_write | **1s each** | `spawned fetcher` → `tool: web_fetch` → `tool: file_write` back-to-back in the event stream at `04:37:02–03` for both subtasks. |
+| Analyzer | ~48s | LLM-shaped work, not a bug. |
+| Writer | ~65s | Reads the real HTML files, emits real prose. |
+| Total wall-clock | **2m9s** | Dominated by analyzer+writer LLM loops on DeepSeek chat. |
+
+Files on disk after the run:
+- `hn.html` 34 KB — contains "Claude Opus 4.7" as #1 story (post-training-cutoff event from 2026-04-15).
+- `lobsters.html` 50 KB — contains "IPv6 traffic crosses the 50% mark".
+- `/data/compare.md` 6.3 KB — cites both titles above with correct vote counts and timestamps.
+
+Zero `capability denied` events. Writer did NOT emit "ERROR: missing input" — because the inputs actually exist now.
+
+**What this closes.** The fetcher-fabricates-path-ack bug (v4) — the LLM satisfying "respond with path" without calling `file_write`. Deterministic Rust code calls `file_write` before returning; there is no possible state where the response exists but the file doesn't. The fabrication-from-training-data mode (v3) was already closed by the writer prompt contract in `c412a14` — v5 confirms it stays closed when the inputs are real.
+
+**What v5 did not improve.** Total wall-clock went from 28s (v4) to 2m9s (v5). Not a regression — v4 short-circuited because its writer errored out on the missing inputs; v5 actually produced the output, so it paid the real analyzer+writer LLM-loop cost. That cost is a separate fitness-of-prompt question (the writer does two rounds of `file_read` then a long `file_write`; could probably be cut in half), deferred.
+
+**Shipped.** `2b8ed6d` plus this addendum. Fetcher is now a first-class scaffold; the pattern (`scaffold_runner` closure, `Role::scaffold` field, kind-dispatched runtime implementation) is in place for future scaffold-shaped roles — `file_sync`, `archive_extract`, `db_dump`, whatever shows up. The LLM path is unchanged for roles that need it.
