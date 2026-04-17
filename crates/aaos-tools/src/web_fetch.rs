@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
-use aaos_core::{CoreError, Result, ToolDefinition};
+use aaos_core::{Capability, CoreError, Result, ToolDefinition};
 
 const DEFAULT_MAX_BYTES: usize = 50_000;
 const TIMEOUT_SECS: u64 = 30;
@@ -50,7 +50,7 @@ impl Tool for WebFetchTool {
         }
     }
 
-    async fn invoke(&self, input: Value, _ctx: &InvocationContext) -> Result<Value> {
+    async fn invoke(&self, input: Value, ctx: &InvocationContext) -> Result<Value> {
         let url = input
             .get("url")
             .and_then(|v| v.as_str())
@@ -61,6 +61,44 @@ impl Tool for WebFetchTool {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_MAX_BYTES);
+
+        // Extract host from URL. Reject malformed URLs, non-http(s) schemes,
+        // and URLs without a host component.
+        let parsed = reqwest::Url::parse(url)
+            .map_err(|e| CoreError::InvalidManifest(format!("invalid URL: {e}")))?;
+        match parsed.scheme() {
+            "http" | "https" => {}
+            other => {
+                return Err(CoreError::InvalidManifest(format!(
+                    "unsupported URL scheme '{other}' — only http/https allowed"
+                )));
+            }
+        }
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| CoreError::InvalidManifest("URL has no host".into()))?
+            .to_string();
+
+        // Capability check: the agent must hold NetworkAccess that covers
+        // this specific host. Matching is exact on the lowercased host; no
+        // wildcard support yet (YAGNI — add when a real role needs it).
+        // Normalize through the same extract_host used by the grant parser
+        // so `api.example.com` and `https://api.example.com:443` compare
+        // equal, and userinfo/port variations don't slip past.
+        let requested = Capability::NetworkAccess {
+            hosts: vec![aaos_core::extract_host(&host)],
+        };
+        let allowed = ctx
+            .tokens
+            .iter()
+            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &requested));
+        if !allowed {
+            return Err(CoreError::CapabilityDenied {
+                agent_id: ctx.agent_id,
+                capability: requested,
+                reason: format!("web_fetch not permitted for host: {host}"),
+            });
+        }
 
         let mut response = self
             .http
@@ -121,13 +159,32 @@ impl Tool for WebFetchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aaos_core::AgentId;
+    use aaos_core::{AgentId, CapabilityRegistry, CapabilityToken, Constraints};
 
     fn dummy_ctx() -> InvocationContext {
         InvocationContext {
             agent_id: AgentId::new(),
             tokens: vec![],
             capability_registry: std::sync::Arc::new(aaos_core::CapabilityRegistry::new()),
+        }
+    }
+
+    /// Context granting NetworkAccess to the given hosts.
+    fn ctx_with_hosts(hosts: &[&str]) -> InvocationContext {
+        let agent_id = AgentId::new();
+        let registry = std::sync::Arc::new(CapabilityRegistry::new());
+        let token = CapabilityToken::issue(
+            agent_id,
+            Capability::NetworkAccess {
+                hosts: hosts.iter().map(|s| s.to_string()).collect(),
+            },
+            Constraints::default(),
+        );
+        let handle = registry.insert(agent_id, token);
+        InvocationContext {
+            agent_id,
+            tokens: vec![handle],
+            capability_registry: registry,
         }
     }
 
@@ -143,6 +200,45 @@ mod tests {
         let tool = WebFetchTool::new();
         let result = tool.invoke(json!({}), &dummy_ctx()).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_fetch_without_network_capability() {
+        let tool = WebFetchTool::new();
+        let result = tool
+            .invoke(
+                json!({ "url": "https://example.com/" }),
+                &dummy_ctx(), // no tokens
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(result, CoreError::CapabilityDenied { .. }),
+            "expected CapabilityDenied, got: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_host_not_in_grant() {
+        let tool = WebFetchTool::new();
+        // Granted example.com; requesting attacker.com
+        let ctx = ctx_with_hosts(&["example.com"]);
+        let result = tool
+            .invoke(json!({ "url": "https://attacker.com/steal" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(result, CoreError::CapabilityDenied { .. }));
+    }
+
+    #[tokio::test]
+    async fn rejects_non_http_scheme() {
+        let tool = WebFetchTool::new();
+        let ctx = ctx_with_hosts(&["example.com"]);
+        let result = tool
+            .invoke(json!({ "url": "file:///etc/passwd" }), &ctx)
+            .await
+            .unwrap_err();
+        assert!(result.to_string().contains("scheme"), "got: {result}");
     }
 
     /// Spawn a tiny TCP server that returns `body_bytes` bytes of 'a'
@@ -179,7 +275,7 @@ mod tests {
         let url = spawn_mock_server(100_000, Some(100_000)).await;
         let tool = WebFetchTool::new();
         let result = tool
-            .invoke(json!({ "url": url, "max_bytes": 10_000 }), &dummy_ctx())
+            .invoke(json!({ "url": url, "max_bytes": 10_000 }), &ctx_with_hosts(&["127.0.0.1"]))
             .await
             .unwrap();
         assert_eq!(result["truncated"], true);
@@ -193,7 +289,7 @@ mod tests {
         let url = spawn_mock_server(1024, Some(600_000)).await;
         let tool = WebFetchTool::new();
         let err = tool
-            .invoke(json!({ "url": url, "max_bytes": 50_000 }), &dummy_ctx())
+            .invoke(json!({ "url": url, "max_bytes": 50_000 }), &ctx_with_hosts(&["127.0.0.1"]))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("too large"), "got: {err}");
@@ -204,7 +300,7 @@ mod tests {
         let url = spawn_mock_server(500, Some(500)).await;
         let tool = WebFetchTool::new();
         let result = tool
-            .invoke(json!({ "url": url, "max_bytes": 50_000 }), &dummy_ctx())
+            .invoke(json!({ "url": url, "max_bytes": 50_000 }), &ctx_with_hosts(&["127.0.0.1"]))
             .await
             .unwrap();
         assert_eq!(result["truncated"], false);

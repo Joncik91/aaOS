@@ -366,6 +366,16 @@ fn parse_capability(decl: &aaos_core::CapabilityDeclaration) -> Option<Capabilit
                 Some(Capability::GitCommit {
                     workspace: ws.trim().to_string(),
                 })
+            } else if let Some(rest) = s.strip_prefix("network:") {
+                // Accept either a bare host (`example.com`) or a full URL
+                // (`https://example.com/path`); URLs are normalized to host.
+                let hosts: Vec<String> = rest
+                    .split(',')
+                    .map(|h| h.trim())
+                    .filter(|h| !h.is_empty())
+                    .map(aaos_core::extract_host)
+                    .collect();
+                Some(Capability::NetworkAccess { hosts })
             } else {
                 Some(Capability::Custom {
                     name: s.to_string(),

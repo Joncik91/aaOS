@@ -11,6 +11,7 @@ parameters:
     description: If set, the single file path the generalist must write its primary output to. Required when a downstream subtask depends on this one.
 capabilities:
   - web_search
+  - "network: *"
   - "file_read: /data/*"
   - "file_read: /src/*"
   - "file_write: /data/*"

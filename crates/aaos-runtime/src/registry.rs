@@ -589,6 +589,19 @@ impl AgentRegistry {
                     Some(Capability::GitCommit {
                         workspace: ws.trim().to_string(),
                     })
+                } else if let Some(rest) = s.strip_prefix("network:") {
+                    // Accept either a bare host (`example.com`) or a full URL
+                    // (`https://example.com/path`). URLs are normalized to
+                    // their host component so the fetcher can grant
+                    // `network: {url}` and have the param-sub do the right
+                    // thing at capability-issue time.
+                    let hosts: Vec<String> = rest
+                        .split(',')
+                        .map(|h| h.trim())
+                        .filter(|h| !h.is_empty())
+                        .map(aaos_core::extract_host)
+                        .collect();
+                    Some(Capability::NetworkAccess { hosts })
                 } else {
                     Some(Capability::Custom {
                         name: s.to_string(),

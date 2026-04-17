@@ -19,6 +19,7 @@ capabilities:
   - "tool: web_fetch"
   - "tool: file_write"
   - "file_write: {workspace}"
+  - "network: {url}"
 system_prompt: |
   You are a fetcher agent. Your ONLY job is to fetch a URL and write
   the response body to a file. Execute exactly these three steps, in

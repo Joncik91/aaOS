@@ -220,7 +220,16 @@ impl CapabilityToken {
             (
                 Capability::NetworkAccess { hosts: granted },
                 Capability::NetworkAccess { hosts: req },
-            ) => req.iter().all(|h| granted.contains(h)),
+            ) => {
+                // Wildcard `*` matches any host. Consistent with tool: *
+                // and spawn_child: [*]. Used by the generalist escape-hatch
+                // role; narrow grants (fetcher's `network: {url}`) don't
+                // include `*` and so don't accidentally widen.
+                if granted.iter().any(|g| g == "*") {
+                    return true;
+                }
+                req.iter().all(|h| granted.contains(h))
+            }
             (
                 Capability::SpawnChild {
                     allowed_agents: granted,
@@ -311,6 +320,84 @@ impl CapabilityToken {
 /// redirect. Stronger guarantees require `openat(AT_FDCWD, ..., O_NOFOLLOW)`
 /// and comparing fstat against the grant, which is platform-specific. Tracked
 /// as a follow-up in `docs/ideas.md`.
+/// Normalize a host-ish string to a lowercased host component. Accepts
+/// either a bare host (`Example.COM`) or a full URL
+/// (`https://example.com:8080/path`), and returns the host part without
+/// scheme, userinfo, or port. Used by the `network:` grant parser and by
+/// `web_fetch` to compare the requested URL's host against granted ones.
+///
+/// Deliberately dependency-free (no `url` crate pull): the grant parser
+/// runs once at spawn time on a short trusted string, and `web_fetch`
+/// already uses `reqwest::Url` for the actual request URL. This helper
+/// only normalizes user-supplied grant tokens.
+pub fn extract_host(input: &str) -> String {
+    let lowered = input.trim().to_lowercase();
+    let after_scheme = match lowered.find("://") {
+        Some(i) => &lowered[i + 3..],
+        None => return lowered,
+    };
+    let authority_end = after_scheme
+        .find(|c: char| c == '/' || c == '?' || c == '#')
+        .unwrap_or(after_scheme.len());
+    let authority = &after_scheme[..authority_end];
+    let host_start = authority.rfind('@').map(|i| i + 1).unwrap_or(0);
+    let host_with_port = &authority[host_start..];
+    // IPv6 hosts are bracketed (`[::1]:8080`) — find the closing bracket
+    // first so we don't split at the colon inside the address.
+    if host_with_port.starts_with('[') {
+        if let Some(i) = host_with_port.find(']') {
+            return host_with_port[..=i].to_string();
+        }
+        return host_with_port.to_string();
+    }
+    host_with_port
+        .split(':')
+        .next()
+        .unwrap_or(host_with_port)
+        .to_string()
+}
+
+#[cfg(test)]
+mod extract_host_tests {
+    use super::extract_host;
+
+    #[test]
+    fn bare_host_lowercased() {
+        assert_eq!(extract_host("Example.COM"), "example.com");
+    }
+
+    #[test]
+    fn url_host_extracted() {
+        assert_eq!(extract_host("https://example.com/path"), "example.com");
+    }
+
+    #[test]
+    fn url_with_port_stripped() {
+        assert_eq!(extract_host("http://api.example.com:8080/"), "api.example.com");
+    }
+
+    #[test]
+    fn url_with_userinfo_stripped() {
+        assert_eq!(extract_host("https://user:pass@example.com/"), "example.com");
+    }
+
+    #[test]
+    fn ipv6_bracketed() {
+        assert_eq!(extract_host("http://[::1]:8080/"), "[::1]");
+    }
+
+    #[test]
+    fn bare_host_with_port_returned_as_is() {
+        // Bare grants are not parsed as URLs — they're treated as
+        // literal host tokens. `api.example.com:8080` as a grant is
+        // a misconfiguration (port isn't part of the capability model)
+        // and the function returns it unchanged; the match against
+        // the lowercase URL host will then fail to equal, denying the
+        // grant. This is the correct failure mode for bad input.
+        assert_eq!(extract_host("api.example.com:8080"), "api.example.com:8080");
+    }
+}
+
 fn glob_matches(pattern: &str, path: &str) -> bool {
     if pattern == "*" {
         return true;

@@ -13,7 +13,7 @@ pub mod tool_definition;
 pub use agent_id::AgentId;
 pub use audit::{AuditEvent, AuditEventKind, AuditLog, InMemoryAuditLog, StdoutAuditLog, StopReason, SummarizationFailureKind};
 pub use backend::{AgentBackend, AgentLaunchHandle, AgentLaunchSpec, BackendHealth};
-pub use capability::{Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken, Constraints, RateLimit};
+pub use capability::{extract_host, Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken, Constraints, RateLimit};
 pub use capability_registry::CapabilityRegistry;
 pub use budget::{BudgetConfig, BudgetExceeded, BudgetTracker};
 pub use error::{CoreError, Result};
