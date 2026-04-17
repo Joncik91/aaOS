@@ -239,18 +239,180 @@ impl Server {
                 })
             },
         );
+
+        // Build the scaffold runner — deterministic runtime-side execution
+        // for roles with `scaffold: {kind: ...}`. Handles "fetcher" today;
+        // other kinds can be added without changing PlanExecutor.
+        let server_weak2 = self.clone();
+        let scaffold_runner: aaos_runtime::plan::ScaffoldRunner = Arc::new(
+            move |subtask_id, kind, params| {
+                let s = server_weak2.clone();
+                Box::pin(async move {
+                    s.run_scaffold_inline(&subtask_id, &kind, params).await
+                })
+            },
+        );
+
         let audit: Arc<dyn aaos_core::AuditLog> = self.broadcast_audit.clone();
-        let executor = Arc::new(PlanExecutor::new(
+        let mut executor = PlanExecutor::new(
             catalog,
             planner,
             runner,
             audit,
             self.run_root_base.clone(),
-        ));
+        );
+        executor.set_scaffold_runner(scaffold_runner);
         // Best-effort: install once. If install_plan_executor_runner is
         // called twice on the same Arc (shouldn't happen today), the
         // second call silently no-ops — the first wins.
-        let _ = self.plan_executor.set(executor);
+        let _ = self.plan_executor.set(Arc::new(executor));
+    }
+
+    /// Run a scaffold-marked role deterministically — no LLM loop. Spawns
+    /// an ephemeral child with the role's capability set (so `tool_invocation`
+    /// sees a real agent context), then dispatches on `kind`:
+    ///
+    ///   * "fetcher" — call web_fetch(url=<params.url>), then
+    ///     file_write(path=<params.workspace>, content=<body>), return
+    ///     workspace as the response text.
+    ///
+    /// Other kinds return Err. Audit events (ToolInvoked, ToolResult)
+    /// flow through the normal capability-checked path so the CLI sees
+    /// the same event stream shape it would for an LLM-powered role.
+    #[doc(hidden)]
+    pub async fn run_scaffold_inline(
+        self: &Arc<Self>,
+        subtask_id: &str,
+        kind: &str,
+        params: serde_json::Value,
+    ) -> Result<SubtaskResult, aaos_core::CoreError> {
+        let catalog = self.role_catalog.as_ref().ok_or_else(|| {
+            aaos_core::CoreError::Ipc("scaffold requires role catalog (none loaded)".into())
+        })?;
+
+        // Find the role whose scaffold.kind matches. The scaffold runner
+        // is keyed on kind rather than role name so multiple roles could
+        // share one scaffold implementation (e.g. different fetcher
+        // presets pointing at the same "fetcher" kind).
+        let role = catalog
+            .names()
+            .iter()
+            .filter_map(|n| catalog.get(n))
+            .find(|r| r.scaffold.as_ref().map(|s| s.kind == kind).unwrap_or(false))
+            .ok_or_else(|| {
+                aaos_core::CoreError::Ipc(format!(
+                    "no role in catalog declares scaffold kind '{kind}'"
+                ))
+            })?;
+
+        // Render the manifest so the ephemeral child has the right
+        // capabilities (e.g. file_write: {workspace} substituted).
+        let manifest_yaml = role.render_manifest(&params);
+        let manifest = aaos_core::AgentManifest::from_yaml(&manifest_yaml).map_err(|e| {
+            aaos_core::CoreError::Ipc(format!("scaffold: parse rendered manifest: {e}"))
+        })?;
+
+        // Spawn the child — same pattern as run_subtask_inline. Scopeguard
+        // ensures cleanup on any return path.
+        let agent_id = self
+            .registry
+            .spawn(manifest.clone())
+            .map_err(|e| aaos_core::CoreError::Ipc(format!("scaffold spawn: {e}")))?;
+        let cleanup_registry = self.registry.clone();
+        let _guard = scopeguard::guard(agent_id, move |aid| {
+            let _ = cleanup_registry.stop_sync(aid);
+        });
+
+        // Fetch the agent's capability handles — the tool_invocation
+        // path enforces capabilities via these.
+        let token_handles = self.registry.get_token_handles(agent_id).map_err(|e| {
+            aaos_core::CoreError::Ipc(format!("scaffold: get token handles: {e}"))
+        })?;
+
+        // Dispatch on kind.
+        let response = match kind {
+            "fetcher" => {
+                self.scaffold_fetcher(agent_id, &token_handles, &params).await?
+            }
+            other => {
+                return Err(aaos_core::CoreError::Ipc(format!(
+                    "unknown scaffold kind '{other}'"
+                )));
+            }
+        };
+
+        Ok(SubtaskResult {
+            subtask_id: subtask_id.to_string(),
+            agent_id,
+            response,
+            // Scaffolds don't touch the LLM; real token usage is zero.
+            input_tokens: 0,
+            output_tokens: 0,
+        })
+    }
+
+    /// Deterministic fetcher: web_fetch(url) → file_write(workspace, body)
+    /// → return workspace path. Both calls route through tool_invocation
+    /// so capability checks + audit events fire normally.
+    async fn scaffold_fetcher(
+        self: &Arc<Self>,
+        agent_id: aaos_core::AgentId,
+        token_handles: &[aaos_core::CapabilityHandle],
+        params: &serde_json::Value,
+    ) -> Result<String, aaos_core::CoreError> {
+        let url = params
+            .get("url")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                aaos_core::CoreError::Ipc("scaffold fetcher: missing 'url' param".into())
+            })?;
+        let workspace = params
+            .get("workspace")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                aaos_core::CoreError::Ipc("scaffold fetcher: missing 'workspace' param".into())
+            })?;
+
+        // Ensure the workspace's parent directory exists. The runtime
+        // creates /var/lib/aaos/workspace/<run-id>/ but roles may write
+        // into nested subdirs (e.g. {run}/fetched/<file>.html).
+        if let Some(parent) = std::path::Path::new(workspace).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                aaos_core::CoreError::Ipc(format!(
+                    "scaffold fetcher: mkdir {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+
+        // Step 1: web_fetch. Returns JSON {status, content_type, body}.
+        let fetch_input = serde_json::json!({"url": url});
+        let fetch_result = self
+            .tool_invocation
+            .invoke(agent_id, "web_fetch", fetch_input, token_handles)
+            .await?;
+        let body = fetch_result
+            .get("body")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                aaos_core::CoreError::Ipc(
+                    "scaffold fetcher: web_fetch returned no body field".into(),
+                )
+            })?
+            .to_string();
+
+        // Step 2: file_write.
+        let write_input = serde_json::json!({
+            "path": workspace,
+            "content": body,
+        });
+        let _ = self
+            .tool_invocation
+            .invoke(agent_id, "file_write", write_input, token_handles)
+            .await?;
+
+        // Step 3: return the workspace path as the subtask response.
+        Ok(workspace.to_string())
     }
 
     /// Run a subtask by spawning a child from the rendered manifest,

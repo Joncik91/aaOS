@@ -41,6 +41,21 @@ pub struct RoleRetry {
     pub on: Vec<String>,
 }
 
+/// Opt-in runtime-side execution mode for roles whose work is purely
+/// mechanical (fetch-and-write, read-and-transform, etc.). When set, the
+/// PlanExecutor skips the LLM loop entirely and dispatches the role's work
+/// via deterministic Rust code keyed on the `kind` string. This closes the
+/// "LLM emits a plausible ack without actually calling the tool" failure
+/// mode observed for LLM-powered fetchers.
+///
+/// Current kinds:
+///   * "fetcher" — web_fetch(url) → file_write(workspace, body) → return
+///     workspace. See PlanExecutor::run_scaffold.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleScaffold {
+    pub kind: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Role {
     pub name: String,
@@ -53,6 +68,10 @@ pub struct Role {
     pub message_template: String,
     pub budget: RoleBudget,
     pub retry: RoleRetry,
+    /// When present, the runtime executes this role via a deterministic
+    /// scaffold instead of an LLM loop. Absence (None) = LLM-powered role.
+    #[serde(default)]
+    pub scaffold: Option<RoleScaffold>,
 }
 
 impl Role {
@@ -430,6 +449,23 @@ retry:
         write(dir.path(), "analyzer.yaml", &alt);
         let cat = RoleCatalog::load_from_dir(dir.path()).unwrap();
         assert_eq!(cat.names(), vec!["analyzer", "fetcher"]);
+    }
+
+    #[test]
+    fn scaffold_field_defaults_to_none_for_llm_roles() {
+        let r = fetcher_role();
+        assert!(r.scaffold.is_none());
+    }
+
+    #[test]
+    fn scaffold_field_parses_when_present() {
+        let yaml = format!(
+            "{}\nscaffold:\n  kind: fetcher\n",
+            FETCHER_YAML.trim_end()
+        );
+        let r: Role = serde_yaml::from_str(&yaml).unwrap();
+        let s = r.scaffold.expect("scaffold should parse");
+        assert_eq!(s.kind, "fetcher");
     }
 
     use serde_json::json;

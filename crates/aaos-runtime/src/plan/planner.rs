@@ -300,6 +300,7 @@ mod tests {
                 max_attempts: 1,
                 on: vec![],
             },
+            scaffold: None,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("fetcher".into(), r);

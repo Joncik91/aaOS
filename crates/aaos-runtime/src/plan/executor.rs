@@ -60,10 +60,31 @@ pub type SubtaskRunner = Arc<
         + Sync,
 >;
 
+/// Closure that runs a deterministic scaffold for roles whose work is
+/// mechanical (no LLM loop). Dispatched by PlanExecutor when `role.scaffold`
+/// is Some. Kind (e.g. "fetcher") selects which scaffold to run; resolved
+/// params carry the same substituted values the LLM path would have seen.
+///
+/// Scaffolds produce a SubtaskResult with a real workspace-path response
+/// (or similar mechanical output) and zero LLM token usage — since no LLM
+/// ran. Errors are Terminal; correctable-class errors (bad params, unknown
+/// role) are caught upstream in spawn_subtask.
+pub type ScaffoldRunner = Arc<
+    dyn Fn(
+            String,                     // subtask_id
+            String,                     // scaffold kind (e.g. "fetcher")
+            serde_json::Value,          // resolved params
+        ) -> Pin<
+            Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 pub struct PlanExecutor {
     catalog: Arc<RoleCatalog>,
     planner: Arc<Planner>,
     runner: SubtaskRunner,
+    scaffold_runner: Option<ScaffoldRunner>,
     audit_log: Arc<dyn AuditLog>,
     max_replans: u32,
     total_deadline: Duration,
@@ -82,11 +103,20 @@ impl PlanExecutor {
             catalog,
             planner,
             runner,
+            scaffold_runner: None,
             audit_log,
             max_replans: 3,
             total_deadline: Duration::from_secs(600),
             run_root_base,
         }
+    }
+
+    /// Install a scaffold runner for roles with `scaffold: {kind: ...}`.
+    /// Without one, all roles run through the LLM `runner` regardless of
+    /// their `scaffold` field. The server wires this in after the Arc<Self>
+    /// exists, same chicken-and-egg dance as `install_plan_executor_runner`.
+    pub fn set_scaffold_runner(&mut self, runner: ScaffoldRunner) {
+        self.scaffold_runner = Some(runner);
     }
 
     pub async fn run(&self, goal: &str, run_id: uuid::Uuid) -> Result<PlanResult, ExecutorError> {
@@ -214,19 +244,6 @@ impl PlanExecutor {
             .get(&subtask.role)
             .ok_or_else(|| ExecutorError::Correctable(format!("unknown role: {}", subtask.role)))?;
         let resolved_params = subs.apply(&subtask.params);
-        let manifest_yaml = role.render_manifest(&resolved_params);
-        let message = role.render_message(&resolved_params);
-
-        // Pull the role's budget + retry into per-subtask overrides so the
-        // runner can build a non-default ExecutorConfig. max_iterations is
-        // bounded conservatively (retry.max_attempts governs how many LLM
-        // loops should exit cleanly before surfacing); ExecutorConfig's
-        // max_iterations is a separate LLM-loop-per-call bound, so we add
-        // a safety floor of 10 above what the role declares.
-        let overrides = SubtaskExecutorOverrides {
-            max_output_tokens: role.budget.max_output_tokens as u32,
-            max_iterations: (role.retry.max_attempts + 10).max(10),
-        };
 
         // Audit: subtask start. agent_id isn't known until the runner returns.
         self.audit_log.record(AuditEvent::new(
@@ -236,6 +253,43 @@ impl PlanExecutor {
                 role: subtask.role.clone(),
             },
         ));
+
+        // Scaffold dispatch: if the role opts into deterministic execution
+        // AND the server has installed a scaffold_runner, skip the LLM loop
+        // entirely. Used for mechanical roles (fetcher, etc.) where an LLM
+        // can satisfy the surface contract without actually performing the
+        // tool-call side effect. See docs/patterns.md:
+        // "Prompt contracts can't enforce tool-call side effects".
+        if let Some(scaffold) = &role.scaffold {
+            if let Some(runner) = &self.scaffold_runner {
+                let result = runner(
+                    subtask.id.clone(),
+                    scaffold.kind.clone(),
+                    resolved_params,
+                )
+                .await
+                .map_err(ExecutorError::Terminal)?;
+                return Ok(result);
+            }
+            // Role asked for a scaffold but none is installed — surface
+            // cleanly instead of silently falling back to the LLM path
+            // (which would re-expose the bug the scaffold exists to fix).
+            return Err(ExecutorError::Terminal(CoreError::Ipc(format!(
+                "role '{}' declares scaffold kind '{}' but no scaffold runner is installed",
+                subtask.role, scaffold.kind
+            ))));
+        }
+
+        // LLM-powered role path: render the manifest + first message, pull
+        // the role's budget + retry into per-subtask ExecutorConfig overrides,
+        // dispatch through the LLM runner.
+        let manifest_yaml = role.render_manifest(&resolved_params);
+        let message = role.render_message(&resolved_params);
+
+        let overrides = SubtaskExecutorOverrides {
+            max_output_tokens: role.budget.max_output_tokens as u32,
+            max_iterations: (role.retry.max_attempts + 10).max(10),
+        };
 
         let result = (self.runner)(subtask.id.clone(), manifest_yaml, message, overrides)
             .await
@@ -332,6 +386,7 @@ mod tests {
                 max_attempts: 1,
                 on: vec![],
             },
+            scaffold: None,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("fetcher".into(), r);
@@ -500,6 +555,7 @@ mod tests {
                 max_attempts: 1,
                 on: vec![],
             },
+            scaffold: None,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("generalist".into(), r);

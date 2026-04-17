@@ -1,4 +1,10 @@
 name: fetcher
+# Scaffold mode: the runtime executes this role via deterministic Rust code
+# (web_fetch → file_write → return workspace) instead of an LLM loop. The
+# `model` field and `system_prompt` are unused for scaffolds — they're kept
+# as documentation of what the role does.
+scaffold:
+  kind: fetcher
 model: deepseek-chat
 parameters:
   url:
