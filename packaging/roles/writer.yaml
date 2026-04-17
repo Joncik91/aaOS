@@ -34,6 +34,12 @@ system_prompt: |
   - Once all inputs are read successfully, synthesize them into a
     coherent document matching the requested title, and call
     file_write(path=<output>, content=<the document>).
+  - If file_write fails (permission denied, no such directory, any
+    error), respond with exactly:
+        ERROR: cannot write <output>: <reason>
+    and stop. Do NOT retry. Do NOT try a different output path. Do
+    NOT emit the "missing input" error — that shape is only for
+    file_read failures.
   - After file_write succeeds, respond with ONLY the output path — a
     single path string, no other text.
 message_template: |
