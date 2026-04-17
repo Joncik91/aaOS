@@ -39,7 +39,7 @@ impl CapabilityRegistry {
     /// RUNTIME-INTERNAL. Issue a handle for a token. Called from
     /// `AgentRegistry::issue_capabilities`. Tool code must not call this.
     pub fn insert(&self, agent_id: AgentId, token: CapabilityToken) -> CapabilityHandle {
-        let h = CapabilityHandle(self.next_id.fetch_add(1, Ordering::AcqRel));
+        let h = CapabilityHandle::from_raw(self.next_id.fetch_add(1, Ordering::AcqRel));
         self.table.insert(h, OwnedEntry { agent_id, token });
         h
     }
@@ -290,7 +290,7 @@ mod tests {
     fn authorize_rejects_unknown_handle() {
         let registry = CapabilityRegistry::new();
         let agent = test_agent("a");
-        let forged = CapabilityHandle(999999);
+        let forged = CapabilityHandle::from_raw(999999);
 
         let result = registry.authorize_and_record(forged, agent, &Capability::WebSearch);
         assert_eq!(result, Err(CapabilityDenied::UnknownHandle));

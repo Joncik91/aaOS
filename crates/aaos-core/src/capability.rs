@@ -18,7 +18,20 @@ use crate::agent_id::AgentId;
 /// Full HMAC-signed tokens are a separate, deferred hardening item tracked
 /// in docs/ideas.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CapabilityHandle(pub u64);
+pub struct CapabilityHandle(u64);
+
+impl CapabilityHandle {
+    /// Construct a handle from a raw u64 index. Visible to the whole crate
+    /// (needed by `CapabilityRegistry::insert` and intra-crate tests) but
+    /// not re-exported — call sites outside `aaos-core` cannot fabricate
+    /// a handle from an arbitrary integer. Tool code interacts with
+    /// handles only as opaque values received from the runtime, copied
+    /// via `Clone`, compared via `Eq`, and passed back to the registry
+    /// for resolution.
+    pub(crate) fn from_raw(id: u64) -> Self {
+        Self(id)
+    }
+}
 
 /// Why an authorization failed. Included so tools can log or return a
 /// specific denial reason without holding a token.

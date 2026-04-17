@@ -199,7 +199,7 @@ system_prompt: "test"
         let spec = AgentLaunchSpec {
             agent_id: AgentId::new(),
             manifest: sample_manifest(),
-            capability_handles: vec![CapabilityHandle(17)],
+            capability_handles: vec![CapabilityHandle::from_raw(17)],
             workspace_path: PathBuf::from("/tmp/aaos/agent-xyz"),
             budget_config: Some(BudgetConfig {
                 max_tokens: 5_000,
