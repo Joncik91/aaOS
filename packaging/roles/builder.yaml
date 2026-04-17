@@ -19,6 +19,7 @@ capabilities:
   - "tool: file_edit"
   - "tool: file_list"
   - "tool: cargo_run"
+  - "tool: grep"
   - "file_read: {workspace}/*"
   - "file_write: {workspace}/*"
   - "file_read: {plan}"

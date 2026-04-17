@@ -64,7 +64,7 @@ aaOS is a capability-enforced agent runtime. agentd manages agent lifecycles,
 enforces capability tokens at tool-invocation boundaries, and routes IPC between
 agents. This package installs the daemon plus the default bootstrap manifest.
 """
-depends = "$auto, systemd, ca-certificates"
+depends = "$auto, systemd, ca-certificates, ripgrep"
 section = "admin"
 priority = "optional"
 assets = [

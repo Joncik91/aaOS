@@ -149,7 +149,12 @@ mod tests {
         InvocationContext { agent_id, tokens: vec![handle], capability_registry: registry }
     }
 
+    // Gated behind --ignored because it shells out to a real `rg`
+    // process. CI / dev machines without ripgrep installed would
+    // otherwise see spurious test failures. Run locally with:
+    //   cargo test -p aaos-tools grep -- --ignored
     #[tokio::test]
+    #[ignore]
     async fn grep_finds_matches() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "foo\nbar\nbaz\n").unwrap();
@@ -163,6 +168,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn grep_capability_denied() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_str().unwrap();
@@ -172,6 +178,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn grep_no_matches_returns_empty() {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.txt"), "nothing here\n").unwrap();
