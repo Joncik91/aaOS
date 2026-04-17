@@ -128,11 +128,17 @@ exist today, with a clean path to more:
   the same process as `agentd`. Low overhead, trusts the process boundary.
 - **`NamespacedBackend`** (`crates/aaos-backend-linux/src/lib.rs`) — Opt-in
   via `namespaced-agents` feature and `AAOS_DEFAULT_BACKEND=namespaced` env
-  var. Scaffolding landed (handshake protocol, peer-creds session binding,
-  Landlock + seccomp compilers, worker binary, fail-closed Landlock probe).
-  The `clone() + uid_map + pivot_root + exec` launch path is pinned by a
-  unit test but not yet functional; completion requires manual verification
-  on a Linux 5.13+ host with root or user-namespace privileges.
+  var. Handshake protocol, peer-creds session binding, Landlock + seccomp
+  compilers, worker binary, and the `clone() + uid_map + pivot_root + exec`
+  launch path are all implemented and verified end-to-end on Debian 13 /
+  kernel 6.12.43: the 4 integration tests in
+  `crates/aaos-backend-linux/tests/namespaced_backend.rs` pass under
+  `--ignored`, and a live worker's `/proc/<pid>/status` shows
+  `NoNewPrivs: 1`, `Seccomp: 2` (filter mode), and
+  `Seccomp_filters: 2` (both stacked filters installed). Re-verified
+  against commit `3e1b207` on 2026-04-17 — no regression since the
+  2026-04-15 baseline. Still opt-in on the `.deb` install default until
+  F-b ships the namespaced-by-default cloud image.
 
 The opaque `AgentLaunchHandle::state: Arc<dyn Any>` pattern means future
 backends (Phase G MicroVM via Firecracker/Kata, a possible seL4 backend)
