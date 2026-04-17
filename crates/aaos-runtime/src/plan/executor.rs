@@ -192,7 +192,7 @@ impl PlanExecutor {
         plan: &Plan,
         run_root: &PathBuf,
     ) -> Result<PlanResult, ExecutorError> {
-        use futures::future::try_join_all;
+        use futures::future::join_all;
 
         let subs = Substitutions::new(run_root.clone());
         let batches = topo_batches(plan).map_err(ExecutorError::Correctable)?;
@@ -210,20 +210,49 @@ impl PlanExecutor {
         let mut results: HashMap<SubtaskId, SubtaskResult> = HashMap::new();
 
         for batch in batches {
+            // join_all, not try_join_all: siblings finish so we can audit
+            // every outcome. A single failure converts to Correctable AFTER
+            // the batch drains, so the outer run() loop can replan with
+            // full per-subtask context.
             let spawns = batch
                 .iter()
                 .map(|s| self.spawn_subtask(s, &subs))
                 .collect::<Vec<_>>();
-            let batch_results = try_join_all(spawns).await?;
+            let batch_results = join_all(spawns).await;
+
+            let mut first_failure: Option<String> = None;
             for (subtask, result) in batch.iter().zip(batch_results) {
-                self.audit_log.record(AuditEvent::new(
-                    result.agent_id,
-                    AuditEventKind::SubtaskCompleted {
-                        subtask_id: subtask.id.clone(),
-                        success: true,
-                    },
-                ));
-                results.insert(subtask.id.clone(), result);
+                match result {
+                    Ok(r) => {
+                        self.audit_log.record(AuditEvent::new(
+                            r.agent_id,
+                            AuditEventKind::SubtaskCompleted {
+                                subtask_id: subtask.id.clone(),
+                                success: true,
+                            },
+                        ));
+                        results.insert(subtask.id.clone(), r);
+                    }
+                    Err(e) => {
+                        self.audit_log.record(AuditEvent::new(
+                            AgentId::from_uuid(uuid::Uuid::nil()),
+                            AuditEventKind::SubtaskCompleted {
+                                subtask_id: subtask.id.clone(),
+                                success: false,
+                            },
+                        ));
+                        if first_failure.is_none() {
+                            first_failure = Some(format!(
+                                "subtask '{}' (role '{}') failed: {}",
+                                subtask.id, subtask.role, e
+                            ));
+                        }
+                    }
+                }
+            }
+
+            if let Some(reason) = first_failure {
+                return Err(ExecutorError::Correctable(reason));
             }
         }
 
@@ -592,5 +621,242 @@ mod tests {
         fn max_context_tokens(&self, _model: &str) -> u32 {
             100_000
         }
+    }
+
+    /// Stateful MockLlm that returns a pre-scripted sequence of responses.
+    /// Used by the replan test so the first Planner call returns a plan
+    /// whose subtask will fail, and the second call returns a plan whose
+    /// subtask succeeds.
+    struct ScriptedLlm {
+        replies: std::sync::Mutex<Vec<String>>,
+    }
+    impl ScriptedLlm {
+        fn new(replies: Vec<String>) -> Self {
+            Self { replies: std::sync::Mutex::new(replies) }
+        }
+    }
+    #[async_trait::async_trait]
+    impl aaos_llm::LlmClient for ScriptedLlm {
+        async fn complete(
+            &self,
+            _req: aaos_llm::CompletionRequest,
+        ) -> aaos_llm::LlmResult<aaos_llm::CompletionResponse> {
+            let mut q = self.replies.lock().unwrap();
+            let text = q.remove(0);
+            Ok(aaos_llm::CompletionResponse {
+                content: vec![aaos_llm::ContentBlock::Text { text }],
+                stop_reason: aaos_llm::LlmStopReason::EndTurn,
+                usage: aaos_core::TokenUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            })
+        }
+        fn max_context_tokens(&self, _model: &str) -> u32 {
+            100_000
+        }
+    }
+
+    // ---- Replan on subtask failure ----
+
+    #[tokio::test]
+    async fn subtask_failure_surfaces_as_correctable_with_context() {
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        // Runner that always fails — simulates a fetch that blew up.
+        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o| {
+            Box::pin(async move {
+                Err(CoreError::Ipc("HTTP 404".into()))
+            })
+        });
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "hn".into(),
+                role: "fetcher".into(),
+                params: serde_json::json!({
+                    "url": "https://example.invalid/",
+                    "workspace": "{run}/hn.html"
+                }),
+                depends_on: vec![],
+            }],
+            final_output: "/out".into(),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let err = exec
+            .execute_plan(&plan, &tmp.path().to_path_buf())
+            .await
+            .unwrap_err();
+        match err {
+            ExecutorError::Correctable(msg) => {
+                assert!(msg.contains("subtask 'hn'"), "got: {}", msg);
+                assert!(msg.contains("role 'fetcher'"), "got: {}", msg);
+                assert!(msg.contains("HTTP 404"), "got: {}", msg);
+            }
+            other => panic!("expected Correctable, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_subtask_emits_subtask_completed_success_false() {
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o| {
+            Box::pin(async move {
+                Err(CoreError::Ipc("boom".into()))
+            })
+        });
+        let audit_concrete = Arc::new(InMemoryAuditLog::new());
+        let audit: Arc<dyn AuditLog> = audit_concrete.clone();
+        let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "a".into(),
+                role: "fetcher".into(),
+                params: serde_json::json!({
+                    "url": "https://x/",
+                    "workspace": "{run}/a.html"
+                }),
+                depends_on: vec![],
+            }],
+            final_output: "/out".into(),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let events = audit_concrete.events();
+        let failed = events.iter().find(|e| {
+            matches!(
+                &e.event,
+                AuditEventKind::SubtaskCompleted { subtask_id, success: false } if subtask_id == "a"
+            )
+        });
+        assert!(failed.is_some(), "expected SubtaskCompleted{{success:false}} for 'a' — events: {:?}", events.iter().map(|e| &e.event).collect::<Vec<_>>());
+    }
+
+    #[tokio::test]
+    async fn parallel_batch_one_failure_preserves_sibling_audit() {
+        // Two fetchers in a single batch: one succeeds, one fails. The
+        // batch returns Correctable (so the run loop can replan), but the
+        // successful sibling must still produce SubtaskCompleted{success:true}
+        // and the failing one must produce SubtaskCompleted{success:false}.
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o| {
+            Box::pin(async move {
+                if id == "bad" {
+                    Err(CoreError::Ipc("HTTP 500".into()))
+                } else {
+                    Ok(SubtaskResult {
+                        subtask_id: id,
+                        agent_id: AgentId::new(),
+                        response: "ok".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    })
+                }
+            })
+        });
+        let audit_concrete = Arc::new(InMemoryAuditLog::new());
+        let audit: Arc<dyn AuditLog> = audit_concrete.clone();
+        let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "good".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({
+                        "url": "https://ok/",
+                        "workspace": "{run}/good.html"
+                    }),
+                    depends_on: vec![],
+                },
+                Subtask {
+                    id: "bad".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({
+                        "url": "https://fail/",
+                        "workspace": "{run}/bad.html"
+                    }),
+                    depends_on: vec![],
+                },
+            ],
+            final_output: "/out".into(),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let err = exec
+            .execute_plan(&plan, &tmp.path().to_path_buf())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExecutorError::Correctable(_)));
+
+        let events = audit_concrete.events();
+        let good_ok = events.iter().any(|e| matches!(
+            &e.event,
+            AuditEventKind::SubtaskCompleted { subtask_id, success: true } if subtask_id == "good"
+        ));
+        let bad_fail = events.iter().any(|e| matches!(
+            &e.event,
+            AuditEventKind::SubtaskCompleted { subtask_id, success: false } if subtask_id == "bad"
+        ));
+        assert!(good_ok, "expected success event for 'good'");
+        assert!(bad_fail, "expected failure event for 'bad'");
+    }
+
+    #[tokio::test]
+    async fn run_replans_after_subtask_failure_and_succeeds() {
+        // Scripted planner: first reply produces a plan with subtask id
+        // "try1" which the runner is wired to fail; second reply (after
+        // replan) produces a plan with id "try2" which succeeds.
+        let cat = Arc::new(fetcher_catalog());
+
+        let plan_try1 = r#"{"subtasks":[{"id":"try1","role":"fetcher","params":{"url":"https://fail/","workspace":"{run}/a.html"},"depends_on":[]}],"final_output":"/out"}"#;
+        let plan_try2 = r#"{"subtasks":[{"id":"try2","role":"fetcher","params":{"url":"https://ok/","workspace":"{run}/a.html"},"depends_on":[]}],"final_output":"/out"}"#;
+        let scripted = Arc::new(ScriptedLlm::new(vec![plan_try1.into(), plan_try2.into()]));
+        let planner = Arc::new(Planner::new(scripted, "deepseek-chat".into()));
+
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o| {
+            Box::pin(async move {
+                if id == "try1" {
+                    Err(CoreError::Ipc("HTTP 404".into()))
+                } else {
+                    Ok(SubtaskResult {
+                        subtask_id: id,
+                        agent_id: AgentId::new(),
+                        response: "ok".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    })
+                }
+            })
+        });
+
+        let audit_concrete = Arc::new(InMemoryAuditLog::new());
+        let audit: Arc<dyn AuditLog> = audit_concrete.clone();
+        let tmp = tempfile::tempdir().unwrap();
+        let exec = PlanExecutor::new(
+            cat,
+            planner,
+            runner,
+            audit,
+            tmp.path().to_path_buf(),
+        );
+
+        let result = exec
+            .run("fetch something", uuid::Uuid::new_v4())
+            .await
+            .expect("run should succeed via replan");
+        assert_eq!(result.results.len(), 1);
+        assert!(result.results.contains_key("try2"));
+
+        let events = audit_concrete.events();
+        let replanned = events.iter().any(|e| matches!(
+            &e.event,
+            AuditEventKind::PlanReplanned { .. }
+        ));
+        assert!(replanned, "expected PlanReplanned audit event");
     }
 }

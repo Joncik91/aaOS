@@ -140,7 +140,16 @@ impl Planner {
         );
 
         if let (Some(prev), Some(reason)) = (previous, failure_reason) {
-            prompt.push_str("PREVIOUS PLAN FAILED. Revise.\n");
+            prompt.push_str(
+                "PREVIOUS PLAN FAILED. Diagnose the failure below and emit a\n\
+                 revised plan that avoids it. Do NOT re-emit the failing\n\
+                 subtask verbatim — change what needs to change (a different\n\
+                 URL, a different role, a different path shape, or dropping\n\
+                 a subtask that cannot succeed). If the failure looks\n\
+                 unrecoverable (e.g. the target resource does not exist),\n\
+                 produce a plan that reports the failure cleanly instead of\n\
+                 retrying the same operation.\n\n",
+            );
             prompt.push_str(&format!(
                 "Previous plan: {}\n",
                 serde_json::to_string(prev).unwrap()
