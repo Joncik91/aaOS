@@ -45,12 +45,31 @@ Each entry is short by design. If something here grows enough to deserve an impl
 - **Why deferred:** Copilot review flagged this as "too broad — same-turn tool calls can be semantically dependent even when they look independent." Safer shape is tool-level opt-in via explicit batch tools (we did this: `file_read_many`). Generic parallelism would need a per-tool `parallel_safe` classification first.
 - **Signal to reconsider:** multiple concrete tools are all worth running in parallel AND the per-tool classification work has been done.
 
-## Cryptographically unforgeable capability tokens — **PARTIALLY ADDRESSED** (commits `14a8eae`, `18d14f0`)
+## Capability token forgery — threat-model split
 
-- **What shipped:** handle-based tokens (`CapabilityHandle` + `CapabilityRegistry` in `aaos-core`). Agents and tool implementations hold opaque handles; the underlying `CapabilityToken` lives in a runtime-owned table and is never exposed to non-runtime code. Cross-agent leak protection: a handle issued for agent A cannot resolve into agent B's invocation context. This closes the in-process forgery path — a compromised or third-party tool running in `agentd` can no longer fabricate valid `CapabilityToken` struct literals because it never sees a token in the first place.
-- **What remains:** HMAC-signed tokens for **cross-process / cross-host transport**. Handles are process-local indices; they're meaningless outside `agentd`'s address space. If tokens ever need to cross into a MicroVM (Phase G), a separate host (multi-node agent swarms), or be persisted and later re-validated, we need `(agent_id, capability, constraints)` signed with a runtime-only secret. Also remains: defense against attackers with direct read access to `agentd`'s memory (`/proc/<pid>/mem`) — that requires OS-level primitives (Landlock ptrace denial, seccomp) or hardware isolation (MicroVM), tracked in Phase F and Phase G.
-- **Further progress:** Commit `a73e062` closes the in-process forgery path a second time via `NamespacedBackend` — isolated workers hold no `CapabilityHandle` values at all; all tool invocations route through the broker over a peer-creds-authenticated Unix socket. HMAC signing remains for genuine cross-process/cross-host transport (Phase G MicroVM, multi-host). Worker-local handle forgery stops being a concern because there are no handles in the worker to forge.
-- **Signal to reconsider (remaining piece):** (a) Phase G MicroVM backend is being implemented and tokens need to cross the VM boundary, OR (b) multi-host agent swarms become a real requirement, OR (c) a security-focused customer names HMAC signing as a gating requirement.
+The monolithic "cryptographically unforgeable tokens" item from earlier rounds conflated four distinct threat classes with different current statuses. Splitting them out replaces a vague **PARTIAL** with specific **CLOSED** / **OPEN** / **N/A** per case — which is both more accurate and a stronger security claim than implementing HMAC for a path that doesn't exist yet.
+
+### In-process forgery by in-tree or third-party tool code — **CLOSED** (commits `14a8eae`, `18d14f0`)
+- **Threat:** a tool running inside `agentd` (bundled in `aaos-tools` or loaded from an external crate) constructs a `CapabilityToken` struct literal, or mutates an existing one, to escalate its grant.
+- **Mitigation shipped:** handle-based tokens. Tools receive `CapabilityHandle` (a `u64` wrapper) only. The underlying `CapabilityToken` lives in a runtime-owned `CapabilityRegistry` and is never exposed to tool code. Capability checks go through `registry.permits(handle, agent_id, cap)`; the registry verifies handle-to-agent ownership on every resolve. A forged handle either points at nothing (unknown index) or points at a token owned by a different agent, which the ownership check rejects.
+- **Status:** the API surface no longer lets in-process tool code construct or mutate tokens. There is no further fix until an auditor names a reachable bypass.
+
+### Worker-side forgery on NamespacedBackend — **CLOSED** (commit `a73e062`)
+- **Threat:** a compromised worker subprocess running a `NamespacedBackend` agent constructs its own handle or tampers with one to escalate inside the worker's address space.
+- **Mitigation shipped:** workers hold no `CapabilityHandle` values at all. All tool invocations leave the worker via a peer-creds-authenticated Unix socket (`SO_PEERCRED`) to the broker in `agentd`. The broker looks up the caller's agent ID from socket peer creds, resolves the requested capability against the registry in-process, and answers. Handles never cross the process boundary.
+- **Status:** closed by design — the worker has nothing to forge. Stacked seccomp filters + Landlock + `NoNewPrivs: 1` close adjacent memory-tampering threats; verified end-to-end on Debian 13 / kernel 6.12.43.
+
+### Registry memory tampering by attackers with Rust-level execution inside `agentd` — **OPEN** (target fix is not HMAC)
+- **Threat:** attacker gains code execution inside the `agentd` process via a memory-safety bug or a compromised dependency, then writes directly to the registry's `DashMap`.
+- **Mitigation today:** none at the capability layer. Every agent trusts the `agentd` process with the capability table.
+- **Why HMAC doesn't fix this:** HMAC-signed tokens would live next to the HMAC key in the same address space. An attacker who can mutate the DashMap can also read the key and produce valid signatures. The real defenses are OS-level (Landlock ptrace denial on `agentd`, seccomp on `agentd` itself) or hardware isolation (MicroVM-per-agent with the registry kept in the host). Both are tracked under Phase F-b and Phase G.
+- **Signal to reconsider:** an in-scope memory-safety audit, OR an `unsafe`-heavy dependency lands that widens the attack surface.
+
+### Cross-process / cross-host transport of tokens — **N/A today, OPEN when needed** (HMAC is the right fix here)
+- **Threat:** tokens need to leave `agentd`'s address space — e.g., a Phase G MicroVM backend where a VM-resident worker holds tokens locally, or a multi-host swarm where a parent on host A delegates to a child on host B.
+- **Mitigation today:** no such transport exists. `NamespacedBackend` workers are local and hold no handles; all inter-process communication routes through the peer-creds-authenticated broker.
+- **Target fix (when signal fires):** HMAC-signed `(agent_id, capability, constraints, issued_at)` with a runtime-only secret, plus a nonce table to defeat replay. Key management (rotation, daemon-restart semantics) needs designing against the real transport shape — building it speculatively now would commit to a format the real use case might want different.
+- **Signal to reconsider:** (a) Phase G MicroVM backend is being implemented and tokens need to cross the VM boundary, OR (b) multi-host agent swarms become a real requirement, OR (c) a security-focused customer names HMAC signing as a gating requirement.
 
 ## Full JSON Schema validation for MCP messages
 
