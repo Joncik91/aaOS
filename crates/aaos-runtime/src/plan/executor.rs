@@ -224,6 +224,29 @@ impl PlanExecutor {
             for (subtask, result) in batch.iter().zip(batch_results) {
                 match result {
                     Ok(r) => {
+                        // Role-contract guard: any "file_write: {<param>}" grant
+                        // without a trailing `/*` is a declared single-path
+                        // output — the subtask is not complete unless that file
+                        // exists. Catches run-12 shape where a builder agent
+                        // emits "complete" having skipped the report write.
+                        if let Some(reason) =
+                            check_declared_outputs_exist(&self.catalog, subtask, &subs)
+                        {
+                            self.audit_log.record(AuditEvent::new(
+                                r.agent_id,
+                                AuditEventKind::SubtaskCompleted {
+                                    subtask_id: subtask.id.clone(),
+                                    success: false,
+                                },
+                            ));
+                            if first_failure.is_none() {
+                                first_failure = Some(format!(
+                                    "subtask '{}' (role '{}') did not produce its declared output: {}",
+                                    subtask.id, subtask.role, reason
+                                ));
+                            }
+                            continue;
+                        }
                         self.audit_log.record(AuditEvent::new(
                             r.agent_id,
                             AuditEventKind::SubtaskCompleted {
@@ -349,6 +372,50 @@ impl From<PlannerError> for ExecutorError {
 /// Falls back to a single-subtask plan using the `generalist` role when the
 /// planner fails to produce any valid plan on the initial call.
 ///
+/// Returns the human-readable "<path> missing" reason if any of the role's
+/// `file_write: {param}` grants (without a trailing `/*`) resolves to a path
+/// that doesn't exist after the subtask ran. Returns None when everything
+/// the role declared as output is on disk.
+///
+/// Rationale: a role that declares a single-path write grant is implicitly
+/// contracted to produce that file. Prompts have been an insufficient lever
+/// (see run 12 reflection — the "plan-complete checklist" did not fire).
+/// This is an executor-enforced version of the same contract.
+fn check_declared_outputs_exist(
+    catalog: &RoleCatalog,
+    subtask: &Subtask,
+    subs: &Substitutions,
+) -> Option<String> {
+    use std::path::Path;
+
+    let role = catalog.get(&subtask.role)?;
+    let resolved_params = subs.apply(&subtask.params);
+
+    for grant in &role.capabilities {
+        let rest = match grant.strip_prefix("file_write:") {
+            Some(r) => r.trim(),
+            None => continue,
+        };
+        // Skip directory-writable grants (trailing /* or /**).
+        if rest.ends_with("/*") || rest.ends_with("/**") {
+            continue;
+        }
+        // Only act on grants that reference a role parameter like `{report}`.
+        let param_name = match rest.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+            Some(n) => n,
+            None => continue,
+        };
+        let path_str = match resolved_params.get(param_name).and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+        if !Path::new(path_str).exists() {
+            return Some(format!("'{path_str}' (from {{{param_name}}}) was not written"));
+        }
+    }
+    None
+}
+
 /// The generalist role is the broad-capability escape hatch for novel goals
 /// that don't match any specific role. With this fallback wired in, the
 /// planner is never a hard blocker: every goal produces some kind of
@@ -697,6 +764,90 @@ mod tests {
             }
             other => panic!("expected Correctable, got {:?}", other),
         }
+    }
+
+    fn reporter_catalog() -> RoleCatalog {
+        // Role that declares a single-path output via `file_write: {report}`.
+        let r = Role {
+            name: "reporter".into(),
+            model: "deepseek-chat".into(),
+            parameters: StdHashMap::from([(
+                "report".into(),
+                ParameterSchema {
+                    param_type: ParameterType::Path,
+                    required: true,
+                    description: "".into(),
+                },
+            )]),
+            capabilities: vec!["file_write: {report}".into()],
+            system_prompt: "x".into(),
+            message_template: "write a report to {report}".into(),
+            budget: RoleBudget { max_input_tokens: 1000, max_output_tokens: 500 },
+            retry: RoleRetry { max_attempts: 1, on: vec![] },
+            scaffold: None,
+        };
+        let mut cat = RoleCatalog::default();
+        cat.roles_mut().insert("reporter".into(), r);
+        cat
+    }
+
+    #[tokio::test]
+    async fn declared_output_missing_fails_subtask() {
+        // Runner returns Ok — simulating the run-12 failure mode where the
+        // agent says "complete" with the report unwritten.
+        let cat = Arc::new(reporter_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let report_path = tmp.path().join("report.md");
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "r".into(),
+                role: "reporter".into(),
+                params: serde_json::json!({ "report": report_path.to_str().unwrap() }),
+                depends_on: vec![],
+            }],
+            final_output: "/out".into(),
+        };
+        let err = exec
+            .execute_plan(&plan, &tmp.path().to_path_buf())
+            .await
+            .unwrap_err();
+        match err {
+            ExecutorError::Correctable(msg) => {
+                assert!(msg.contains("did not produce"), "got: {msg}");
+                assert!(msg.contains("{report}"), "got: {msg}");
+            }
+            other => panic!("expected Correctable, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn declared_output_present_passes_subtask() {
+        let cat = Arc::new(reporter_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
+
+        let tmp = tempfile::tempdir().unwrap();
+        let report_path = tmp.path().join("report.md");
+        std::fs::write(&report_path, "all good").unwrap();
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "r".into(),
+                role: "reporter".into(),
+                params: serde_json::json!({ "report": report_path.to_str().unwrap() }),
+                depends_on: vec![],
+            }],
+            final_output: "/out".into(),
+        };
+        let result = exec
+            .execute_plan(&plan, &tmp.path().to_path_buf())
+            .await;
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
     }
 
     #[tokio::test]
