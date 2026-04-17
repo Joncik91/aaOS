@@ -124,3 +124,23 @@ After the scaffold verification, ran five adversarial cases against the same run
 **Ship-vs-defer call.** None of the four are blocking for the current scaffold milestone. They're edge cases operators would hit once they started using the daemon for varied goals. Worth filing as separate short tasks — probably one commit per issue. The fetcher scaffold itself is correct and stays shipped.
 
 No code changes in this addendum — just the e2e record and the diagnosis.
+
+## Addendum 3 — edge-case fixes shipped and verified *(same day)*
+
+All four issues from Addendum 2 fixed in four focused commits:
+
+- `3699ce1` — `fix(fetcher): scaffold errors on non-2xx or empty body`. Scaffold now inspects the `status` field from `web_fetch`; returns `CoreError` outside 200..300 or on empty body. 404 and blocked responses fail cleanly instead of silently writing error pages.
+- `6c10516` — `fix(writer): explicit contract for file_write failure`. Writer prompt gains a second error shape `ERROR: cannot write <output>: <reason>` for `file_write` failures, separate from the `ERROR: missing input <path>` shape for `file_read` failures.
+- `bf88510` — `fix(plan): handoff rule + generalist workspace param`. Generalist gets an optional `workspace: path` parameter; planner prompt gains a handoff rule requiring upstream roles to declare an output path when downstream subtasks read from them.
+- `20da490` — `fix(cli): surface failed tool results in operator view`. `ToolResult { success: false }` now operator-visible as `tool FAILED: <name>` (red in TTY). Successes stay hidden to avoid doubling the stream.
+
+Re-verified in a fresh `debian:13` container with the rebuilt `.deb`:
+
+| Bug | Pre-fix behavior | Post-fix observed |
+|-----|------------------|-------------------|
+| #1  | `/status/404` wrote 0 bytes, summary said "no data captured", pipeline reported success | `bootstrap failed (0k in / 0k out, 6s)` — clean failure, no downstream subtask spawned |
+| #2  | Writer emitted misleading `ERROR: missing input <workspace>` when `file_write` to `/etc/` failed | `ERROR: cannot write /etc/cannot-write-here.md: Permission denied (os error 13)` — correct root cause |
+| #3  | `generalist→writer` plan had no declared handoff path; writer failed with "missing input" | Planner now generates `fetcher(workspace=X) → writer(inputs=[X])` chains with correct path handoff; real content written |
+| #4  | Failed `file_write` looked identical to success in the event stream | New `tool FAILED: file_write` line appears in red after the invocation line |
+
+All plan/role unit tests still pass (44 passed). No regressions. Scaffold path unchanged — the fetcher still fires `web_fetch` + `file_write` in 1s. The edge-case fixes ride on top of the scaffold rather than replacing any of it.
