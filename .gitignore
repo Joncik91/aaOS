@@ -17,6 +17,11 @@ docs/phase-c2-plan.md
 docs/phase-c3-design.md
 CLAUDE.md
 
+# Private security-gaps ledger. Public docs publish shipped fixes and
+# contracts; gap/exploit-path detail lives local only so attackers
+# don't get a prioritized shopping list from the repo.
+docs/security-gaps.md
+
 # Runtime persistent memory (SQLite + WAL). Survives restarts when
 # AAOS_PERSISTENT_MEMORY=1 is set; otherwise re-created empty per run.
 /memory/

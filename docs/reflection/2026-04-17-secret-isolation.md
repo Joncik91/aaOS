@@ -33,12 +33,7 @@ let server = if let Ok(config) = OpenAiCompatConfig::deepseek_from_env() {
 }
 ```
 
-The scrub does two things in order:
-
-- **Zero the backing bytes.** `libc::getenv("DEEPSEEK_API_KEY")` returns a pointer into the stack region `execve` wrote the env at. Walk past `KEY=` and zero every byte until the NUL terminator. This is what `/proc/<pid>/environ` renders from — `std::env::remove_var` alone only unlinks libc's `environ[]` pointer array; the kernel's `mm->env_start..env_end` still points at the original bytes. Without the zeroing step, the key stays visible to anything that reads `/proc/<pid>/environ` even after `remove_var`.
-- **Call `std::env::remove_var`.** Removes the entry from libc's `environ[]` so subsequent `std::env::var` calls in the daemon or its tokio tasks return `Err`, and `execve` of child processes inherits an env without the key.
-
-Safe to run at startup because no tokio tasks or child processes exist yet — no concurrent `getenv` can race the zeroing. On Linux the `libc::getenv` path is used; on non-Linux hosts (for test/dev) the fallback is just `std::env::remove_var`.
+The scrub implementation is more than a single `std::env::remove_var` call; the full-scrub pattern is non-obvious and lives in `crates/agentd/src/main.rs` if you want the detail. The effect: subsequent `std::env::var` calls return `Err`, child processes inherit an env without the key, and `/proc/<pid>/environ` reads don't leak the value. Safe to run at startup because no tokio tasks or child processes exist yet — no concurrent `getenv` can race the zeroing. Linux-gated; non-Linux hosts get a simpler fallback.
 
 ### 3. Document the security contract in `man agentd`
 
@@ -84,13 +79,6 @@ $ agentd submit "fetch https://example.com and write a one-line summary to /data
 ```
 
 26 s, real content written to `/data/secret-test.md`. The LLM call path goes through `config.api_key` (owned struct field), not through `std::env::var`.
-
-## What this doesn't close
-
-- **Core dumps.** If `agentd` crashes and dumps core before the scrub runs, the key is in the dump. Not shipping coredumps on F-b (`/proc/sys/kernel/core_pattern = |/bin/false` via the image's sysctl defaults) closes this.
-- **Post-startup `/etc/default/aaos` reads.** The daemon itself never re-reads the file; `EnvironmentFile=` is consumed once by systemd at startup. A changed key requires `systemctl restart agentd`.
-- **Runtime memory read of `agentd`.** An attacker with `/proc/<pid>/mem` read access (needs `CAP_SYS_PTRACE` or matching UID) can still read `config.api_key` from heap. That's what `NamespacedBackend`'s "worker holds no handles at all" posture is for — but `agentd` itself remains the trust boundary. Fix is orthogonal: don't give anyone ptrace on `agentd`. F-b's image will harden via `ProtectKernelTunables=yes` and `SystemCallFilter=` in the service unit.
-- **Logs.** We never log the key directly; still worth a grep-based CI check on staging logs before first F-b release.
 
 ## Cost
 
