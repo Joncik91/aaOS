@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use aaos_core::{
     AgentId, AuditEvent, AuditEventKind, AuditLog, Capability, CapabilityHandle, CapabilityRegistry,
@@ -20,6 +21,7 @@ pub struct ToolInvocation {
     registry: Arc<ToolRegistry>,
     audit_log: Arc<dyn AuditLog>,
     capability_registry: Arc<CapabilityRegistry>,
+    repeat_counts: Mutex<HashMap<(AgentId, String, u64), u32>>,
 }
 
 impl ToolInvocation {
@@ -32,6 +34,7 @@ impl ToolInvocation {
             registry,
             audit_log,
             capability_registry,
+            repeat_counts: Mutex::new(HashMap::new()),
         }
     }
 
@@ -73,8 +76,34 @@ impl ToolInvocation {
         let tool = self.registry.get(tool_name)?;
 
         // Log invocation
-        let input_hash = format!("{:x}", md5_hash(&input));
+        let input_hash_u64 = md5_hash(&input);
+        let input_hash = format!("{:x}", input_hash_u64);
         let args_preview = preview_value(&input);
+        
+        // Track repeat counts
+        let repeat_key = (agent_id, tool_name.to_string(), input_hash_u64);
+        let attempt_count: u32 = {
+            let mut counts = self.repeat_counts.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = counts.entry(repeat_key.clone()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
+        let threshold: u32 = std::env::var("AAOS_TOOL_REPEAT_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3);
+        let is_repeat = attempt_count >= threshold;
+        if is_repeat {
+            self.audit_log.record(AuditEvent::new(
+                agent_id,
+                AuditEventKind::ToolRepeat {
+                    tool: tool_name.to_string(),
+                    input_hash: input_hash.clone(),
+                    attempt_count,
+                },
+            ));
+        }
+        
         self.audit_log.record(AuditEvent::new(
             agent_id,
             AuditEventKind::ToolInvoked {
@@ -109,7 +138,7 @@ impl ToolInvocation {
         };
 
         // Invoke with context
-        let result = tool.invoke(input, &ctx).await;
+        let mut result = tool.invoke(input, &ctx).await;
 
         // Log result (with a bounded preview for operator observability).
         let result_preview = match &result {
@@ -124,6 +153,29 @@ impl ToolInvocation {
                 result_preview,
             },
         ));
+
+        // Inject repeat guard hint if threshold reached
+        if is_repeat {
+            let hint = format!(
+                "You have called `{}` with these exact arguments {} times in this subtask. The previous attempts returned the same result. Try different arguments or a different tool.",
+                tool_name, attempt_count
+            );
+            if let Ok(ref mut v) = result {
+                if let Some(obj) = v.as_object_mut() {
+                    use serde_json::json;
+                    obj.insert(
+                        "_repeat_guard".to_string(),
+                        json!({ "attempt_count": attempt_count, "hint": hint }),
+                    );
+                }
+            }
+            // For Err, we cannot mutate the CoreError in place. The audit
+            // event already fired above; the LLM will see the error string
+            // on its own. We intentionally don't rewrite the error to
+            // include the hint — the audit event + streaming output is the
+            // operator-side signal. The LLM's recovery path for errors
+            // happens already via the existing tool.invoke() error return.
+        }
 
         // Observability: surface tool failures in the daemon log so operators
         // can diagnose without replaying the LLM's tool_call response text.
@@ -177,6 +229,25 @@ fn preview_str(s: &str) -> String {
         end -= 1;
     }
     format!("{}…", &s[..end])
+}
+
+#[cfg(test)]
+impl ToolInvocation {
+    /// Test-only: peek the current repeat count for a key. Returns 0
+    /// if the key has never been seen.
+    pub fn test_repeat_count(
+        &self,
+        agent_id: aaos_core::AgentId,
+        tool: &str,
+        input: &Value,
+    ) -> u32 {
+        let hash = md5_hash(input);
+        let counts = self.repeat_counts.lock().unwrap_or_else(|e| e.into_inner());
+        counts
+            .get(&(agent_id, tool.to_string(), hash))
+            .copied()
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -323,5 +394,89 @@ mod tests {
             .invoke(agent_id, "nonexistent", serde_json::json!({}), &[handle])
             .await;
         assert!(result.is_err());
+    }
+
+    // ---- repeat-guard tests (run 11 feature) ----
+
+    #[tokio::test]
+    async fn first_two_calls_have_no_repeat_guard() {
+        let (invocation, agent_id, handles, _log, _) = setup();
+        let input = serde_json::json!({"message": "hello"});
+        for _ in 0..2 {
+            let result = invocation
+                .invoke(agent_id, "echo", input.clone(), &handles)
+                .await
+                .unwrap();
+            assert!(
+                result.get("_repeat_guard").is_none(),
+                "first two calls must not carry a repeat_guard; got {:?}",
+                result
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn third_call_injects_repeat_guard() {
+        let (invocation, agent_id, handles, _log, _) = setup();
+        let input = serde_json::json!({"message": "same"});
+        let _ = invocation.invoke(agent_id, "echo", input.clone(), &handles).await;
+        let _ = invocation.invoke(agent_id, "echo", input.clone(), &handles).await;
+        let third = invocation
+            .invoke(agent_id, "echo", input.clone(), &handles)
+            .await
+            .unwrap();
+        let guard = third
+            .get("_repeat_guard")
+            .expect("third call must carry _repeat_guard");
+        assert_eq!(guard["attempt_count"], 3);
+        assert!(
+            guard["hint"].as_str().unwrap().contains("echo"),
+            "hint should name the tool; got {:?}",
+            guard["hint"]
+        );
+    }
+
+    #[tokio::test]
+    async fn different_input_hash_resets_counter() {
+        let (invocation, agent_id, handles, _log, _) = setup();
+        let a = serde_json::json!({"message": "a"});
+        let b = serde_json::json!({"message": "b"});
+        let _ = invocation.invoke(agent_id, "echo", a.clone(), &handles).await;
+        let _ = invocation.invoke(agent_id, "echo", a.clone(), &handles).await;
+        let _ = invocation.invoke(agent_id, "echo", b.clone(), &handles).await;
+        assert_eq!(invocation.test_repeat_count(agent_id, "echo", &a), 2);
+        assert_eq!(invocation.test_repeat_count(agent_id, "echo", &b), 1);
+    }
+
+    #[tokio::test]
+    async fn different_agent_resets_counter() {
+        let (invocation, agent_a, handles_a, _log, cap_registry) = setup();
+        let input = serde_json::json!({"message": "x"});
+        // Run agent_a three times so it trips the guard.
+        for _ in 0..3 {
+            let _ = invocation
+                .invoke(agent_a, "echo", input.clone(), &handles_a)
+                .await;
+        }
+        // Agent B: fresh agent, fresh grant, fresh counter.
+        let agent_b = AgentId::new();
+        let token_b = CapabilityToken::issue(
+            agent_b,
+            Capability::ToolInvoke {
+                tool_name: "echo".into(),
+            },
+            Constraints::default(),
+        );
+        let handle_b = cap_registry.insert(agent_b, token_b);
+        assert_eq!(invocation.test_repeat_count(agent_b, "echo", &input), 0);
+        let first_for_b = invocation
+            .invoke(agent_b, "echo", input.clone(), &[handle_b])
+            .await
+            .unwrap();
+        assert!(
+            first_for_b.get("_repeat_guard").is_none(),
+            "agent B's first call must not see agent A's count"
+        );
+        assert_eq!(invocation.test_repeat_count(agent_b, "echo", &input), 1);
     }
 }

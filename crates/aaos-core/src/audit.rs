@@ -81,6 +81,17 @@ pub enum AuditEventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_preview: Option<String>,
     },
+    /// Fired when an agent calls the same `(tool, input_hash)` pair
+    /// for the Nth time in a subtask, where N meets or exceeds
+    /// AAOS_TOOL_REPEAT_THRESHOLD (default 3). Signals that the
+    /// agent may be stuck in a retry loop without recognizing it.
+    /// The hint that went back in the tool's result is not repeated
+    /// here — this event is for the audit stream, not the LLM.
+    ToolRepeat {
+        tool: String,
+        input_hash: String,
+        attempt_count: u32,
+    },
     MessageSent {
         from: AgentId,
         to: AgentId,
