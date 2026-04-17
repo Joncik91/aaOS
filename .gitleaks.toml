@@ -1,0 +1,68 @@
+## gitleaks configuration for aaOS
+##
+## What this does: scans staged changes (via pre-commit hook) and the
+## repo (via CI/manual runs) for patterns that look like leaked secrets
+## — API keys, private-key PEM blocks, JWT-like tokens, etc. The goal
+## is to refuse the commit before the secret reaches the public repo.
+##
+## What this does NOT do: guarantee no leak ever happens. Patterns can
+## be evaded, rules have false-negatives, and committing a secret that
+## doesn't match a known pattern still gets through. This is a wall,
+## not a vault.
+##
+## When adding an allowlist entry: narrow the regex as much as possible
+## so real leaks matching a similar pattern still trip. "The string in
+## THIS file, exactly" is better than "anything that starts with sk-".
+
+title = "aaOS gitleaks config"
+
+# Inherit the built-in rules (API keys for major providers, private keys,
+# JWTs, high-entropy strings, etc.). See `gitleaks --help config`.
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Path allowlist — directories that should never be scanned regardless of
+# content. Mostly cargo build artifacts and local-only state.
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "Paths excluded from scanning"
+paths = [
+    # Cargo build outputs — contain openssl docstrings that match
+    # the `private-key` rule's "-----BEGIN ... PRIVATE KEY-----" pattern
+    # as a doc-comment literal. Not a real secret.
+    '''^target/''',
+    # Runtime persistent state — local SQLite + WAL files.
+    '''^memory/''',
+    # Per-run agent outputs — gitignored but worth excluding too.
+    '''^output/''',
+    # Local security-gaps ledger — gitignored but enumerated here so
+    # future tooling that ignores .gitignore also skips it.
+    '''^docs/security-gaps\.md$''',
+    # Reflection / documentation runs may quote partial hashes, test
+    # keys, or redacted tokens. Scan them but let specific entries
+    # get allowlisted via commit-scoped comments below.
+]
+
+# ---------------------------------------------------------------------------
+# Regex allowlist — specific string patterns that are NOT secrets despite
+# matching a rule. Narrow each one.
+# ---------------------------------------------------------------------------
+regexes = [
+    # Placeholder keys used in documentation examples.
+    '''sk-\.\.\.''',             # `sk-...` (literal ellipsis)
+    '''sk-xxx+''',                # `sk-xxx`, `sk-xxxxxxxx`, etc.
+    '''sk-your-key-here''',       # README placeholders
+    # Test fixtures that use `test-key` as a literal string in unit tests.
+    '''"test-key"''',
+    # Claude model IDs that look like short SKU strings, not secrets.
+    '''claude-[a-z]+-\d''',
+    # Anthropic's prompt-injection canary string that HN/Lobsters HTML
+    # contains as a marker — surfaced by telemetry previews in docs.
+    # Not a secret; published publicly by Anthropic.
+    '''ANTHROPIC_MAGIC_STRING_TRIGGER_REFUSAL_[A-F0-9]+''',
+]
+
+# Commit-SHA allowlist. Use when a legitimate commit contains a false
+# positive that can't be easily regex-allowlisted.
+commits = []

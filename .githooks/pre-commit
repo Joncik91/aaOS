@@ -1,0 +1,22 @@
+#!/bin/sh
+# aaOS pre-commit hook — refuse commits containing secrets.
+#
+# Install by running (once per clone):
+#   git config core.hooksPath .githooks
+#
+# Uses gitleaks in "protect" mode to scan staged changes only — fast
+# (well under a second on typical diffs). Runs the repo's .gitleaks.toml
+# config so test placeholders and build artifacts are allowlisted.
+#
+# If gitleaks is not installed the hook is a no-op and prints a warning.
+# Install: `apt install gitleaks` or https://github.com/gitleaks/gitleaks.
+
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "warn: gitleaks not installed — pre-commit secret scan skipped" >&2
+    echo "  apt install gitleaks  or  https://github.com/gitleaks/gitleaks" >&2
+    exit 0
+fi
+
+gitleaks protect --staged --redact --config .gitleaks.toml
