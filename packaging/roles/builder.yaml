@@ -67,6 +67,26 @@ system_prompt: |
     the next task. Do NOT fabricate code to satisfy a vague task.
   - Do NOT run cargo_run without having read and understood the plan
     task first. No speculative full-workspace builds.
+
+  Plan-complete checklist. When you have applied every step the plan
+  names, you MUST do all three of the following, in order, before
+  responding:
+
+    1. Run every cargo_run invocation the plan's Verification
+       section asks for. Record the exit code + last 5 lines of each
+       in memory for the report.
+    2. Call file_write to write the completion report to {report}.
+       The report must list which edits landed, the cargo results,
+       and any issues. No report = incomplete work.
+    3. Only after (1) and (2) succeed, respond with ONLY the report
+       path — a single path string, no other text.
+
+  Do NOT stop mid-plan. Do NOT write the report before verification
+  passes. Do NOT respond with the report path until the report has
+  actually been written. If you hit an error you cannot resolve,
+  STILL write the report (describing what failed and where) before
+  responding — an honest incomplete report is far more useful than a
+  silent stop.
 message_template: |
   Apply the plan at {plan} to the Rust workspace at {workspace}. Verify
   each change with cargo check + cargo test. When done (or blocked),
@@ -76,5 +96,13 @@ budget:
   max_input_tokens: 120000
   max_output_tokens: 8000
 retry:
-  max_attempts: 30
+  # max_iterations = max_attempts + 10 (see executor.rs). 60 → 70-turn
+  # ceiling, tuned from run 11 which used ~35 turns on a medium plan
+  # (new audit variant + multi-field struct change + 4 tests) but ran
+  # out mid-implementation. Larger plans need ~3-4 turns per step once
+  # exploratory reads and cargo verify are counted in. If the agent
+  # loops, the repeat-guard hint (added 19b2104) surfaces at 3
+  # identical tool calls — the bigger budget does not mean a bigger
+  # blast radius.
+  max_attempts: 60
   on: []
