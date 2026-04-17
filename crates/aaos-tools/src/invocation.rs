@@ -74,11 +74,13 @@ impl ToolInvocation {
 
         // Log invocation
         let input_hash = format!("{:x}", md5_hash(&input));
+        let args_preview = preview_value(&input);
         self.audit_log.record(AuditEvent::new(
             agent_id,
             AuditEventKind::ToolInvoked {
                 tool: tool_name.to_string(),
                 input_hash,
+                args_preview: Some(args_preview),
             },
         ));
 
@@ -109,12 +111,17 @@ impl ToolInvocation {
         // Invoke with context
         let result = tool.invoke(input, &ctx).await;
 
-        // Log result
+        // Log result (with a bounded preview for operator observability).
+        let result_preview = match &result {
+            Ok(v) => Some(preview_value(v)),
+            Err(e) => Some(preview_str(&e.to_string())),
+        };
         self.audit_log.record(AuditEvent::new(
             agent_id,
             AuditEventKind::ToolResult {
                 tool: tool_name.to_string(),
                 success: result.is_ok(),
+                result_preview,
             },
         ));
 
@@ -142,6 +149,34 @@ fn md5_hash(value: &Value) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     value.to_string().hash(&mut hasher);
     hasher.finish()
+}
+
+const PREVIEW_CAP: usize = 200;
+
+/// Produces a bounded, operator-readable summary of a JSON value for audit
+/// events. Strings get a direct byte-capped excerpt; objects and arrays
+/// get their compact JSON representation byte-capped. Null collapses to
+/// "null". Keeps the preview stable enough to be useful without leaking
+/// large payloads into every audit consumer.
+fn preview_value(v: &Value) -> String {
+    match v {
+        Value::String(s) => preview_str(s),
+        Value::Null => "null".into(),
+        _ => preview_str(&v.to_string()),
+    }
+}
+
+/// Truncates a string at `PREVIEW_CAP` bytes, respecting UTF-8 boundaries
+/// (never splits a codepoint). Appends a trailing `…` marker when truncated.
+fn preview_str(s: &str) -> String {
+    if s.len() <= PREVIEW_CAP {
+        return s.to_string();
+    }
+    let mut end = PREVIEW_CAP;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]
@@ -201,6 +236,76 @@ mod tests {
         assert!(result.is_err());
         // Should have logged the denial
         assert!(!log.is_empty());
+    }
+
+    // ---- preview helpers ----
+
+    #[test]
+    fn preview_str_short_passes_through() {
+        assert_eq!(super::preview_str("hello"), "hello");
+    }
+
+    #[test]
+    fn preview_str_long_truncates_with_marker() {
+        let long = "a".repeat(500);
+        let out = super::preview_str(&long);
+        assert!(out.ends_with('…'));
+        assert!(out.len() <= super::PREVIEW_CAP + 4, "utf-8 marker adds up to 3 bytes");
+    }
+
+    #[test]
+    fn preview_str_respects_utf8_boundary() {
+        // 100 chars, each 3 bytes (kanji), total 300 bytes — forces
+        // truncation mid-cap and must not split a codepoint.
+        let s: String = "日".repeat(100);
+        let out = super::preview_str(&s);
+        // Round-trip through String ensures no invalid utf-8 slipped through.
+        assert!(out.chars().count() > 0);
+        assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn preview_value_handles_string() {
+        let v = serde_json::json!("simple string");
+        assert_eq!(super::preview_value(&v), "simple string");
+    }
+
+    #[test]
+    fn preview_value_handles_object() {
+        let v = serde_json::json!({"url": "https://example.com", "method": "GET"});
+        let out = super::preview_value(&v);
+        assert!(out.contains("example.com"));
+    }
+
+    #[test]
+    fn preview_value_handles_null() {
+        assert_eq!(super::preview_value(&serde_json::Value::Null), "null");
+    }
+
+    #[tokio::test]
+    async fn invoke_populates_args_and_result_preview() {
+        let (invocation, agent_id, handles, log, _cap_registry) = setup();
+        let _ = invocation
+            .invoke(
+                agent_id,
+                "echo",
+                serde_json::json!({"message": "hello-audit"}),
+                &handles,
+            )
+            .await
+            .unwrap();
+        let events = log.events();
+        let invoked = events.iter().find_map(|e| match &e.event {
+            AuditEventKind::ToolInvoked { args_preview, .. } => args_preview.clone(),
+            _ => None,
+        });
+        let result = events.iter().find_map(|e| match &e.event {
+            AuditEventKind::ToolResult { result_preview, .. } => result_preview.clone(),
+            _ => None,
+        });
+        assert!(invoked.as_ref().map(|s| s.contains("hello-audit")).unwrap_or(false),
+            "ToolInvoked args_preview should contain the input message; got {:?}", invoked);
+        assert!(result.is_some(), "ToolResult must carry a preview even on success");
     }
 
     #[tokio::test]

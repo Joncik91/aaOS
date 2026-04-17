@@ -61,6 +61,7 @@ impl Tool for MemoryDeleteTool {
             AuditEventKind::ToolInvoked {
                 tool: "memory_delete".into(),
                 input_hash: memory_id_str.to_string(),
+                args_preview: None,
             },
         ));
 

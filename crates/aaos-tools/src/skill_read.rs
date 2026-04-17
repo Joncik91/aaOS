@@ -119,6 +119,7 @@ impl Tool for SkillReadTool {
                 aaos_core::AuditEventKind::ToolInvoked {
                     tool: "skill_read".into(),
                     input_hash: format!("{}:{}", skill_name, file_path),
+                    args_preview: Some(format!("{}:{}", skill_name, file_path)),
                 },
             ));
 
@@ -135,6 +136,7 @@ impl Tool for SkillReadTool {
             aaos_core::AuditEventKind::ToolInvoked {
                 tool: "skill_read".into(),
                 input_hash: skill_name.to_string(),
+                args_preview: Some(skill_name.to_string()),
             },
         ));
 

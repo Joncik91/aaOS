@@ -2316,6 +2316,7 @@ lifecycle: persistent
                 AuditEventKind::ToolInvoked {
                     tool: "file_write".into(),
                     input_hash: "h".into(),
+                    args_preview: None,
                 },
             ));
             audit.record(AuditEvent::new(
@@ -2457,6 +2458,7 @@ system_prompt: "other"
                 AuditEventKind::ToolInvoked {
                     tool: "web_fetch".into(),
                     input_hash: "h1".into(),
+                    args_preview: None,
                 },
             ));
             audit.record(AuditEvent::new(
@@ -2464,6 +2466,7 @@ system_prompt: "other"
                 AuditEventKind::ToolInvoked {
                     tool: "file_write".into(),
                     input_hash: "h2".into(),
+                    args_preview: None,
                 },
             ));
             audit.record(AuditEvent::new(
@@ -2471,6 +2474,7 @@ system_prompt: "other"
                 AuditEventKind::ToolInvoked {
                     tool: "file_read".into(),
                     input_hash: "h3".into(),
+                    args_preview: None,
                 },
             ));
             audit.record(AuditEvent::new(

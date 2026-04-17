@@ -42,19 +42,26 @@ pub fn format_operator_line(
         AuditEventKind::AgentSpawned { manifest_name } => {
             format!("spawned {}", manifest_name)
         }
-        AuditEventKind::ToolInvoked { tool, .. } => {
+        AuditEventKind::ToolInvoked { tool, args_preview, .. } => {
             let tool_col = if colorize {
                 format!("\x1b[36m{}\x1b[0m", tool)
             } else {
                 tool.clone()
             };
-            format!("tool: {}", tool_col)
+            match args_preview {
+                Some(a) if !a.is_empty() => format!("tool: {} {}", tool_col, a),
+                _ => format!("tool: {}", tool_col),
+            }
         }
-        AuditEventKind::ToolResult { tool, success } => {
-            let text = if *success {
+        AuditEventKind::ToolResult { tool, success, result_preview } => {
+            let base = if *success {
                 format!("tool ok: {}", tool)
             } else {
                 format!("tool FAILED: {}", tool)
+            };
+            let text = match result_preview {
+                Some(p) if !p.is_empty() => format!("{} — {}", base, p),
+                _ => base,
             };
             if colorize && !success {
                 format!("\x1b[31m{}\x1b[0m", text)
@@ -123,6 +130,7 @@ mod tests {
         assert!(is_operator_visible(&evt(AuditEventKind::ToolInvoked {
             tool: "web_fetch".into(),
             input_hash: "h".into(),
+            args_preview: None,
         })));
     }
 
@@ -173,6 +181,7 @@ mod tests {
         assert!(!is_operator_visible(&evt(AuditEventKind::ToolResult {
             tool: "t".into(),
             success: true,
+            result_preview: None,
         })));
     }
 
@@ -194,6 +203,7 @@ mod tests {
         let e = evt(AuditEventKind::ToolInvoked {
             tool: "web_fetch".into(),
             input_hash: "h".into(),
+            args_preview: None,
         });
         let s = format_operator_line(&e, "fetcher", false);
         assert!(s.contains("web_fetch"));
@@ -261,7 +271,7 @@ mod tests {
     fn colorize_false_emits_no_escapes_for_any_visible_event() {
         let events = vec![
             evt(AuditEventKind::AgentSpawned { manifest_name: "f".into() }),
-            evt(AuditEventKind::ToolInvoked { tool: "t".into(), input_hash: "h".into() }),
+            evt(AuditEventKind::ToolInvoked { tool: "t".into(), input_hash: "h".into(), args_preview: None }),
             evt(AuditEventKind::AgentExecutionCompleted {
                 stop_reason: "d".into(), total_iterations: 1,
             }),
@@ -304,6 +314,7 @@ mod tests {
         let e = evt(AuditEventKind::ToolInvoked {
             tool: "file_write".into(),
             input_hash: "h".into(),
+            args_preview: None,
         });
         let s = format_operator_line(&e, "x", true);
         assert!(s.contains("\x1b[36m"), "expected cyan for tool: {}", s);

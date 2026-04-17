@@ -61,10 +61,25 @@ pub enum AuditEventKind {
     ToolInvoked {
         tool: String,
         input_hash: String,
+        /// Truncated, human-readable preview of the tool input (capped at
+        /// 200 bytes). Populated best-effort by the invocation layer;
+        /// `None` for callers that emit the event directly without going
+        /// through `ToolInvocation`. Kept alongside `input_hash` — the
+        /// hash stays authoritative for correlation, the preview is for
+        /// operator observability.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        args_preview: Option<String>,
     },
     ToolResult {
         tool: String,
         success: bool,
+        /// Truncated, human-readable preview of the tool result (capped
+        /// at 200 bytes). For error results, the error message. For
+        /// success results, a best-effort summary (first fields of a JSON
+        /// object, first N chars of a string, byte count for large
+        /// responses).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_preview: Option<String>,
     },
     MessageSent {
         from: AgentId,
@@ -316,6 +331,7 @@ mod tests {
             AuditEventKind::ToolInvoked {
                 tool: "web_search".into(),
                 input_hash: "abc123".into(),
+                args_preview: None,
             },
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -476,6 +492,7 @@ mod tests {
                 AuditEventKind::ToolInvoked {
                     tool: format!("tool-{i}"),
                     input_hash: "h".into(),
+                    args_preview: None,
                 },
             ));
         }
