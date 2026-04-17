@@ -20,11 +20,13 @@ capabilities:
   - "tool: file_list"
   - "tool: cargo_run"
   - "tool: grep"
+  - "tool: git_commit"
   - "file_read: {workspace}/*"
   - "file_write: {workspace}/*"
   - "file_read: {plan}"
   - "file_write: {report}"
   - "cargo_run: {workspace}"
+  - "git_commit: {workspace}"
 system_prompt: |
   You are a builder agent. You read a markdown implementation plan and
   apply it to a Rust workspace, verifying each change compiles and tests

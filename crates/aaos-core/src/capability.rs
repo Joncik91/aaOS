@@ -78,6 +78,16 @@ pub enum Capability {
     CargoRun {
         workspace: String,
     },
+    /// Permission to run `git add` + `git commit` inside a specific workspace
+    /// directory (directory containing `.git/`). The tool rejects anything
+    /// else. The subcommand allowlist ({add, commit}) is enforced tool-side.
+    ///
+    /// Introduced so an aaOS agent can persist its own work to version
+    /// control under capability enforcement, without needing a general
+    /// shell-exec tool.
+    GitCommit {
+        workspace: String,
+    },
     Custom {
         name: String,
         params: serde_json::Value,
@@ -233,6 +243,12 @@ impl CapabilityToken {
                     workspace: granted,
                 },
                 Capability::CargoRun { workspace: req },
+            ) => glob_matches(granted, req),
+            (
+                Capability::GitCommit {
+                    workspace: granted,
+                },
+                Capability::GitCommit { workspace: req },
             ) => glob_matches(granted, req),
             (Capability::Custom { name: gn, .. }, Capability::Custom { name: rn, .. }) => gn == rn,
             _ => false,
@@ -653,6 +669,24 @@ mod tests {
         );
         assert!(token.permits(&Capability::FileWrite {
             path_glob: "/nonexistent-aaos-root-xyz/new-file.txt".into()
+        }));
+    }
+
+    #[test]
+    fn git_commit_permits_exact_workspace() {
+        let agent = AgentId::new();
+        let token = CapabilityToken::issue(
+            agent,
+            Capability::GitCommit {
+                workspace: "/srv/repo".into(),
+            },
+            Constraints::default(),
+        );
+        assert!(token.permits(&Capability::GitCommit {
+            workspace: "/srv/repo".into()
+        }));
+        assert!(!token.permits(&Capability::GitCommit {
+            workspace: "/elsewhere".into()
         }));
     }
 }

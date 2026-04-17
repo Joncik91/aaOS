@@ -79,7 +79,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 +---------------------------------------------+
 |          Orchestration Layer                 |  Planner + PlanExecutor (primary) · Bootstrap Agent (fallback)
 +---------------------------------------------+
-|        Tool & Service Layer                  |  15 tools, capability-checked, schema-validated, AgentSkills registry
+|        Tool & Service Layer                  |  16 tools, capability-checked, schema-validated, AgentSkills registry
 +---------------------------------------------+
 |        Agent Memory Layer                    |  Context windows, episodic store, embeddings
 +---------------------------------------------+
@@ -95,7 +95,7 @@ See [Roadmap](docs/roadmap.md) for details on each phase.
 - **aaos-core** — Types, traits, capability model, audit events (26 kinds), budget tracking
 - **aaos-runtime** — Agent process lifecycle, registry, scheduling, context window management, **computed orchestration (`plan/` module — Planner, PlanExecutor, RoleCatalog)**
 - **aaos-ipc** — MCP message router with capability validation, request-response IPC
-- **aaos-tools** — Tool registry, invocation, 15 built-in tools (echo, web_fetch, file_read/list/read_many/write/edit, grep, spawn_agent/spawn_agents, memory_store/query/delete, skill_read, cargo_run)
+- **aaos-tools** — Tool registry, invocation, 16 built-in tools (echo, web_fetch, file_read/list/read_many/write/edit, grep, spawn_agent/spawn_agents, memory_store/query/delete, skill_read, cargo_run, git_commit)
 - **aaos-llm** — LLM clients (Anthropic + OpenAI-compat), execution loop, inference scheduler
 - **aaos-memory** — Episodic memory store, embedding source, cosine similarity search
 - **aaos-backend-linux** — Opt-in Linux-namespaced agent backend (`namespaced-agents` feature). User/mount/IPC namespaces, Landlock + seccomp confinement, peer-creds-authenticated broker socket, worker subprocess. `clone() + uid_map + pivot_root + exec` launch path verified end-to-end on Debian 13 / kernel 6.12.43 (2026-04-15 and 2026-04-17 re-verify); live workers show `Seccomp: 2`, `NoNewPrivs: 1`, both stacked seccomp filters installed.
@@ -251,6 +251,7 @@ The operator CLI (`agentd submit|list|status|stop|logs`) uses `submit_streaming`
 | `memory_delete` | `tool: memory_delete` | Delete a stored memory by ID |
 | `skill_read` | `tool: skill_read` | Load skill instructions or reference files |
 | `cargo_run` | `CargoRun { workspace }` | Run `cargo check/test/clippy/fmt` in a Rust workspace, under capability scope |
+| `git_commit` | `GitCommit { workspace }` | Run `git add` + `git commit` in a git repository, under capability scope |
 | `grep` | `FileRead { path_glob }` | Regex search (ripgrep) — capped 200 matches / 16 KB / 30 s |
 
 ## Skills

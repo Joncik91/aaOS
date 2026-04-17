@@ -585,6 +585,10 @@ impl AgentRegistry {
                     Some(Capability::CargoRun {
                         workspace: ws.trim().to_string(),
                     })
+                } else if let Some(ws) = s.strip_prefix("git_commit:") {
+                    Some(Capability::GitCommit {
+                        workspace: ws.trim().to_string(),
+                    })
                 } else {
                     Some(Capability::Custom {
                         name: s.to_string(),
