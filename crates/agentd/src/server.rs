@@ -1989,6 +1989,12 @@ mod tests {
     use super::*;
     use crate::api::JsonRpcRequest;
 
+    /// Tests that mutate the process-global `AAOS_ROLES_DIR` env var must
+    /// hold this mutex. Cargo runs lib tests multi-threaded by default;
+    /// two tests writing different values of `AAOS_ROLES_DIR` race and
+    /// observe each other's writes, which breaks both.
+    static ROLES_DIR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn make_request(method: &str, params: serde_json::Value) -> JsonRpcRequest {
         JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -2231,6 +2237,7 @@ system_prompt: "You are helpful."
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::UnixStream;
 
+        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let socket_path = tmp.path().join("agentd.sock");
         let manifest_path = tmp.path().join("bootstrap.yaml");
@@ -2252,6 +2259,24 @@ lifecycle: persistent
         std::env::set_var(
             "AAOS_BOOTSTRAP_MANIFEST_PATH",
             manifest_path.to_string_lossy().to_string(),
+        );
+
+        // Isolate from host role catalog — without this, a host with a real
+        // /etc/aaos/roles/ directory (e.g. a Debian box with the .deb
+        // installed) causes load_role_catalog to build a PlanExecutor, and
+        // handle_submit_streaming takes the PlanExecutor branch instead of
+        // the Bootstrap branch this test asserts against. Surfaced by the
+        // 2026-04-17 self-build run on a DO droplet where /etc/aaos/roles/
+        // was populated.
+        //
+        // Point at a nonexistent subdir of the tempdir (not just an empty
+        // dir): load_from_dir on an empty dir returns Ok(empty_catalog) and
+        // still wires a PlanExecutor; we need the load to fail so
+        // plan_executor stays None.
+        let absent_roles = tmp.path().join("no-such-roles-dir");
+        std::env::set_var(
+            "AAOS_ROLES_DIR",
+            absent_roles.to_string_lossy().to_string(),
         );
 
         // Use a hanging LLM client so the persistent bootstrap agent launches
@@ -2359,8 +2384,9 @@ lifecycle: persistent
         emitter.await.unwrap();
         listener_task.abort();
 
-        // Clean up env var so other tests aren't affected.
+        // Clean up env vars so other tests aren't affected.
         std::env::remove_var("AAOS_BOOTSTRAP_MANIFEST_PATH");
+        std::env::remove_var("AAOS_ROLES_DIR");
 
         let end = frames.last().unwrap();
         assert_eq!(end["kind"], "end");
@@ -2667,6 +2693,7 @@ system_prompt: "test subtask"
         // `handle_submit_streaming` checks before taking the PlanExecutor
         // path. Without a loaded catalog the OnceLock stays empty and
         // the handler falls through to the legacy Bootstrap path.
+        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_roles = tempfile::tempdir().unwrap();
         std::fs::write(
             temp_roles.path().join("generalist.yaml"),
