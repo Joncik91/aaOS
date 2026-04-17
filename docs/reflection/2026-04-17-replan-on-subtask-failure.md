@@ -18,7 +18,7 @@ Four new executor tests cover the four failure shapes: reason string includes su
 
 ## Verified end-to-end
 
-Rebuilt `.deb`, installed in the `aaos-scaffold` debian:13 container (reused from this morning's sweep), pointed at real DeepSeek.
+Two independent Docker runs against real DeepSeek — first in the reused `aaos-scaffold` container, then reproduced in a **fresh** `aaos-replan` container (new `debian:13`, `.deb` installed clean, `testop` user created, `/data` and `/var/lib/aaos/workspace` set up by hand since systemd's `StateDirectory=` doesn't fire outside systemd). Both cases reproduced identically.
 
 **Case A — failure-dominated (goal forces the bad URL):**
 
@@ -26,17 +26,17 @@ Rebuilt `.deb`, installed in the `aaos-scaffold` debian:13 container (reused fro
 submit "fetch https://example.com/does-not-exist-test-404 and write a summary to /data/summary.md"
 ```
 
-Timeline (8-char agent-id prefix):
+Fresh-container timeline (8-char agent-id prefix):
 
 | Time     | Event                                        |
 |----------|----------------------------------------------|
-| 05:56:42 | `c9e10f47` spawned fetcher → web_fetch (404) |
-| 05:56:49 | `cd7d76ee` spawned fetcher (replan #1) → 404 |
-| 05:56:55 | `47650737` spawned fetcher (replan #2) → 404 |
-| 05:57:02 | `6f73481f` spawned fetcher (replan #3) → 404 |
-| 05:57:02 | `bootstrap failed (26s)` — `max_replans` cap |
+| 06:03:45 | `30c2d206` spawned fetcher → web_fetch (404) |
+| 06:03:55 | `a0d7705e` spawned fetcher (replan #1) → 404 |
+| 06:04:01 | `1d391796` spawned fetcher (replan #2) → 404 |
+| 06:04:09 | `792d0012` spawned fetcher (replan #3) → 404 |
+| 06:04:09 | `bootstrap failed (31s)` — `max_replans` cap |
 
-Bounded exactly as designed. Pre-change: one fetcher fails → whole plan aborts. Post-change: three replan attempts (the default `max_replans = 3`), still failing because the operator literally pinned the URL, then a clean terminal failure. The cost is bounded, the loop terminates, the operator sees the attempt count in the stream.
+Bounded exactly as designed. Pre-change: one fetcher fails → whole plan aborts. Post-change: three replan attempts (the default `max_replans = 3`), still failing because the operator literally pinned the URL, then a clean terminal failure at 31s. The cost is bounded, the loop terminates, the operator sees the attempt count in the stream.
 
 **Case B — failure-then-recovery (goal leaves room):**
 
@@ -45,18 +45,20 @@ submit "fetch today's front page of Hacker News (https://example.com/this-will-4
         and write a one-paragraph summary to /data/hn-summary.md"
 ```
 
-Timeline:
+Fresh-container timeline:
 
 | Time     | Event                                              |
 |----------|----------------------------------------------------|
-| 05:58:23 | `4ad1ea7c` spawned fetcher → example.com → 404     |
-| 05:58:29 | `06b799c6` spawned fetcher (replan) → HN → success |
-| 05:58:30 | `06b799c6` tool: file_write                         |
-| 05:58:30 | `258d3c39` spawned writer                           |
-| 05:59:36 | `258d3c39` tool: file_write                         |
-| 05:59:38 | `bootstrap complete (82s)`                          |
+| 06:04:22 | `d62dcdbd` spawned fetcher → example.com → 404     |
+| 06:04:28 | `c9ab639e` spawned fetcher (replan) → HN → success |
+| 06:04:29 | `c9ab639e` tool: file_write                         |
+| 06:04:29 | `27a7d49e` spawned writer                           |
+| 06:05:18 | `27a7d49e` tool: file_write                         |
+| 06:05:20 | `bootstrap complete (65s)`                          |
 
-The planner read the failure reason (`subtask 'fetcher_0' (role 'fetcher') failed: HTTP 404`), noticed the goal's phrasing allowed a different target, picked `news.ycombinator.com`, and the second plan succeeded. `/data/hn-summary.md` is 6 KB of real prose citing "Claude Opus 4.7" as the #1 HN story — post-training-cutoff content, not fabricated.
+The planner read the failure reason (`subtask '<id>' (role 'fetcher') failed: ...`), noticed the goal's phrasing allowed a different target, picked `news.ycombinator.com`, and the second plan succeeded. `/data/hn-summary.md` is 4.5 KB of real prose citing "Claude Opus 4.7" as the #1 HN story (1625 points, up from 1619 in the earlier reused-container run — confirming live traffic not cached training data).
+
+**Setup note for future runs.** Without systemd, the `.deb`'s `RuntimeDirectory=agentd` + `StateDirectory=aaos` never fire, so `/run/agentd/` and `/var/lib/aaos/workspace/` must be `mkdir`'d and `chown aaos:aaos`'d by hand before first daemon start. A missing `workspace/` fails the plan executor in under 1 second with no stream events — easy to misdiagnose as a daemon problem.
 
 ## What this is, concretely
 
