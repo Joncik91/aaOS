@@ -124,6 +124,13 @@ impl Planner {
                in `subtasks` with empty `depends_on`, not as a chain.\n\
              - Use `generalist` only when no specific role fits. Don't\n\
                wrap a writer's work in a generalist step.\n\
+             - **Handoff rule.** If a subtask B has `depends_on: [A]`\n\
+               and reads A's output, then A MUST have an output-path\n\
+               param set (`workspace`, `output`, or equivalent path\n\
+               param declared in the role catalog). B's input path\n\
+               must copy A's output path verbatim. Never plan a chain\n\
+               where the upstream has no declared output path — the\n\
+               downstream will not find its input.\n\
              \n\
              ROLE CATALOG:\n\
              {roles}\n\

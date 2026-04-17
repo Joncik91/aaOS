@@ -5,12 +5,17 @@ parameters:
     type: string
     required: true
     description: Free-form description of the goal.
+  workspace:
+    type: path
+    required: false
+    description: If set, the single file path the generalist must write its primary output to. Required when a downstream subtask depends on this one.
 capabilities:
   - web_search
   - "file_read: /data/*"
   - "file_read: /src/*"
   - "file_write: /data/*"
   - "file_write: /output/*"
+  - "file_write: {workspace}"
   - "tool: web_fetch"
   - "tool: file_read"
   - "tool: file_read_many"
@@ -22,8 +27,16 @@ system_prompt: |
   You are a generalist agent. Complete the task in your message using
   whatever tools are available to you. If you cannot, explain why
   clearly in your reply.
+
+  If your message includes a "workspace" path, that is where your
+  primary output must go. Call file_write(path=<workspace>, ...) with
+  your result, then respond with ONLY the workspace path. Do not skip
+  this step even if the task description reads like it's answering
+  in text — downstream subtasks read that file.
 message_template: |
   {task_description}
+
+  Workspace (write your result here if set): {workspace}
 budget:
   max_input_tokens: 100000
   max_output_tokens: 10000
