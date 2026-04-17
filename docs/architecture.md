@@ -150,6 +150,18 @@ exist today, with a clean path to more:
   2026-04-15 baseline. Still opt-in on the `.deb` install default until
   F-b ships the namespaced-by-default cloud image.
 
+  **Scope of isolation today.** The namespaced backend isolates the agent
+  worker's process — namespaces, Landlock, and seccomp apply to that worker.
+  Production tool invocations for namespaced agents currently execute in the
+  `agentd` process, not in the worker: the worker's broker protocol handles
+  launch + `sandboxed-ready` handshake + `PokeOp`-style integration-test
+  messages only. The broker↔worker tool-invocation stream (tracked in
+  `docs/ideas.md`) is the piece that, when landed, will route every tool call
+  through the peer-creds-authenticated socket so the worker actually drives
+  the agent loop. Until then, `AAOS_DEFAULT_BACKEND=namespaced` buys you
+  launch-side isolation primitives without yet buying runtime-side confinement
+  of tool execution.
+
 The opaque `AgentLaunchHandle::state: Arc<dyn Any>` pattern means future
 backends (Phase G MicroVM via Firecracker/Kata, a possible seL4 backend)
 require zero changes to `aaos-core` — only a new crate implementing the
