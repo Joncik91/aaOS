@@ -38,6 +38,7 @@ impl CapabilityRegistry {
 
     /// RUNTIME-INTERNAL. Issue a handle for a token. Called from
     /// `AgentRegistry::issue_capabilities`. Tool code must not call this.
+    #[doc(hidden)]
     pub fn insert(&self, agent_id: AgentId, token: CapabilityToken) -> CapabilityHandle {
         let h = CapabilityHandle::from_raw(self.next_id.fetch_add(1, Ordering::AcqRel));
         self.table.insert(h, OwnedEntry { agent_id, token });
@@ -47,6 +48,7 @@ impl CapabilityRegistry {
     /// RUNTIME-INTERNAL. Narrow: produce a new handle for a narrowed copy of
     /// the parent's token, owned by the child agent. Called from
     /// `SpawnAgentTool`. Tool code other than spawn must not call this.
+    #[doc(hidden)]
     pub fn narrow(
         &self,
         parent_handle: CapabilityHandle,
@@ -121,6 +123,7 @@ impl CapabilityRegistry {
     /// RUNTIME-INTERNAL. Revoke by token_id (the UUID on CapabilityToken).
     /// Matches the current `AgentRegistry::revoke_capability` signature. Tool
     /// code must not call this.
+    #[doc(hidden)]
     pub fn revoke(&self, token_id: Uuid) -> bool {
         let mut revoked = false;
         for mut entry in self.table.iter_mut() {
@@ -134,6 +137,7 @@ impl CapabilityRegistry {
 
     /// RUNTIME-INTERNAL. Revoke every token owned by the given agent. Used
     /// on capability-wipe and on agent removal. Tool code must not call this.
+    #[doc(hidden)]
     pub fn revoke_all_for_agent(&self, agent_id: AgentId) -> usize {
         let mut count = 0;
         for mut entry in self.table.iter_mut() {
@@ -148,6 +152,7 @@ impl CapabilityRegistry {
     /// RUNTIME-INTERNAL. Remove all handles belonging to an agent. Called
     /// from `AgentRegistry::remove_agent` after audit events for any
     /// revocations have been recorded. Tool code must not call this.
+    #[doc(hidden)]
     pub fn remove_agent(&self, agent_id: AgentId) {
         self.table.retain(|_, entry| entry.agent_id != agent_id);
     }
