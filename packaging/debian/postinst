@@ -19,6 +19,18 @@ case "$1" in
       adduser --system --ingroup aaos --home /var/lib/aaos \
               --no-create-home --shell /usr/sbin/nologin aaos
     fi
+
+    # Lock down the env file (LLM API keys live here). systemd reads
+    # EnvironmentFile= as root before de-privileging to User=aaos, so
+    # 0600 root:root is enough for the service to start while denying
+    # read access to every agent process, operator in the `aaos` group,
+    # and child agent spawned by the daemon. If the file exists already
+    # with a looser mode (common after an in-place upgrade from an
+    # earlier package version), tighten it now.
+    if [ -e /etc/default/aaos ]; then
+      chown root:root /etc/default/aaos || true
+      chmod 0600 /etc/default/aaos || true
+    fi
     ;;
 esac
 

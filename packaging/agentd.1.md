@@ -99,7 +99,7 @@ Inspect the role catalog at */etc/aaos/roles/*. Three subcommands:
 : Daemon state directory. Subdirectories: `memory/`, `sessions/`, `workspace/`.
 
 */etc/default/aaos*
-: Environment file read by the systemd unit (API keys, backend selector).
+: Environment file read by the systemd unit (API keys, backend selector). **Must be 0600 root:root.** systemd reads this as root before dropping to `User=aaos`, so the daemon still starts; the tight mode denies read access to every agent process, every operator in the `aaos` group, and every child agent the daemon spawns. `agentd` itself also scrubs the API-key env vars from its own process environment at startup, so `/proc/<pid>/environ` doesn't leak the key either. The `.deb` `postinst` tightens perms automatically on install or upgrade.
 
 */lib/systemd/system/agentd.service*
 : The systemd unit.

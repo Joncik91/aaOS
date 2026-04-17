@@ -38,6 +38,14 @@ async fn main() -> anyhow::Result<()> {
             // Try to configure LLM client from environment
             let server = if let Ok(config) = OpenAiCompatConfig::deepseek_from_env() {
                 tracing::info!(base_url = %config.base_url, "DeepSeek LLM client configured");
+                // SAFETY: the key now lives in `config.api_key` (an Arc-owned
+                // struct field). Scrub the env entry so children spawned
+                // under this process — tokio tasks, InProcessBackend agents,
+                // NamespacedBackend workers post-exec — cannot read the key
+                // via /proc/<pid>/environ. The `aaos` group reading
+                // /etc/default/aaos is a separate concern addressed by the
+                // 0600 root:root mode on that file.
+                scrub_api_key_env();
                 let raw: Arc<dyn aaos_llm::LlmClient> = Arc::new(OpenAiCompatibleClient::new(config));
                 let sched_config = InferenceSchedulingConfig::from_env();
                 let client: Arc<dyn aaos_llm::LlmClient> =
@@ -45,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
                 Server::with_llm_client(client)
             } else if let Ok(config) = AnthropicConfig::from_env() {
                 tracing::info!(base_url = %config.base_url, "Anthropic LLM client configured");
+                scrub_api_key_env();
                 let raw: Arc<dyn aaos_llm::LlmClient> = Arc::new(AnthropicClient::new(config));
                 let sched_config = InferenceSchedulingConfig::from_env();
                 let client: Arc<dyn aaos_llm::LlmClient> =
@@ -93,6 +102,68 @@ fn rpc(method: &str, params: serde_json::Value) -> JsonRpcRequest {
         method: method.to_string(),
         params,
     }
+}
+
+/// Scrub LLM API-key env vars from the process environment after the
+/// daemon has copied them into owned `LlmClient` config structs. Two
+/// layers of scrub:
+///
+/// 1. **libc env table** via `std::env::remove_var`. This is what every
+///    call to `std::env::var` consults. Child processes inheriting the
+///    env (`spawn_agent` under `InProcessBackend` tokio tasks share the
+///    parent table; `NamespacedBackend` workers inherit via `execve`'s
+///    read of libc's current `environ[]`) see nothing.
+/// 2. **Kernel-backed `/proc/<pid>/environ`** via in-place byte zeroing
+///    of the env strings themselves. libc's `environ[]` pointers still
+///    reference the stack region `execve` wrote the env strings into;
+///    `remove_var` only unlinks the pointer, not the backing bytes, so
+///    `/proc/self/environ` still leaks the key even after `remove_var`.
+///    Overwriting the `KEY=VALUE` bytes in place closes that path.
+///
+/// The key stays accessible inside `agentd` via the `LlmClient` trait's
+/// bearer-token field — it was copied into an owned struct before the
+/// scrub fired.
+///
+/// SAFETY: `std::env::remove_var` is unsafe in Rust 2024 because it can
+/// race with concurrent `getenv` in other threads. Called during startup
+/// before any tokio tasks or child processes spawn, so no concurrency.
+/// The in-place zeroing writes through a pointer libc gave us to a
+/// region it (and we) already own; libc's `environ[]` entry is unlinked
+/// before the overwrite, so no concurrent `getenv` can observe torn bytes.
+fn scrub_api_key_env() {
+    for key in ["DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY"] {
+        scrub_one_env_var(key);
+    }
+}
+
+/// Zeros the backing bytes of a `KEY=VALUE` env entry before unsetting
+/// it. See `scrub_api_key_env` for why both steps are needed.
+#[cfg(target_os = "linux")]
+fn scrub_one_env_var(key: &str) {
+    use std::ffi::CString;
+    if std::env::var(key).is_err() {
+        return;
+    }
+    // `getenv` returns a pointer to the VALUE portion of the "KEY=VALUE"
+    // string libc placed on the stack at startup. Zero it in place — that's
+    // what `/proc/<pid>/environ` ultimately renders from.
+    let ckey = CString::new(key).expect("env key has no NUL");
+    unsafe {
+        let mut p = libc::getenv(ckey.as_ptr());
+        if !p.is_null() {
+            while *p != 0 {
+                *p = 0;
+                p = p.add(1);
+            }
+        }
+        std::env::remove_var(key);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn scrub_one_env_var(key: &str) {
+    // Non-Linux fallback: libc env scrub is Linux-specific; just unset.
+    unsafe { std::env::remove_var(key); }
 }
 
 /// Wipe persistent Bootstrap memory and the stable-ID file. Used when
@@ -160,9 +231,11 @@ async fn run_bootstrap(manifest_path: PathBuf, goal: String) -> anyhow::Result<(
     let raw_client: Arc<dyn aaos_llm::LlmClient> =
         if let Ok(config) = OpenAiCompatConfig::deepseek_from_env() {
             tracing::info!(base_url = %config.base_url, "using DeepSeek LLM client");
+            scrub_api_key_env();
             Arc::new(OpenAiCompatibleClient::new(config))
         } else if let Ok(config) = AnthropicConfig::from_env() {
             tracing::info!(base_url = %config.base_url, "using Anthropic LLM client");
+            scrub_api_key_env();
             Arc::new(AnthropicClient::new(config))
         } else {
             return Err(anyhow::anyhow!(

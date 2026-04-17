@@ -40,6 +40,7 @@ tempfile = "3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aaos-backend-linux = { workspace = true, optional = true }
+libc = "0.2"
 
 [features]
 default = []
