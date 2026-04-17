@@ -80,10 +80,23 @@ impl ToolInvocation {
         let input_hash = format!("{:x}", input_hash_u64);
         let args_preview = preview_value(&input);
         
-        // Track repeat counts
+        // Track repeat counts. Map grows while agentd runs; cap at
+        // REPEAT_COUNTS_MAX entries and evict arbitrary entries when full
+        // to bound memory. Eviction is coarse but correctness-preserving:
+        // an evicted entry just means a cold tool call won't see the
+        // repeat-guard hint until it crosses the threshold again.
+        const REPEAT_COUNTS_MAX: usize = 1024;
         let repeat_key = (agent_id, tool_name.to_string(), input_hash_u64);
         let attempt_count: u32 = {
             let mut counts = self.repeat_counts.lock().unwrap_or_else(|e| e.into_inner());
+            if counts.len() >= REPEAT_COUNTS_MAX && !counts.contains_key(&repeat_key) {
+                // Drop a quarter of the map to amortize eviction cost.
+                let drop_n = REPEAT_COUNTS_MAX / 4;
+                let victims: Vec<_> = counts.keys().take(drop_n).cloned().collect();
+                for k in victims {
+                    counts.remove(&k);
+                }
+            }
             let entry = counts.entry(repeat_key.clone()).or_insert(0);
             *entry += 1;
             *entry
@@ -247,6 +260,15 @@ impl ToolInvocation {
             .get(&(agent_id, tool.to_string(), hash))
             .copied()
             .unwrap_or(0)
+    }
+
+    /// Test-only: the current size of the repeat-counts map.
+    #[cfg(test)]
+    pub fn test_repeat_counts_len(&self) -> usize {
+        self.repeat_counts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 }
 
@@ -478,5 +500,38 @@ mod tests {
             "agent B's first call must not see agent A's count"
         );
         assert_eq!(invocation.test_repeat_count(agent_b, "echo", &input), 1);
+    }
+
+    #[tokio::test]
+    async fn repeat_counts_map_is_bounded() {
+        // Hammer the invocation with 2000 distinct inputs and confirm the
+        // map never exceeds the REPEAT_COUNTS_MAX cap of 1024.
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool));
+        let audit_log: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let cap_registry = Arc::new(CapabilityRegistry::new());
+        let invocation = ToolInvocation::new(registry, audit_log, cap_registry.clone());
+
+        let agent_id = AgentId::new();
+        let token = CapabilityToken::issue(
+            agent_id,
+            Capability::ToolInvoke { tool_name: "echo".into() },
+            Constraints::default(),
+        );
+        let handle = cap_registry.insert(agent_id, token);
+
+        for i in 0..2000u32 {
+            let input = serde_json::json!({ "message": format!("msg-{i}") });
+            let _ = invocation
+                .invoke(agent_id, "echo", input, &[handle])
+                .await
+                .unwrap();
+        }
+
+        let len = invocation.test_repeat_counts_len();
+        assert!(len <= 1024, "map size {len} exceeded cap of 1024");
+        // Eviction in quarters means the map can dip as low as 3/4 of cap
+        // right after a cleanup; it should be populated, not empty.
+        assert!(len > 0, "map should not be empty after 2000 calls");
     }
 }

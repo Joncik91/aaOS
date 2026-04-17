@@ -338,6 +338,10 @@ impl PlanExecutor {
         let manifest_yaml = role.render_manifest(&resolved_params);
         let message = role.render_message(&resolved_params);
 
+        // max_iterations = retry.max_attempts + 10, floor 10. The +10 is
+        // headroom for the setup + verification turns that surround the
+        // retry-eligible tool calls (plan-read, cargo_run check/test,
+        // report write). See RoleRetry doc in plan/role.rs.
         let overrides = SubtaskExecutorOverrides {
             max_output_tokens: role.budget.max_output_tokens as u32,
             max_iterations: (role.retry.max_attempts + 10).max(10),
