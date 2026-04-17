@@ -18,8 +18,8 @@ capabilities:
   - "tool: file_write"
   - "tool: file_list"
   - "tool: cargo_run"
-  - "file_read: {workspace}/**"
-  - "file_write: {workspace}/**"
+  - "file_read: {workspace}/*"
+  - "file_write: {workspace}/*"
   - "file_read: {plan}"
   - "file_write: {report}"
   - "cargo_run: {workspace}"
@@ -64,7 +64,7 @@ message_template: |
   path.
 budget:
   max_input_tokens: 120000
-  max_output_tokens: 4000
+  max_output_tokens: 8000
 retry:
-  max_attempts: 1
+  max_attempts: 30
   on: []
