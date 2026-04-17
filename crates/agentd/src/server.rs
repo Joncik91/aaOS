@@ -1566,6 +1566,13 @@ impl Server {
                                     "event": frame,
                                 });
                                 if write_ndjson(writer, &frame).await.is_err() {
+                                    // Client disconnected mid-run (e.g. Ctrl-C
+                                    // at the CLI). Abort the executor task so
+                                    // its agent subtree does not keep running
+                                    // as an orphan. See run 12: a torn-down
+                                    // submit left a zombie builder churning
+                                    // in a scratch dir for ~10 minutes.
+                                    exec_task.abort();
                                     return;
                                 }
                             }
@@ -1576,7 +1583,10 @@ impl Server {
                                 });
                                 let _ = write_ndjson(writer, &frame).await;
                             }
-                            Err(RecvError::Closed) => return,
+                            Err(RecvError::Closed) => {
+                                exec_task.abort();
+                                return;
+                            }
                         }
                     }
                 }
