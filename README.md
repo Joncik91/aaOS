@@ -159,12 +159,15 @@ The CLI streams audit events live as the planner decomposes the goal and the Pla
 **Building the .deb from source** (Debian 13 host with `cargo`, `cargo-deb`, and `pandoc`):
 
 ```bash
+./scripts/setup-hooks.sh          # activate in-tree git hooks (once per clone)
 cargo build --release -p agentd --bin agentd
 cargo build --release -p aaos-backend-linux --bin aaos-agent-worker
 ./packaging/build-man-page.sh
 cargo deb -p agentd --no-build
 # target/debian/aaos_*.deb is the installable artifact.
 ```
+
+`setup-hooks.sh` points git at `.githooks/` so the bundled pre-commit hook (gitleaks-based secret scan) runs on every commit. Install `gitleaks` first (`apt install gitleaks`) or the hook no-ops with a warning.
 
 **On any system with Docker:**
 
