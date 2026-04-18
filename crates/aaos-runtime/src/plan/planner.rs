@@ -384,7 +384,10 @@ fn default_task_ttl_with_env(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry, Subtask};
+    use crate::plan::{
+        default_escalation_signals, ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry,
+        Subtask,
+    };
     use std::collections::HashMap;
 
     fn catalog_with_fetcher() -> RoleCatalog {
@@ -421,6 +424,8 @@ mod tests {
                 on: vec![],
             },
             priority: 128,
+            model_ladder: vec![],
+            escalate_on: default_escalation_signals(),
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();

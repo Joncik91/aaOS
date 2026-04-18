@@ -552,7 +552,10 @@ pub fn fallback_generalist_plan(goal: &str, catalog: &RoleCatalog) -> Result<Pla
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry, Subtask};
+    use crate::plan::{
+        default_escalation_signals, ParameterSchema, ParameterType, Role, RoleBudget, RoleRetry,
+        Subtask,
+    };
     use aaos_core::InMemoryAuditLog;
     use std::collections::HashMap as StdHashMap;
 
@@ -590,6 +593,8 @@ mod tests {
                 on: vec![],
             },
             priority: 128,
+            model_ladder: vec![],
+            escalate_on: default_escalation_signals(),
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -752,6 +757,8 @@ mod tests {
                 on: vec![],
             },
             priority: 128,
+            model_ladder: vec![],
+            escalate_on: default_escalation_signals(),
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -896,6 +903,8 @@ mod tests {
                 on: vec![],
             },
             priority: 128,
+            model_ladder: vec![],
+            escalate_on: default_escalation_signals(),
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -1457,6 +1466,8 @@ mod tests {
                 on: vec![],
             },
             priority: 128,
+            model_ladder: vec![],
+            escalate_on: default_escalation_signals(),
             scaffold: Some(RoleScaffold {
                 kind: "slow-test".into(),
             }),

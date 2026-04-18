@@ -86,6 +86,17 @@ pub struct Role {
     /// analyzer) can declare e.g. `priority: 64`.
     #[serde(default = "default_role_priority")]
     pub priority: u8,
+    /// Ordered list of models to try for a subtask in this role. Tier 0 is
+    /// `role.model`; escalation walks up the ladder on failure signals.
+    /// Missing or empty = single-tier routing with `role.model`.
+    #[serde(default)]
+    pub model_ladder: Vec<String>,
+
+    /// Which observable signals trigger escalation to the next tier on
+    /// replan. Missing = all three signals active (see
+    /// `default_escalation_signals`).
+    #[serde(default = "crate::plan::escalation::default_escalation_signals")]
+    pub escalate_on: Vec<crate::plan::EscalationSignal>,
     /// When present, the runtime executes this role via a deterministic
     /// scaffold instead of an LLM loop. Absence (None) = LLM-powered role.
     #[serde(default)]
@@ -176,21 +187,44 @@ impl Role {
     /// into one capability per element. Anything else is emitted verbatim. The
     /// result is parseable via `AgentManifest::from_yaml`.
     pub fn render_manifest(&self, params: &serde_json::Value) -> String {
+        self.render_manifest_with_model(&self.model, params)
+    }
+
+    /// Canonical model ladder. Substitutes `[role.model]` when
+    /// `model_ladder` is empty; validates `model_ladder[0] == role.model`
+    /// when non-empty. Returns a human-readable error on drift; the
+    /// catalog loader surfaces these at startup.
+    pub fn resolved_ladder(&self) -> Result<Vec<String>, String> {
+        if self.model_ladder.is_empty() {
+            return Ok(vec![self.model.clone()]);
+        }
+        if self.model_ladder[0] != self.model {
+            return Err(format!(
+                "role '{}': model_ladder[0] = '{}' but model = '{}' — the two must match (model is the display/back-compat field; the ladder drives routing)",
+                self.name, self.model_ladder[0], self.model
+            ));
+        }
+        Ok(self.model_ladder.clone())
+    }
+
+    /// Render a manifest targeting a specific model. Used by the executor
+    /// when `subtask.current_model_tier > 0` so the tier-bumped subtask
+    /// gets a manifest naming the escalated model instead of the tier-0
+    /// default baked into `render_manifest`.
+    pub fn render_manifest_with_model(&self, model: &str, params: &serde_json::Value) -> String {
         let caps: Vec<String> = self
             .capabilities
             .iter()
             .flat_map(|c| expand_capability(c, params))
             .collect();
-
         let caps_yaml: String = caps
             .iter()
             .map(|c| format!("  - \"{}\"\n", c.replace('"', "\\\"")))
             .collect();
-
         format!(
             "name: {name}\nmodel: {model}\nsystem_prompt: |\n{prompt}\ncapabilities:\n{caps}",
             name = self.name,
-            model = self.model,
+            model = model,
             prompt = indent(&self.system_prompt, "  "),
             caps = caps_yaml,
         )
@@ -241,6 +275,14 @@ impl RoleCatalog {
             }
             roles.insert(role.name.clone(), role);
         }
+
+        // Validate model_ladder / model consistency. Cheap walk after
+        // parsing, surfaces operator-visible drift at startup rather
+        // than at first spawn. (Phase F-b sub-project 2.)
+        for role in roles.values() {
+            role.resolved_ladder().map_err(RoleCatalogError::Parse)?;
+        }
+
         Ok(Self { roles })
     }
 
@@ -800,5 +842,99 @@ priority: 64
 "#;
         let role: Role = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(role.priority, 64, "explicit priority must be preserved");
+    }
+
+    #[test]
+    fn resolved_ladder_missing_field_returns_single_element() {
+        let yaml = r#"
+name: r
+model: deepseek-chat
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            role.resolved_ladder().unwrap(),
+            vec!["deepseek-chat".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolved_ladder_explicit_two_tier() {
+        let yaml = r#"
+name: r
+model: deepseek-chat
+model_ladder:
+  - deepseek-chat
+  - deepseek-reasoner
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            role.resolved_ladder().unwrap(),
+            vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolved_ladder_rejects_drift_between_model_and_first_tier() {
+        let yaml = r#"
+name: r
+model: deepseek-chat
+model_ladder:
+  - deepseek-reasoner
+  - claude-opus-4
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        let err = role.resolved_ladder().unwrap_err();
+        assert!(
+            err.contains("deepseek-chat") && err.contains("deepseek-reasoner"),
+            "error must name both drifted values; got: {err}"
+        );
+    }
+
+    #[test]
+    fn escalate_on_defaults_to_all_three_signals() {
+        use crate::plan::EscalationSignal;
+        let yaml = r#"
+name: r
+model: deepseek-chat
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert!(role.escalate_on.contains(&EscalationSignal::ReplanRetry));
+        assert!(role
+            .escalate_on
+            .contains(&EscalationSignal::ToolRepeatGuard));
+        assert!(role.escalate_on.contains(&EscalationSignal::MaxTokens));
+    }
+
+    #[test]
+    fn escalate_on_explicit_subset() {
+        use crate::plan::EscalationSignal;
+        let yaml = r#"
+name: r
+model: deepseek-chat
+escalate_on:
+  - max_tokens
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(role.escalate_on, vec![EscalationSignal::MaxTokens]);
     }
 }
