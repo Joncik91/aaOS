@@ -8,8 +8,10 @@
 use aaos_core::AgentId;
 
 pub mod latency;
+pub mod view;
 
 pub use latency::{LatencyTracker, SubtaskWallClockTracker};
+pub use view::SchedulerView;
 
 /// Priority level for agent scheduling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -250,12 +252,13 @@ impl ReasoningScheduler {
         priority: u8,
         deadline: Option<Instant>,
     ) -> OwnedSemaphorePermit {
-        let rx = self.enqueue(subtask_id, priority, deadline).await;
+        let rx = self.enqueue(subtask_id.clone(), priority, deadline).await;
         // If the sender is dropped (dispatcher panicked), surface as a
         // panic — it means the runtime is unrecoverable. The dispatcher
         // is a simple infallible loop so this should never happen.
-        rx.await
-            .expect("reasoning scheduler dispatcher died — unrecoverable")
+        rx.await.unwrap_or_else(|_| {
+            panic!("reasoning scheduler dispatcher died — unrecoverable (subtask_id={subtask_id})")
+        })
     }
 
     async fn enqueue(
