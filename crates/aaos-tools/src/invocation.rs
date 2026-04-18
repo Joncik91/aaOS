@@ -168,6 +168,20 @@ impl ToolInvocation {
 
         // Inject repeat guard hint if threshold reached
         if is_repeat {
+            // Phase F-b sub-project 2: emit a dedicated audit event so the
+            // plan executor can detect the signal from the broadcast
+            // stream without introspecting tool-result JSON. The existing
+            // `_repeat_guard` hint stays — it's LLM-visible and is what
+            // actually nudges the agent.
+            self.audit_log.record(AuditEvent::new(
+                agent_id,
+                AuditEventKind::ToolRepeatGuardFired {
+                    agent_id,
+                    tool: tool_name.to_string(),
+                    attempt_count,
+                },
+            ));
+
             let hint = format!(
                 "You have called `{}` with these exact arguments {} times in this subtask. The previous attempts returned the same result. Try different arguments or a different tool.",
                 tool_name, attempt_count
@@ -469,6 +483,42 @@ mod tests {
             guard["hint"].as_str().unwrap().contains("echo"),
             "hint should name the tool; got {:?}",
             guard["hint"]
+        );
+    }
+
+    #[tokio::test]
+    async fn repeat_guard_emits_audit_event_on_third_call() {
+        use aaos_core::AuditEventKind;
+
+        let (invocation, agent_id, handles, log, _) = setup();
+        let input = serde_json::json!({"message": "audit-test"});
+
+        // Invoke the same tool with identical args 3 times
+        for _ in 0..3 {
+            let _ = invocation
+                .invoke(agent_id, "echo", input.clone(), &handles)
+                .await;
+        }
+
+        // Filter for ToolRepeatGuardFired events with tool=="echo" and attempt_count >= 3
+        let repeat_events: Vec<_> = log
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    &e.event,
+                    AuditEventKind::ToolRepeatGuardFired {
+                        tool,
+                        attempt_count,
+                        ..
+                    } if tool == "echo" && *attempt_count >= 3
+                )
+            })
+            .collect();
+
+        assert!(
+            !repeat_events.is_empty(),
+            "expected at least one ToolRepeatGuardFired event at attempt 3+"
         );
     }
 
