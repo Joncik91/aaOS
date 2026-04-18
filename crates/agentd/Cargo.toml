@@ -34,6 +34,7 @@ scopeguard = { workspace = true }
 dashmap = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+aaos-mcp = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -49,6 +50,7 @@ default = []
 # launch persistent agents through NamespacedBackend instead of
 # InProcessBackend. Default remains InProcessBackend.
 namespaced-agents = ["dep:aaos-backend-linux"]
+mcp = ["dep:aaos-mcp"]
 
 # ----------------------------------------------------------------------------
 # Debian packaging metadata (consumed by `cargo deb`).

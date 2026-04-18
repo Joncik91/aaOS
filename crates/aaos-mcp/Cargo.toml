@@ -1,0 +1,23 @@
+[package]
+name = "aaos-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aaos-core  = { path = "../aaos-core" }
+aaos-tools = { path = "../aaos-tools" }
+aaos-runtime = { path = "../aaos-runtime" }
+async-trait  = { workspace = true }
+tokio        = { workspace = true }
+tokio-util   = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+serde_yaml   = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+reqwest      = { workspace = true }
+axum         = { workspace = true }
+uuid         = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
