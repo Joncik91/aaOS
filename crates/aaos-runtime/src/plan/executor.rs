@@ -366,16 +366,57 @@ impl PlanExecutor {
             max_iterations: (role.retry.max_attempts + 10).max(10),
         };
 
-        let result = (self.runner)(
-            subtask.id.clone(),
+        let subtask_id_owned = subtask.id.clone();
+        let fut = (self.runner)(
+            subtask_id_owned.clone(),
             manifest_yaml,
             message,
             overrides,
             wall_clock_deadline,
-        )
-        .await
-        .map_err(ExecutorError::Terminal)?;
-        Ok(result)
+        );
+        let raced = race_deadline(fut, wall_clock_deadline).await;
+
+        match raced {
+            Ok(r) => Ok(r),
+            Err(CoreError::Ipc(ref m)) if m == "ttl wall-clock exceeded" => {
+                self.audit_log.record(AuditEvent::new(
+                    AgentId::from_uuid(uuid::Uuid::nil()),
+                    AuditEventKind::SubtaskTtlExpired {
+                        subtask_id: subtask_id_owned.clone(),
+                        reason: "wall_clock_exceeded".into(),
+                    },
+                ));
+                Err(ExecutorError::Correctable(format!(
+                    "subtask '{}' exceeded wall-clock TTL",
+                    subtask_id_owned
+                )))
+            }
+            Err(e) => Err(ExecutorError::Terminal(e)),
+        }
+    }
+}
+
+/// Race `fut` against an optional wall-clock deadline.
+///
+/// If the deadline fires first, returns a sentinel `CoreError::Ipc("ttl
+/// wall-clock exceeded")` and drops `fut` (cancelling any work it was
+/// driving). If `deadline.is_none()`, behaves like `fut.await`. The caller
+/// (`spawn_subtask`) translates the sentinel into a `SubtaskTtlExpired`
+/// audit event + `Correctable` error.
+async fn race_deadline<F, T>(fut: F, deadline: Option<Instant>) -> Result<T, CoreError>
+where
+    F: std::future::Future<Output = Result<T, CoreError>>,
+{
+    match deadline {
+        None => fut.await,
+        Some(d) => {
+            tokio::select! {
+                r = fut => r,
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(d)) => {
+                    Err(CoreError::Ipc("ttl wall-clock exceeded".into()))
+                }
+            }
+        }
     }
 }
 
@@ -1106,6 +1147,145 @@ mod tests {
         assert_eq!(
             started, 0,
             "SubtaskStarted must not fire for a TTL-exhausted subtask (invariant would regress if hop check were moved after the Started record)"
+        );
+    }
+
+    #[tokio::test]
+    async fn wall_clock_expiry_kills_running_subtask() {
+        use aaos_core::{AuditEventKind, TaskTtl};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc as StdArc;
+        use std::time::Duration as StdDuration;
+
+        let was_cancelled = StdArc::new(AtomicBool::new(false));
+        let wc = was_cancelled.clone();
+
+        // Slow stub: sleeps 5s, observes its own cancellation via Drop side effect.
+        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _o, _deadline| {
+            let wc = wc.clone();
+            Box::pin(async move {
+                struct DropFlag(StdArc<AtomicBool>);
+                impl Drop for DropFlag {
+                    fn drop(&mut self) {
+                        self.0.store(true, Ordering::SeqCst);
+                    }
+                }
+                let _flag = DropFlag(wc);
+                tokio::time::sleep(StdDuration::from_secs(5)).await;
+                Ok(SubtaskResult {
+                    subtask_id: id,
+                    agent_id: AgentId::new(),
+                    response: "never".into(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+            })
+        });
+
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let audit_trait: Arc<dyn AuditLog> = audit.clone();
+        let exec = PlanExecutor::new(cat, planner, runner, audit_trait, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "slow".into(),
+                role: "fetcher".into(),
+                params: serde_json::json!({"url": "https://x.com", "workspace": "/tmp/x"}),
+                depends_on: vec![],
+                ttl: Some(TaskTtl {
+                    max_hops: None,
+                    max_wall_clock: Some(StdDuration::from_millis(500)),
+                }),
+            }],
+            final_output: "slow".into(),
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "wall-clock expiry must fail the plan");
+        assert!(
+            elapsed >= StdDuration::from_millis(400) && elapsed < StdDuration::from_secs(3),
+            "expected kill between 400ms and 3s; got {elapsed:?}"
+        );
+        assert!(
+            was_cancelled.load(Ordering::SeqCst),
+            "subtask future must have been cancelled (dropped)"
+        );
+
+        let expired: Vec<_> = audit
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(&e.event, AuditEventKind::SubtaskTtlExpired { subtask_id, reason }
+                if subtask_id == "slow" && reason == "wall_clock_exceeded")
+            })
+            .collect();
+        assert_eq!(expired.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn dependent_cascades_after_wall_clock_expiry() {
+        use aaos_core::{AuditEventKind, TaskTtl};
+        use std::time::Duration as StdDuration;
+
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline| {
+            Box::pin(async move {
+                if id == "slow" {
+                    tokio::time::sleep(StdDuration::from_secs(5)).await;
+                }
+                Ok(SubtaskResult {
+                    subtask_id: id,
+                    agent_id: AgentId::new(),
+                    response: "ok".into(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+            })
+        });
+
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let audit_trait: Arc<dyn AuditLog> = audit.clone();
+        let exec = PlanExecutor::new(cat, planner, runner, audit_trait, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "slow".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({"url": "https://x.com", "workspace": "/tmp/x"}),
+                    depends_on: vec![],
+                    ttl: Some(TaskTtl {
+                        max_hops: None,
+                        max_wall_clock: Some(StdDuration::from_millis(500)),
+                    }),
+                },
+                Subtask {
+                    id: "dependent".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({"url": "https://y.com", "workspace": "/tmp/y"}),
+                    depends_on: vec!["slow".into()],
+                    ttl: None,
+                },
+            ],
+            final_output: "dependent".into(),
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+
+        let dependent_started = audit.events().into_iter().any(|e| {
+            matches!(&e.event, AuditEventKind::SubtaskStarted { subtask_id, .. } if subtask_id == "dependent")
+        });
+        assert!(
+            !dependent_started,
+            "dependent must not launch after its dep failed via TTL"
         );
     }
 }
