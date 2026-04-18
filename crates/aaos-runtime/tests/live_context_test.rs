@@ -11,7 +11,16 @@ use aaos_runtime::{ArchiveSegment, InMemorySessionStore, SessionStore};
 #[tokio::test]
 #[ignore] // Requires ANTHROPIC_API_KEY
 async fn live_context_summarization_preserves_facts() {
-    let config = AnthropicConfig::from_env().expect("ANTHROPIC_API_KEY must be set");
+    let config = match AnthropicConfig::from_env() {
+        Ok(c) => c,
+        Err(_) => {
+            eprintln!(
+                "SKIP: ANTHROPIC_API_KEY not set — live context summarization \
+                 test requires a real API key. Run with the key set to exercise."
+            );
+            return;
+        }
+    };
     let llm: Arc<dyn LlmClient> = Arc::new(AnthropicClient::new(config));
 
     let model = "claude-haiku-4-5-20251001";
