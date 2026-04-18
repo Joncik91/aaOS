@@ -191,8 +191,20 @@ impl Planner {
             PlannerError::Malformed(format!("no JSON in response: {}", truncate(&text, 200)))
         })?;
 
-        let plan: Plan = serde_json::from_str(&json)
+        let mut plan: Plan = serde_json::from_str(&json)
             .map_err(|e| PlannerError::Malformed(format!("JSON parse: {e}")))?;
+
+        // Phase F-b sub-project 1: if the LLM didn't specify a TTL on a
+        // subtask, fall back to the env-configured default. Subtasks
+        // that arrived with an explicit ttl are left untouched.
+        let fallback = default_task_ttl();
+        if fallback.is_some() {
+            for s in plan.subtasks.iter_mut() {
+                if s.ttl.is_none() {
+                    s.ttl = fallback.clone();
+                }
+            }
+        }
 
         validate_plan_structure(&plan, catalog)?;
 
@@ -265,6 +277,38 @@ pub enum PlannerError {
     LlmCall(String),
     #[error("malformed plan from LLM: {0}")]
     Malformed(String),
+}
+
+/// Build a TaskTtl from environment defaults. Returns None if both
+/// `AAOS_DEFAULT_TASK_TTL_HOPS` and `AAOS_DEFAULT_TASK_TTL_WALL_CLOCK_S`
+/// are unset. Called by the planner when a subtask arrives from the LLM
+/// without an explicit `ttl` field. A single-env-var setup returns a
+/// TaskTtl with the other field left as None (honoring "unset = no
+/// bound on that axis").
+pub fn default_task_ttl() -> Option<aaos_core::TaskTtl> {
+    default_task_ttl_with_env(
+        std::env::var("AAOS_DEFAULT_TASK_TTL_HOPS").ok(),
+        std::env::var("AAOS_DEFAULT_TASK_TTL_WALL_CLOCK_S").ok(),
+    )
+}
+
+/// Helper for testing: accepts optional env var values directly.
+fn default_task_ttl_with_env(
+    hops_str: Option<String>,
+    clock_str: Option<String>,
+) -> Option<aaos_core::TaskTtl> {
+    let max_hops = hops_str.and_then(|v| v.parse::<u32>().ok());
+    let max_wall_clock = clock_str
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(std::time::Duration::from_secs);
+
+    if max_hops.is_none() && max_wall_clock.is_none() {
+        return None;
+    }
+    Some(aaos_core::TaskTtl {
+        max_hops,
+        max_wall_clock,
+    })
 }
 
 #[cfg(test)]
@@ -392,5 +436,21 @@ mod tests {
             final_output: "/out".into(),
         };
         assert!(validate_plan_structure(&p, &cat).is_err());
+    }
+
+    #[test]
+    fn default_ttl_from_env_populates_both_fields() {
+        use std::time::Duration;
+
+        let t = default_task_ttl_with_env(Some("5".into()), Some("30".into()));
+        let ttl = t.expect("both env vars set => Some(TaskTtl)");
+        assert_eq!(ttl.max_hops, Some(5));
+        assert_eq!(ttl.max_wall_clock, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn default_ttl_returns_none_when_no_env() {
+        let result = default_task_ttl_with_env(None, None);
+        assert!(result.is_none());
     }
 }
