@@ -11,11 +11,7 @@ use tokio::sync::broadcast;
 #[async_trait]
 pub trait McpServerBackend: Send + Sync {
     /// Submit a goal. Returns an `AgentId` representing the bootstrap agent.
-    async fn submit_goal(
-        &self,
-        goal: String,
-        role: Option<String>,
-    ) -> anyhow::Result<AgentId>;
+    async fn submit_goal(&self, goal: String, role: Option<String>) -> anyhow::Result<AgentId>;
 
     /// Current status of a run.
     fn run_status(&self, agent_id: &AgentId) -> RunStatus;

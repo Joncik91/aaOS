@@ -110,10 +110,7 @@ async fn tools_list_returns_three_tools() {
 
     let tools = resp["result"]["tools"].as_array().unwrap();
     assert_eq!(tools.len(), 3);
-    let names: Vec<&str> = tools
-        .iter()
-        .map(|t| t["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert!(names.contains(&"submit_goal"));
     assert!(names.contains(&"get_agent_status"));
     assert!(names.contains(&"cancel_agent"));
@@ -146,7 +143,11 @@ async fn submit_goal_returns_run_id() {
     // `error` is skipped when absent (skip_serializing_if); an error response
     // would serialize it as a JSON object. Checking is_object() correctly
     // distinguishes success (absent/null) from error (object).
-    assert!(!resp["error"].is_object(), "unexpected error: {:?}", resp["error"]);
+    assert!(
+        !resp["error"].is_object(),
+        "unexpected error: {:?}",
+        resp["error"]
+    );
 
     let submitted = backend.submitted.lock().unwrap();
     assert_eq!(submitted.as_slice(), &["fetch HN and summarise"]);
@@ -197,20 +198,25 @@ async fn get_agent_status_returns_running() {
         .await
         .unwrap();
 
-    assert!(!resp["error"].is_object(), "unexpected error: {:?}", resp["error"]);
+    assert!(
+        !resp["error"].is_object(),
+        "unexpected error: {:?}",
+        resp["error"]
+    );
     // RunStatus::Running with #[serde(rename_all = "lowercase")] serializes as
     // the string "running" (unit variant → lowercase string).
-    assert_eq!(resp["result"], json!("running"), "expected RunStatus::Running");
+    assert_eq!(
+        resp["result"],
+        json!("running"),
+        "expected RunStatus::Running"
+    );
 }
 
 /// Build the echo-mcp-server binary, then run a full StdioTransport round-trip.
 #[tokio::test]
 #[ignore = "builds a child binary; run with cargo test -- --ignored"]
 async fn stdio_transport_echo_roundtrip() {
-    use aaos_mcp::client::{
-        session::McpSession,
-        transport::StdioTransport,
-    };
+    use aaos_mcp::client::{session::McpSession, transport::StdioTransport};
 
     let fixture_dir = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -237,6 +243,9 @@ async fn stdio_transport_echo_roundtrip() {
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "echo");
 
-    let result = session.call("echo", serde_json::json!({ "message": "hello" })).await.unwrap();
+    let result = session
+        .call("echo", serde_json::json!({ "message": "hello" }))
+        .await
+        .unwrap();
     assert_eq!(result["echoed"]["message"], "hello");
 }

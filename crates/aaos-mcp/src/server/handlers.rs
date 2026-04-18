@@ -94,13 +94,15 @@ async fn dispatch_tool_call(
                 Some(g) => g.to_string(),
                 None => return JsonRpcResponse::error(id, -32602, "missing 'goal'"),
             };
-            let role = args.get("role").and_then(|r| r.as_str()).map(str::to_string);
+            let role = args
+                .get("role")
+                .and_then(|r| r.as_str())
+                .map(str::to_string);
 
             match backend.submit_goal(goal, role).await {
-                Ok(agent_id) => JsonRpcResponse::success(
-                    id,
-                    json!({ "run_id": agent_id.to_string() }),
-                ),
+                Ok(agent_id) => {
+                    JsonRpcResponse::success(id, json!({ "run_id": agent_id.to_string() }))
+                }
                 Err(e) => JsonRpcResponse::error(id, -32000, e.to_string()),
             }
         }

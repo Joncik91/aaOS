@@ -47,7 +47,10 @@ impl McpSession {
             ))
             .await?;
         if let Some(err) = resp.error {
-            return Err(McpError::Rpc { code: err.code, message: err.message });
+            return Err(McpError::Rpc {
+                code: err.code,
+                message: err.message,
+            });
         }
 
         // tools/list
@@ -56,7 +59,10 @@ impl McpSession {
             .send(JsonRpcRequest::new(id, "tools/list", json!({})))
             .await?;
         if let Some(err) = resp.error {
-            return Err(McpError::Rpc { code: err.code, message: err.message });
+            return Err(McpError::Rpc {
+                code: err.code,
+                message: err.message,
+            });
         }
 
         let tools: Vec<McpToolDefinition> = resp
@@ -105,7 +111,10 @@ impl McpSession {
                 e
             })?;
         if let Some(err) = resp.error {
-            return Err(McpError::Rpc { code: err.code, message: err.message });
+            return Err(McpError::Rpc {
+                code: err.code,
+                message: err.message,
+            });
         }
         Ok(resp.result.unwrap_or(serde_json::Value::Null))
     }
@@ -118,23 +127,33 @@ impl McpSession {
     /// Re-run the handshake with a new transport (used by reconnect loop).
     pub async fn handshake_with(&self, transport: Arc<dyn McpTransport>) -> Result<(), McpError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let resp = transport.send(JsonRpcRequest::new(
-            id,
-            "initialize",
-            json!({
-                "protocolVersion": "2024-11-05",
-                "clientInfo": { "name": "aaos", "version": "0.1" },
-                "capabilities": {}
-            }),
-        )).await?;
+        let resp = transport
+            .send(JsonRpcRequest::new(
+                id,
+                "initialize",
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "clientInfo": { "name": "aaos", "version": "0.1" },
+                    "capabilities": {}
+                }),
+            ))
+            .await?;
         if let Some(err) = resp.error {
-            return Err(McpError::Rpc { code: err.code, message: err.message });
+            return Err(McpError::Rpc {
+                code: err.code,
+                message: err.message,
+            });
         }
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let resp = transport.send(JsonRpcRequest::new(id, "tools/list", json!({}))).await?;
+        let resp = transport
+            .send(JsonRpcRequest::new(id, "tools/list", json!({})))
+            .await?;
         if let Some(err) = resp.error {
-            return Err(McpError::Rpc { code: err.code, message: err.message });
+            return Err(McpError::Rpc {
+                code: err.code,
+                message: err.message,
+            });
         }
 
         let tools: Vec<McpToolDefinition> = resp
@@ -194,7 +213,9 @@ mod tests {
 
     impl MockTransport {
         fn new(responses: Vec<JsonRpcResponse>) -> Arc<Self> {
-            Arc::new(Self { responses: StdMutex::new(responses) })
+            Arc::new(Self {
+                responses: StdMutex::new(responses),
+            })
         }
     }
 
@@ -206,7 +227,9 @@ mod tests {
         ) -> Result<JsonRpcResponse, crate::types::McpError> {
             let mut q = self.responses.lock().unwrap();
             if q.is_empty() {
-                return Err(crate::types::McpError::Transport("no more responses".into()));
+                return Err(crate::types::McpError::Transport(
+                    "no more responses".into(),
+                ));
             }
             Ok(q.remove(0))
         }
@@ -216,14 +239,20 @@ mod tests {
     #[tokio::test]
     async fn session_initializes_and_lists_tools() {
         let transport = MockTransport::new(vec![
-            JsonRpcResponse::success(1, json!({ "protocolVersion": "2024-11-05", "capabilities": {} })),
-            JsonRpcResponse::success(2, json!({
-                "tools": [{
-                    "name": "echo",
-                    "description": "echoes input",
-                    "inputSchema": { "type": "object" }
-                }]
-            })),
+            JsonRpcResponse::success(
+                1,
+                json!({ "protocolVersion": "2024-11-05", "capabilities": {} }),
+            ),
+            JsonRpcResponse::success(
+                2,
+                json!({
+                    "tools": [{
+                        "name": "echo",
+                        "description": "echoes input",
+                        "inputSchema": { "type": "object" }
+                    }]
+                }),
+            ),
         ]);
 
         let session = McpSession::connect("test".into(), transport).await.unwrap();
@@ -235,9 +264,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_unhealthy_on_transport_error() {
-        let transport = MockTransport::new(vec![
-            JsonRpcResponse::error(1, -32000, "server error"),
-        ]);
+        let transport = MockTransport::new(vec![JsonRpcResponse::error(1, -32000, "server error")]);
         let result = McpSession::connect("bad".into(), transport).await;
         assert!(result.is_err());
     }

@@ -10,11 +10,7 @@ use crate::server::Server;
 impl McpServerBackend for Server {
     /// Submit a goal by ensuring Bootstrap is running and routing the goal to it.
     /// Returns the bootstrap agent's `AgentId` as the run handle.
-    async fn submit_goal(
-        &self,
-        goal: String,
-        role: Option<String>,
-    ) -> anyhow::Result<AgentId> {
+    async fn submit_goal(&self, goal: String, role: Option<String>) -> anyhow::Result<AgentId> {
         if let Some(r) = &role {
             tracing::warn!(role = %r, "role parameter in submit_goal is not yet supported — submitting to default bootstrap");
         }
@@ -32,9 +28,7 @@ impl McpServerBackend for Server {
                 AgentState::Starting | AgentState::Running | AgentState::Paused => {
                     RunStatus::Running
                 }
-                AgentState::Stopping | AgentState::Stopped => {
-                    RunStatus::Completed { result: None }
-                }
+                AgentState::Stopping | AgentState::Stopped => RunStatus::Completed { result: None },
             },
         }
     }

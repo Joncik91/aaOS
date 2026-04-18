@@ -1905,7 +1905,11 @@ impl Server {
 
     /// Deliver a goal message to an already-running agent via the router.
     /// Mirrors the persistent-agent branch of `handle_agent_run`.
-    pub(crate) async fn route_goal_to(&self, target: aaos_core::AgentId, goal: &str) -> anyhow::Result<()> {
+    pub(crate) async fn route_goal_to(
+        &self,
+        target: aaos_core::AgentId,
+        goal: &str,
+    ) -> anyhow::Result<()> {
         let msg =
             aaos_ipc::McpMessage::new(target, target, "agent.run", json!({ "message": goal }));
         self.router

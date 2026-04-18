@@ -48,7 +48,10 @@ fn default_bind() -> String {
 
 impl Default for ServerConfig {
     fn default() -> Self {
-        Self { enabled: false, bind: default_bind() }
+        Self {
+            enabled: false,
+            bind: default_bind(),
+        }
     }
 }
 

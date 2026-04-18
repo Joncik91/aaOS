@@ -21,7 +21,10 @@ pub struct HttpTransport {
 
 impl HttpTransport {
     pub fn new(base_url: String) -> Self {
-        Self { base_url, client: reqwest::Client::new() }
+        Self {
+            base_url,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
@@ -74,7 +77,11 @@ impl StdioTransport {
         let stdout = BufReader::new(child.stdout.take().unwrap());
 
         Ok(Arc::new(Self {
-            inner: Mutex::new(Some(StdioInner { child, stdin, stdout })),
+            inner: Mutex::new(Some(StdioInner {
+                child,
+                stdin,
+                stdout,
+            })),
             closed: AtomicBool::new(false),
         }))
     }
@@ -87,7 +94,9 @@ impl McpTransport for StdioTransport {
             return Err(McpError::Transport("transport closed".into()));
         }
         let mut guard = self.inner.lock().await;
-        let inner = guard.as_mut().ok_or_else(|| McpError::Transport("closed".into()))?;
+        let inner = guard
+            .as_mut()
+            .ok_or_else(|| McpError::Transport("closed".into()))?;
 
         let mut line = serde_json::to_string(&req).map_err(McpError::Json)?;
         line.push('\n');
