@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aaos-core  = { path = "../aaos-core" }
-aaos-tools = { path = "../aaos-tools" }
-aaos-runtime = { path = "../aaos-runtime" }
+aaos-core    = { workspace = true }
+aaos-tools   = { workspace = true }
+aaos-runtime = { workspace = true }
 async-trait  = { workspace = true }
 tokio        = { workspace = true }
 tokio-util   = { workspace = true }
