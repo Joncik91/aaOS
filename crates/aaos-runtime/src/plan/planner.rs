@@ -194,17 +194,7 @@ impl Planner {
         let mut plan: Plan = serde_json::from_str(&json)
             .map_err(|e| PlannerError::Malformed(format!("JSON parse: {e}")))?;
 
-        // Phase F-b sub-project 1: if the LLM didn't specify a TTL on a
-        // subtask, fall back to the env-configured default. Subtasks
-        // that arrived with an explicit ttl are left untouched.
-        let fallback = default_task_ttl();
-        if fallback.is_some() {
-            for s in plan.subtasks.iter_mut() {
-                if s.ttl.is_none() {
-                    s.ttl = fallback.clone();
-                }
-            }
-        }
+        apply_ttl_fallback(&mut plan, default_task_ttl());
 
         validate_plan_structure(&plan, catalog)?;
 
@@ -277,6 +267,21 @@ pub enum PlannerError {
     LlmCall(String),
     #[error("malformed plan from LLM: {0}")]
     Malformed(String),
+}
+
+/// Fill in `ttl: None` on any subtask in `plan` with `fallback`, if
+/// `fallback` is Some. Subtasks that already carry an explicit ttl
+/// are left untouched. Called by the planner after parsing the
+/// LLM-produced JSON; pulled out for direct unit testing.
+pub fn apply_ttl_fallback(plan: &mut Plan, fallback: Option<aaos_core::TaskTtl>) {
+    let Some(fallback) = fallback else {
+        return;
+    };
+    for s in plan.subtasks.iter_mut() {
+        if s.ttl.is_none() {
+            s.ttl = Some(fallback.clone());
+        }
+    }
 }
 
 /// Build a TaskTtl from environment defaults. Returns None if both
@@ -452,5 +457,74 @@ mod tests {
     fn default_ttl_returns_none_when_no_env() {
         let result = default_task_ttl_with_env(None, None);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn apply_ttl_fallback_fills_only_missing_ttls() {
+        use aaos_core::TaskTtl;
+        use std::time::Duration;
+
+        let fallback = TaskTtl {
+            max_hops: Some(5),
+            max_wall_clock: Some(Duration::from_secs(60)),
+        };
+        let explicit = TaskTtl {
+            max_hops: Some(2),
+            max_wall_clock: None,
+        };
+
+        let mut plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "has_ttl".into(),
+                    role: "writer".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec![],
+                    ttl: Some(explicit.clone()),
+                },
+                Subtask {
+                    id: "no_ttl".into(),
+                    role: "writer".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec![],
+                    ttl: None,
+                },
+            ],
+            final_output: "out".into(),
+        };
+
+        apply_ttl_fallback(&mut plan, Some(fallback.clone()));
+
+        assert_eq!(
+            plan.subtasks[0].ttl.as_ref(),
+            Some(&explicit),
+            "explicit ttl must be preserved, not overwritten"
+        );
+        assert_eq!(
+            plan.subtasks[1].ttl.as_ref(),
+            Some(&fallback),
+            "missing ttl must be filled with fallback"
+        );
+    }
+
+    #[test]
+    fn apply_ttl_fallback_with_none_is_noop() {
+        let mut plan = Plan {
+            subtasks: vec![Subtask {
+                id: "no_ttl".into(),
+                role: "writer".into(),
+                params: serde_json::json!({}),
+                depends_on: vec![],
+                ttl: None,
+            }],
+            final_output: "out".into(),
+        };
+
+        apply_ttl_fallback(&mut plan, None);
+
+        assert!(
+            plan.subtasks[0].ttl.is_none(),
+            "None fallback must leave subtask ttls untouched"
+        );
     }
 }
