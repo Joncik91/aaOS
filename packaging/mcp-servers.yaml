@@ -1,0 +1,17 @@
+# MCP server configuration for aaOS.
+# Install to /etc/aaos/mcp-servers.yaml.
+# If this file is absent, MCP client and server are both disabled.
+
+client:
+  servers: []
+  # Example entries:
+  # - name: filesystem
+  #   transport: http
+  #   url: http://192.168.0.178:3002
+  # - name: git
+  #   transport: stdio
+  #   command: ["/usr/bin/mcp-git"]
+
+server:
+  enabled: false
+  bind: "127.0.0.1:3781"
