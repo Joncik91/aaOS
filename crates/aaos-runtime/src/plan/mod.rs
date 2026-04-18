@@ -6,11 +6,13 @@
 //! walks the DAG, instantiating children from per-role scaffolds. The LLM
 //! reasons about content inside each child; orchestration is pure code.
 
+pub mod escalation;
 pub mod executor;
 pub mod placeholders;
 pub mod planner;
 pub mod role;
 
+pub use escalation::{default_escalation_signals, EscalationSignal};
 pub use executor::{
     ExecutorError, PlanExecutor, ScaffoldRunner, SubtaskExecutorOverrides, SubtaskRunner,
 };
