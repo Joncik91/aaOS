@@ -544,6 +544,7 @@ pub fn fallback_generalist_plan(goal: &str, catalog: &RoleCatalog) -> Result<Pla
             params: serde_json::json!({ "task_description": goal }),
             depends_on: vec![],
             ttl: None,
+            current_model_tier: 0,
         }],
         final_output: "/".into(),
     })
@@ -626,6 +627,7 @@ mod tests {
                 params: serde_json::json!({}),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -650,6 +652,7 @@ mod tests {
                 params: serde_json::json!({"url": "https://x.com"}),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -698,6 +701,7 @@ mod tests {
                     }),
                     depends_on: vec![],
                     ttl: None,
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "lob".into(),
@@ -708,6 +712,7 @@ mod tests {
                     }),
                     depends_on: vec![],
                     ttl: None,
+                    current_model_tier: 0,
                 },
             ],
             final_output: "/out".into(),
@@ -860,6 +865,7 @@ mod tests {
                 }),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -930,6 +936,7 @@ mod tests {
                 params: serde_json::json!({ "report": report_path.to_str().unwrap() }),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -964,6 +971,7 @@ mod tests {
                 params: serde_json::json!({ "report": report_path.to_str().unwrap() }),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -992,6 +1000,7 @@ mod tests {
                 }),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -1049,6 +1058,7 @@ mod tests {
                     }),
                     depends_on: vec![],
                     ttl: None,
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "bad".into(),
@@ -1059,6 +1069,7 @@ mod tests {
                     }),
                     depends_on: vec![],
                     ttl: None,
+                    current_model_tier: 0,
                 },
             ],
             final_output: "/out".into(),
@@ -1163,6 +1174,7 @@ mod tests {
                     max_hops: Some(0),
                     max_wall_clock: None,
                 }),
+                current_model_tier: 0,
             }],
             final_output: "expired".into(),
         };
@@ -1233,6 +1245,7 @@ mod tests {
                     params: serde_json::json!({"url": "https://x.com", "workspace": "/tmp/x"}),
                     depends_on: vec![],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "b".into(),
@@ -1240,6 +1253,7 @@ mod tests {
                     params: serde_json::json!({"url": "https://y.com", "workspace": "/tmp/y"}),
                     depends_on: vec!["a".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "c".into(),
@@ -1247,6 +1261,7 @@ mod tests {
                     params: serde_json::json!({"url": "https://z.com", "workspace": "/tmp/z"}),
                     depends_on: vec!["b".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
             ],
             final_output: "c".into(),
@@ -1352,6 +1367,7 @@ mod tests {
                     max_hops: None,
                     max_wall_clock: Some(StdDuration::from_millis(500)),
                 }),
+                current_model_tier: 0,
             }],
             final_output: "slow".into(),
         };
@@ -1419,6 +1435,7 @@ mod tests {
                         max_hops: None,
                         max_wall_clock: Some(StdDuration::from_millis(500)),
                     }),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "dependent".into(),
@@ -1426,6 +1443,7 @@ mod tests {
                     params: serde_json::json!({"url": "https://y.com", "workspace": "/tmp/y"}),
                     depends_on: vec!["slow".into()],
                     ttl: None,
+                    current_model_tier: 0,
                 },
             ],
             final_output: "dependent".into(),
@@ -1510,6 +1528,7 @@ mod tests {
                     max_hops: None,
                     max_wall_clock: Some(StdDuration::from_millis(500)),
                 }),
+                current_model_tier: 0,
             }],
             final_output: "slow".into(),
         };

@@ -41,6 +41,11 @@ pub struct Subtask {
     /// this field deserialize to None (back-compat).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<aaos_core::TaskTtl>,
+    /// Ladder index for model routing (Phase F-b sub-project 2). Planner
+    /// sets 0; executor increments on replan when an escalation signal
+    /// fired. Back-compat: missing deserializes to 0.
+    #[serde(default)]
+    pub current_model_tier: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -124,6 +129,7 @@ mod plan_tests {
             params: json!({}),
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
             ttl: None,
+            current_model_tier: 0,
         }
     }
 
@@ -198,6 +204,32 @@ mod plan_tests {
     }
 
     #[test]
+    fn subtask_current_model_tier_defaults_to_zero_and_roundtrips() {
+        // Missing field defaults to 0 — back-compat for serialized plans.
+        let s: Subtask =
+            serde_json::from_str(r#"{"id":"a","role":"writer","params":{},"depends_on":[]}"#)
+                .unwrap();
+        assert_eq!(s.current_model_tier, 0);
+
+        // Explicit value round-trips.
+        let s2 = Subtask {
+            id: "b".into(),
+            role: "writer".into(),
+            params: serde_json::json!({}),
+            depends_on: vec![],
+            ttl: None,
+            current_model_tier: 2,
+        };
+        let json = serde_json::to_string(&s2).unwrap();
+        let back: Subtask = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2, back);
+        assert!(
+            json.contains("\"current_model_tier\":2"),
+            "explicit tier must serialize: {json}"
+        );
+    }
+
+    #[test]
     fn subtask_ttl_serde_roundtrip_and_default() {
         use aaos_core::TaskTtl;
         use std::time::Duration;
@@ -218,6 +250,7 @@ mod plan_tests {
                 max_hops: Some(3),
                 max_wall_clock: Some(Duration::from_secs(30)),
             }),
+            current_model_tier: 0,
         };
         let json = serde_json::to_string(&s2).unwrap();
         let back: Subtask = serde_json::from_str(&json).unwrap();
@@ -230,6 +263,7 @@ mod plan_tests {
             params: serde_json::json!({}),
             depends_on: vec![],
             ttl: None,
+            current_model_tier: 0,
         };
         let json_none = serde_json::to_string(&s_none).unwrap();
         assert!(

@@ -455,6 +455,7 @@ mod tests {
                 params: serde_json::json!({}),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -471,6 +472,7 @@ mod tests {
                 params: serde_json::json!({}),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "/out".into(),
         };
@@ -499,6 +501,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec![],
                     ttl: None,
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "a".into(),
@@ -506,6 +509,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec![],
                     ttl: None,
+                    current_model_tier: 0,
                 },
             ],
             final_output: "/out".into(),
@@ -551,6 +555,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec![],
                     ttl: Some(explicit.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "no_ttl".into(),
@@ -558,6 +563,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec![],
                     ttl: None,
+                    current_model_tier: 0,
                 },
             ],
             final_output: "out".into(),
@@ -586,6 +592,7 @@ mod tests {
                 params: serde_json::json!({}),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "out".into(),
         };
@@ -614,6 +621,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec![],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "b".into(),
@@ -621,6 +629,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec!["a".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "c".into(),
@@ -628,6 +637,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec!["b".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
             ],
             final_output: "c".into(),
@@ -655,6 +665,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec![],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "b".into(),
@@ -662,6 +673,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec!["a".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "c".into(),
@@ -669,6 +681,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec!["b".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
             ],
             final_output: "c".into(),
@@ -697,6 +710,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec![],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "b".into(),
@@ -704,6 +718,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec!["a".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "c".into(),
@@ -711,6 +726,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec!["a".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
                 Subtask {
                     id: "d".into(),
@@ -718,6 +734,7 @@ mod tests {
                     params: serde_json::json!({}),
                     depends_on: vec!["b".into(), "c".into()],
                     ttl: Some(ttl.clone()),
+                    current_model_tier: 0,
                 },
             ],
             final_output: "d".into(),
@@ -740,6 +757,7 @@ mod tests {
                 params: serde_json::json!({}),
                 depends_on: vec![],
                 ttl: None,
+                current_model_tier: 0,
             }],
             final_output: "a".into(),
         };
