@@ -22,9 +22,18 @@ The core of the system. Manages:
 - **Agent Registry** — Thread-safe process table (DashMap-based). Handles spawn, stop (sync and async), capability issuance, and persistent loop startup.
 - **Persistent Agent Loop** — Agents with `lifecycle: persistent` run a background tokio task (`persistent_agent_loop`) that receives messages from a channel, executes them with conversation history via the LLM executor, persists the transcript, and responds via the router's pending-response map. Survives executor errors. Supports Pause/Resume/Stop commands.
 - **Session Store** — `SessionStore` trait with `JsonlSessionStore` (JSONL files, one per agent) and `InMemorySessionStore` (for tests). History loaded once at loop startup, appended after each turn, compacted every 10 turns. Configurable via `max_history_messages`.
-- **Scheduler** — Round-robin with priority support (implemented, not yet activated for agent-level scheduling)
+- **Schedulers** — Two coexisting scheduler abstractions. The legacy `RoundRobinScheduler` with priority support is implemented but not yet activated for agent-level scheduling. The new `ReasoningScheduler` (Phase F-b sub-project 1) awards LLM inference slots via a priority queue keyed on per-subtask wall-clock deadlines; every subtask's LLM client is wrapped in a `SchedulerView` so `complete()` calls route through it. See the Reasoning-Slot Scheduler section below.
+- **Per-task TTL** — Optional `TaskTtl { max_hops, max_wall_clock }` on `Subtask`, populated from env defaults (`AAOS_DEFAULT_TASK_TTL_HOPS`, `AAOS_DEFAULT_TASK_TTL_WALL_CLOCK_S`) when the planner's output omits it. Enforced in `PlanExecutor::spawn_subtask`: hops-exhaustion refuses launch; a `tokio::select!` race cancels the runner future when the wall-clock deadline fires. Failure cascades to dependents via the existing partial-failure logic.
 - **Supervisor** — Restart policies (always, on-failure, never) with exponential backoff
 - **Budget Enforcement** — `BudgetTracker` with atomic CAS operations tracks per-agent token usage. `BudgetConfig` in agent manifest (optional `max_tokens` + `reset_period_seconds`). Enforced in `report_usage()` — agents exceeding budget get `BudgetExceeded` errors. No budget = no enforcement.
+
+#### Reasoning-Slot Scheduler (Phase F-b sub-project 1)
+
+Every `agentd` server owns one `ReasoningScheduler` that gates LLM inference calls across all running subtasks. Construction reads `AAOS_MAX_CONCURRENT_INFERENCE` (default 3) once per server. On startup, a single `dispatcher_loop` tokio task is spawned; it repeatedly pops the earliest-deadline `ReasoningRequest` off a `BinaryHeap<Reverse<...>>`, acquires a permit from an inner `Semaphore`, and hands the permit to the request's `oneshot::Sender<OwnedSemaphorePermit>`.
+
+Each subtask's LLM client is wrapped in a `SchedulerView` before `AgentExecutor` touches it. `SchedulerView::complete` calls `scheduler.acquire_slot(subtask_id, priority, deadline)` first, then delegates to the inner client, then records the elapsed time into a `LatencyTracker`. One slot = one `complete()` call; no mid-inference preemption. Requests without a deadline get a 60-second synthetic one so no-TTL work competes fairly against short-deadline peers. If a caller drops the future before the dispatcher hands the permit over, the dispatcher discards that permit and loops — preventing dropped-waker stalls.
+
+The `LatencyTracker` trait has a minimal `SubtaskWallClockTracker` impl today (per-subtask cumulative elapsed via `DashMap`); per-model p50/p95 lands with Gap 2.
 
 ### 3. Agent Memory Layer (`aaos-memory`)
 
