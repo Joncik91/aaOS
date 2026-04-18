@@ -29,9 +29,11 @@ The core of the system. Manages:
 
 #### Reasoning-Slot Scheduler (Phase F-b sub-project 1)
 
-Every `agentd` server owns one `ReasoningScheduler` that gates LLM inference calls across all running subtasks. Construction reads `AAOS_MAX_CONCURRENT_INFERENCE` (default 3) once per server. On startup, a single `dispatcher_loop` tokio task is spawned; it repeatedly pops the earliest-deadline `ReasoningRequest` off a `BinaryHeap<Reverse<...>>`, acquires a permit from an inner `Semaphore`, and hands the permit to the request's `oneshot::Sender<OwnedSemaphorePermit>`.
+Every `agentd` server owns one `ReasoningScheduler` that gates LLM inference calls for **subtask agents** (children spawned by the PlanExecutor). Construction reads `AAOS_MAX_CONCURRENT_INFERENCE` (default 3) once per server. On startup, a single `dispatcher_loop` tokio task is spawned; it repeatedly pops the earliest-deadline `ReasoningRequest` off a `BinaryHeap<Reverse<...>>`, acquires a permit from an inner `Semaphore`, and hands the permit to the request's `oneshot::Sender<OwnedSemaphorePermit>`.
 
 Each subtask's LLM client is wrapped in a `SchedulerView` before `AgentExecutor` touches it. `SchedulerView::complete` calls `scheduler.acquire_slot(subtask_id, priority, deadline)` first, then delegates to the inner client, then records the elapsed time into a `LatencyTracker`. One slot = one `complete()` call; no mid-inference preemption. Requests without a deadline get a 60-second synthetic one so no-TTL work competes fairly against short-deadline peers. If a caller drops the future before the dispatcher hands the permit over, the dispatcher discards that permit and loops — preventing dropped-waker stalls.
+
+**Scope — what SchedulerView does and does NOT wrap.** The scheduler wraps subtask-agent LLM calls (everything reached through `Server::execute_agent_for_subtask`). It does NOT wrap the Planner's own DAG-producing LLM call or the Bootstrap agent's top-level LLM loop — those still go through the raw `llm_client` directly. Inference concurrency for non-subtask traffic is bounded by the legacy `ScheduledLlmClient` semaphore (constructed around the underlying LLM client in `agentd::main`). This means `AAOS_MAX_CONCURRENT_INFERENCE` is still the load-bearing backstop. The new scheduler is an inner gate for subtask-agent work, not a wholesale replacement.
 
 The `LatencyTracker` trait has a minimal `SubtaskWallClockTracker` impl today (per-subtask cumulative elapsed via `DashMap`); per-model p50/p95 lands with Gap 2.
 
