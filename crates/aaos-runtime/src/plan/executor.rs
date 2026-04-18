@@ -352,10 +352,31 @@ impl PlanExecutor {
         // "Prompt contracts can't enforce tool-call side effects".
         if let Some(scaffold) = &role.scaffold {
             if let Some(runner) = &self.scaffold_runner {
-                let result = runner(subtask.id.clone(), scaffold.kind.clone(), resolved_params)
-                    .await
-                    .map_err(ExecutorError::Terminal)?;
-                return Ok(result);
+                let subtask_id_owned = subtask.id.clone();
+                let fut = runner(
+                    subtask_id_owned.clone(),
+                    scaffold.kind.clone(),
+                    resolved_params,
+                );
+                let raced = race_deadline(fut, wall_clock_deadline).await;
+
+                return match raced {
+                    Ok(r) => Ok(r),
+                    Err(CoreError::Ipc(ref m)) if m == TTL_WALL_CLOCK_SENTINEL => {
+                        self.audit_log.record(AuditEvent::new(
+                            AgentId::from_uuid(uuid::Uuid::nil()),
+                            AuditEventKind::SubtaskTtlExpired {
+                                subtask_id: subtask_id_owned.clone(),
+                                reason: "wall_clock_exceeded".into(),
+                            },
+                        ));
+                        Err(ExecutorError::Correctable(format!(
+                            "subtask '{}' exceeded wall-clock TTL",
+                            subtask_id_owned
+                        )))
+                    }
+                    Err(e) => Err(ExecutorError::Terminal(e)),
+                };
             }
             // Role asked for a scaffold but none is installed — surface
             // cleanly instead of silently falling back to the LLM path
@@ -1411,5 +1432,96 @@ mod tests {
             !dependent_started,
             "dependent must not launch after its dep failed via TTL"
         );
+    }
+
+    #[tokio::test]
+    async fn wall_clock_expiry_kills_scaffold_subtask() {
+        use crate::plan::{Role, RoleScaffold};
+        use aaos_core::{AuditEventKind, TaskTtl};
+        use std::time::Duration as StdDuration;
+
+        // Build a catalog with a scaffolded role.
+        let slow_role = Role {
+            name: "slow".into(),
+            model: "stub".into(),
+            parameters: StdHashMap::new(),
+            capabilities: vec![],
+            system_prompt: "x".into(),
+            message_template: "y".into(),
+            budget: RoleBudget {
+                max_input_tokens: 100,
+                max_output_tokens: 100,
+            },
+            retry: RoleRetry {
+                max_attempts: 1,
+                on: vec![],
+            },
+            priority: 128,
+            scaffold: Some(RoleScaffold {
+                kind: "slow-test".into(),
+            }),
+        };
+        let mut cat = RoleCatalog::default();
+        cat.roles_mut().insert("slow".into(), slow_role);
+
+        let scaffold_runner: ScaffoldRunner = Arc::new(|id, _kind, _params| {
+            Box::pin(async move {
+                tokio::time::sleep(StdDuration::from_secs(5)).await;
+                Ok(SubtaskResult {
+                    subtask_id: id,
+                    agent_id: AgentId::new(),
+                    response: "never".into(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+            })
+        });
+
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let audit_trait: Arc<dyn AuditLog> = audit.clone();
+        let mut exec = PlanExecutor::new(
+            Arc::new(cat),
+            planner,
+            stub_runner(),
+            audit_trait,
+            std::env::temp_dir(),
+        );
+        exec.set_scaffold_runner(scaffold_runner);
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "slow".into(),
+                role: "slow".into(),
+                params: serde_json::json!({}),
+                depends_on: vec![],
+                ttl: Some(TaskTtl {
+                    max_hops: None,
+                    max_wall_clock: Some(StdDuration::from_millis(500)),
+                }),
+            }],
+            final_output: "slow".into(),
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "wall-clock expiry must fail the plan");
+        assert!(
+            elapsed < StdDuration::from_secs(3),
+            "expected scaffold kill < 3s, got {elapsed:?}"
+        );
+
+        let expired: Vec<_> = audit
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(&e.event, AuditEventKind::SubtaskTtlExpired { subtask_id, reason }
+                    if subtask_id == "slow" && reason == "wall_clock_exceeded")
+            })
+            .collect();
+        assert_eq!(expired.len(), 1, "expected SubtaskTtlExpired event");
     }
 }
