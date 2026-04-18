@@ -54,6 +54,7 @@ pub type SubtaskRunner = Arc<
             String,                   // rendered manifest YAML
             String,                   // first message for the child
             SubtaskExecutorOverrides, // per-role budget + iteration caps
+            Option<Instant>,          // wall-clock deadline (None = no wall-clock bound)
         ) -> Pin<Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>>
         + Send
         + Sync,
@@ -292,6 +293,33 @@ impl PlanExecutor {
             .ok_or_else(|| ExecutorError::Correctable(format!("unknown role: {}", subtask.role)))?;
         let resolved_params = subs.apply(&subtask.params);
 
+        // TTL hop check. If the subtask arrives with max_hops=0 we've
+        // exhausted the budget — emit the audit event, skip execution, return
+        // a Correctable error so the plan executor marks it failed + cascades.
+        if let Some(ttl) = &subtask.ttl {
+            if let Some(hops) = ttl.max_hops {
+                if hops == 0 {
+                    self.audit_log.record(AuditEvent::new(
+                        AgentId::from_uuid(uuid::Uuid::nil()),
+                        AuditEventKind::SubtaskTtlExpired {
+                            subtask_id: subtask.id.clone(),
+                            reason: "hops_exhausted".into(),
+                        },
+                    ));
+                    return Err(ExecutorError::Correctable(format!(
+                        "subtask '{}' TTL hops exhausted",
+                        subtask.id
+                    )));
+                }
+            }
+        }
+
+        let wall_clock_deadline: Option<Instant> = subtask
+            .ttl
+            .as_ref()
+            .and_then(|t| t.max_wall_clock)
+            .map(|d| Instant::now() + d);
+
         // Audit: subtask start. agent_id isn't known until the runner returns.
         self.audit_log.record(AuditEvent::new(
             AgentId::from_uuid(uuid::Uuid::nil()),
@@ -338,9 +366,15 @@ impl PlanExecutor {
             max_iterations: (role.retry.max_attempts + 10).max(10),
         };
 
-        let result = (self.runner)(subtask.id.clone(), manifest_yaml, message, overrides)
-            .await
-            .map_err(ExecutorError::Terminal)?;
+        let result = (self.runner)(
+            subtask.id.clone(),
+            manifest_yaml,
+            message,
+            overrides,
+            wall_clock_deadline,
+        )
+        .await
+        .map_err(ExecutorError::Terminal)?;
         Ok(result)
     }
 }
@@ -487,7 +521,7 @@ mod tests {
     }
 
     fn stub_runner() -> SubtaskRunner {
-        Arc::new(|id, _manifest, _msg, _overrides| {
+        Arc::new(|id, _manifest, _msg, _overrides, _deadline| {
             Box::pin(async move {
                 Ok(SubtaskResult {
                     subtask_id: id,
@@ -554,7 +588,7 @@ mod tests {
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter_clone = counter.clone();
-        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _overrides| {
+        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _overrides, _deadline| {
             let c = counter_clone.clone();
             Box::pin(async move {
                 c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -726,7 +760,7 @@ mod tests {
         let cat = Arc::new(fetcher_catalog());
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         // Runner that always fails — simulates a fetch that blew up.
-        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o| {
+        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o, _deadline| {
             Box::pin(async move { Err(CoreError::Ipc("HTTP 404".into())) })
         });
         let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
@@ -855,7 +889,7 @@ mod tests {
     async fn failed_subtask_emits_subtask_completed_success_false() {
         let cat = Arc::new(fetcher_catalog());
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
-        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o| {
+        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o, _deadline| {
             Box::pin(async move { Err(CoreError::Ipc("boom".into())) })
         });
         let audit_concrete = Arc::new(InMemoryAuditLog::new());
@@ -899,7 +933,7 @@ mod tests {
         // and the failing one must produce SubtaskCompleted{success:false}.
         let cat = Arc::new(fetcher_catalog());
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
-        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o| {
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline| {
             Box::pin(async move {
                 if id == "bad" {
                     Err(CoreError::Ipc("HTTP 500".into()))
@@ -975,7 +1009,7 @@ mod tests {
         let scripted = Arc::new(ScriptedLlm::new(vec![plan_try1.into(), plan_try2.into()]));
         let planner = Arc::new(Planner::new(scripted, "deepseek-chat".into()));
 
-        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o| {
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline| {
             Box::pin(async move {
                 if id == "try1" {
                     Err(CoreError::Ipc("HTTP 404".into()))
@@ -1008,5 +1042,60 @@ mod tests {
             .iter()
             .any(|e| matches!(&e.event, AuditEventKind::PlanReplanned { .. }));
         assert!(replanned, "expected PlanReplanned audit event");
+    }
+
+    #[tokio::test]
+    async fn hop_exhaustion_fails_subtask_before_launch() {
+        use aaos_core::TaskTtl;
+
+        // Same catalog pattern as other tests — fetcher_catalog() already
+        // provides a "fetcher" role. We just need a subtask with max_hops=0.
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let audit_trait: Arc<dyn AuditLog> = audit.clone();
+        let exec = PlanExecutor::new(
+            cat,
+            planner,
+            stub_runner(),
+            audit_trait,
+            std::env::temp_dir(),
+        );
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "expired".into(),
+                role: "fetcher".into(),
+                params: serde_json::json!({"url": "https://x.com", "workspace": "/tmp/x"}),
+                depends_on: vec![],
+                ttl: Some(TaskTtl {
+                    max_hops: Some(0),
+                    max_wall_clock: None,
+                }),
+            }],
+            final_output: "expired".into(),
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        assert!(
+            matches!(&result, Err(ExecutorError::Correctable(_))),
+            "expected hop-exhausted subtask to produce Correctable failure; got {:?}",
+            result.as_ref().err()
+        );
+
+        let expired: Vec<_> = audit
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(&e.event, AuditEventKind::SubtaskTtlExpired { subtask_id, reason }
+                    if subtask_id == "expired" && reason == "hops_exhausted")
+            })
+            .collect();
+        assert_eq!(
+            expired.len(),
+            1,
+            "expected exactly one SubtaskTtlExpired event with reason=hops_exhausted"
+        );
     }
 }

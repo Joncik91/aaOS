@@ -225,14 +225,15 @@ impl Server {
             return;
         };
         let server_weak = self.clone();
-        let runner: SubtaskRunner =
-            Arc::new(move |subtask_id, manifest_yaml, message, overrides| {
+        let runner: SubtaskRunner = Arc::new(
+            move |subtask_id, manifest_yaml, message, overrides, _deadline| {
                 let s = server_weak.clone();
                 Box::pin(async move {
                     s.run_subtask_inline(&subtask_id, &manifest_yaml, &message, overrides)
                         .await
                 })
-            });
+            },
+        );
 
         // Build the scaffold runner — deterministic runtime-side execution
         // for roles with `scaffold: {kind: ...}`. Handles "fetcher" today;
