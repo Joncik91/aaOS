@@ -63,6 +63,16 @@ pub struct Server {
     /// `InProcessBackend`; a later commit introduces
     /// `NamespacedBackend` behind the same trait.
     pub backend: Arc<dyn AgentBackend>,
+    /// Reasoning-slot scheduler. Awards inference slots with TTL-aware
+    /// priority. One per server. Replaces the role that
+    /// `aaos_llm::ScheduledLlmClient` played before Phase F-b — that
+    /// client remains in-tree for code paths that don't go through
+    /// `run_subtask_inline`, but production plan-executor traffic is
+    /// now scheduler-gated.
+    pub(crate) reasoning_scheduler: Arc<aaos_runtime::scheduler::ReasoningScheduler>,
+    /// Per-subtask wall-clock tracker. Queried by the TTL watcher; Gap 2
+    /// will add a per-model variant implementing the same trait.
+    pub(crate) latency_tracker: Arc<dyn aaos_runtime::LatencyTracker>,
 }
 
 impl Server {
@@ -226,10 +236,10 @@ impl Server {
         };
         let server_weak = self.clone();
         let runner: SubtaskRunner = Arc::new(
-            move |subtask_id, manifest_yaml, message, overrides, _deadline| {
+            move |subtask_id, manifest_yaml, message, overrides, deadline| {
                 let s = server_weak.clone();
                 Box::pin(async move {
-                    s.run_subtask_inline(&subtask_id, &manifest_yaml, &message, overrides)
+                    s.run_subtask_inline(&subtask_id, &manifest_yaml, &message, overrides, deadline)
                         .await
                 })
             },
@@ -436,6 +446,7 @@ impl Server {
         manifest_yaml: &str,
         message: &str,
         overrides: SubtaskExecutorOverrides,
+        deadline: Option<std::time::Instant>,
     ) -> Result<SubtaskResult, aaos_core::CoreError> {
         // Parse the rendered manifest.
         let manifest = aaos_core::AgentManifest::from_yaml(manifest_yaml)
@@ -457,7 +468,9 @@ impl Server {
         // role's budget (max_output_tokens) + retry (max_iterations) so
         // the per-role YAML actually constrains the LLM call.
         let response = self
-            .execute_agent_for_subtask(agent_id, &manifest, message, overrides)
+            .execute_agent_for_subtask(
+                agent_id, &manifest, message, overrides, subtask_id, deadline,
+            )
             .await?;
 
         Ok(SubtaskResult {
@@ -484,10 +497,27 @@ impl Server {
         manifest: &aaos_core::AgentManifest,
         first_message: &str,
         overrides: SubtaskExecutorOverrides,
+        subtask_id: &str,
+        deadline: Option<std::time::Instant>,
     ) -> Result<String, aaos_core::CoreError> {
-        let llm = self.llm_client.clone().ok_or_else(|| {
+        let raw_llm = self.llm_client.clone().ok_or_else(|| {
             aaos_core::CoreError::Ipc("no LLM client configured for subtask execution".into())
         })?;
+
+        // Wrap the real client with a per-subtask SchedulerView so every
+        // complete() call routes through the reasoning scheduler and
+        // records elapsed time in the latency tracker. Priority from
+        // role YAML comes in a follow-up; for now use the default mid-
+        // bucket (128).
+        let llm: Arc<dyn aaos_llm::LlmClient> =
+            Arc::new(aaos_runtime::scheduler::SchedulerView::new(
+                raw_llm,
+                self.reasoning_scheduler.clone(),
+                self.latency_tracker.clone(),
+                subtask_id.to_string(),
+                128,
+                deadline,
+            ));
 
         // Emit execution started audit event (correlated to the subtask
         // child via agent_id).
@@ -608,6 +638,17 @@ impl Server {
             None,
         );
 
+        // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
+        // Slot count honors AAOS_MAX_CONCURRENT_INFERENCE (existing env var;
+        // default 3). SchedulerView wraps the LLM client per subtask.
+        let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3);
+        let reasoning_scheduler = aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent);
+        let latency_tracker: Arc<dyn aaos_runtime::LatencyTracker> =
+            Arc::new(aaos_runtime::SubtaskWallClockTracker::new());
+
         Self {
             registry,
             tool_registry,
@@ -627,6 +668,8 @@ impl Server {
             embedding_source,
             skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
             backend,
+            reasoning_scheduler,
+            latency_tracker,
         }
     }
 
@@ -785,6 +828,15 @@ impl Server {
 
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
+        // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
+        let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3);
+        let reasoning_scheduler = aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent);
+        let latency_tracker: Arc<dyn aaos_runtime::LatencyTracker> =
+            Arc::new(aaos_runtime::SubtaskWallClockTracker::new());
+
         let server = Arc::new(Self {
             registry,
             tool_registry,
@@ -804,6 +856,8 @@ impl Server {
             embedding_source,
             skill_registry,
             backend,
+            reasoning_scheduler,
+            latency_tracker,
         });
         server.install_plan_executor_runner();
         server
@@ -903,6 +957,15 @@ impl Server {
 
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
+        // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
+        let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3);
+        let reasoning_scheduler = aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent);
+        let latency_tracker: Arc<dyn aaos_runtime::LatencyTracker> =
+            Arc::new(aaos_runtime::SubtaskWallClockTracker::new());
+
         let server = Arc::new(Self {
             registry,
             tool_registry,
@@ -922,6 +985,8 @@ impl Server {
             embedding_source,
             skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
             backend,
+            reasoning_scheduler,
+            latency_tracker,
         });
         server.install_plan_executor_runner();
         server
@@ -2666,7 +2731,13 @@ model: claude-haiku-4-5-20251001
 system_prompt: "test subtask"
 "#;
         let result = server
-            .run_subtask_inline("t1", yaml, "hello", SubtaskExecutorOverrides::default())
+            .run_subtask_inline(
+                "t1",
+                yaml,
+                "hello",
+                SubtaskExecutorOverrides::default(),
+                None,
+            )
             .await
             .expect("subtask should run to completion");
         assert_eq!(result.subtask_id, "t1");
