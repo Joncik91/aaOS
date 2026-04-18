@@ -3,6 +3,8 @@ pub mod approval;
 pub mod broadcast_audit;
 pub mod cli;
 pub mod config;
+#[cfg(feature = "mcp")]
+pub mod mcp_backend;
 pub mod server;
 pub mod spawn_agents_tool;
 pub mod spawn_tool;

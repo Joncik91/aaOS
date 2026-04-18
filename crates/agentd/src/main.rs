@@ -65,6 +65,39 @@ async fn main() -> anyhow::Result<()> {
                 Arc::new(Server::new())
             };
 
+            // Wire MCP client + server (feature-gated; no-op when disabled).
+            #[cfg(feature = "mcp")]
+            {
+                use aaos_mcp::config::McpConfig;
+                match McpConfig::load() {
+                    Ok(Some(mcp_cfg)) => {
+                        let _mcp_client = aaos_mcp::client::McpClient::connect_and_register(
+                            &mcp_cfg.client,
+                            &server.tool_registry,
+                        )
+                        .await;
+
+                        if mcp_cfg.server.enabled {
+                            let backend: std::sync::Arc<dyn aaos_mcp::server::McpServerBackend> =
+                                server.clone();
+                            let bind = mcp_cfg.server.bind.clone();
+                            tokio::spawn(async move {
+                                let mcp_server = aaos_mcp::server::McpServer::new(backend, bind);
+                                if let Err(e) = mcp_server.start().await {
+                                    tracing::warn!("MCP server error: {e}");
+                                }
+                            });
+                        }
+                    }
+                    Ok(None) => {
+                        tracing::debug!("no /etc/aaos/mcp-servers.yaml — MCP disabled");
+                    }
+                    Err(e) => {
+                        tracing::warn!("failed to load MCP config: {e} — MCP disabled");
+                    }
+                }
+            }
+
             server.listen(&socket).await?;
         }
         Command::Submit {

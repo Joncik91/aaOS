@@ -1865,7 +1865,7 @@ impl Server {
     /// Ensure a Bootstrap agent is running. If one is already in the registry
     /// (by manifest name "bootstrap", in Running state), return its id.
     /// Otherwise load `/etc/aaos/manifests/bootstrap.yaml` and spawn it.
-    async fn ensure_bootstrap_running(&self) -> anyhow::Result<aaos_core::AgentId> {
+    pub(crate) async fn ensure_bootstrap_running(&self) -> anyhow::Result<aaos_core::AgentId> {
         for info in self.registry.list() {
             if info.name == "bootstrap" && info.state == AgentState::Running {
                 return Ok(info.id);
@@ -1905,7 +1905,7 @@ impl Server {
 
     /// Deliver a goal message to an already-running agent via the router.
     /// Mirrors the persistent-agent branch of `handle_agent_run`.
-    async fn route_goal_to(&self, target: aaos_core::AgentId, goal: &str) -> anyhow::Result<()> {
+    pub(crate) async fn route_goal_to(&self, target: aaos_core::AgentId, goal: &str) -> anyhow::Result<()> {
         let msg =
             aaos_ipc::McpMessage::new(target, target, "agent.run", json!({ "message": goal }));
         self.router
