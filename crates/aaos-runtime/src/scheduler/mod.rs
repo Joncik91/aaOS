@@ -8,9 +8,11 @@
 use aaos_core::AgentId;
 
 pub mod latency;
+pub mod per_model_latency;
 pub mod view;
 
 pub use latency::{LatencyTracker, SubtaskWallClockTracker};
+pub use per_model_latency::{ModelSampleRing, PerModelLatencyTracker};
 pub use view::SchedulerView;
 
 /// Priority level for agent scheduling.
