@@ -3,7 +3,7 @@
 //! client, then records wall-clock elapsed in the latency tracker.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_trait::async_trait;
 
@@ -62,6 +62,7 @@ impl LlmClient for SchedulerView {
 mod tests {
     use super::*;
     use crate::scheduler::SubtaskWallClockTracker;
+    use std::time::Duration;
 
     use aaos_core::{AgentId, TokenUsage};
     use aaos_llm::{ContentBlock, LlmStopReason, Message};
