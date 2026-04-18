@@ -7,7 +7,7 @@ use tokio::sync::RwLock;
 
 pub struct McpSession {
     name: String,
-    transport: Arc<dyn McpTransport>,
+    transport: RwLock<Arc<dyn McpTransport>>,
     tools: RwLock<Vec<McpToolDefinition>>,
     healthy: AtomicBool,
     next_id: AtomicU64,
@@ -21,7 +21,7 @@ impl McpSession {
     ) -> Result<Arc<Self>, McpError> {
         let session = Arc::new(Self {
             name,
-            transport,
+            transport: RwLock::new(transport),
             tools: RwLock::new(vec![]),
             healthy: AtomicBool::new(false),
             next_id: AtomicU64::new(1),
@@ -31,10 +31,11 @@ impl McpSession {
     }
 
     async fn handshake(&self) -> Result<(), McpError> {
+        let transport = self.transport.read().await.clone();
+
         // initialize
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let resp = self
-            .transport
+        let resp = transport
             .send(JsonRpcRequest::new(
                 id,
                 "initialize",
@@ -51,8 +52,7 @@ impl McpSession {
 
         // tools/list
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let resp = self
-            .transport
+        let resp = transport
             .send(JsonRpcRequest::new(id, "tools/list", json!({})))
             .await?;
         if let Some(err) = resp.error {
@@ -91,9 +91,9 @@ impl McpSession {
         if !self.is_healthy() {
             return Err(McpError::Unhealthy);
         }
+        let transport = self.transport.read().await.clone();
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let resp = self
-            .transport
+        let resp = transport
             .send(JsonRpcRequest::new(
                 id,
                 "tools/call",
@@ -144,6 +144,7 @@ impl McpSession {
             .unwrap_or_default();
 
         *self.tools.write().await = tools;
+        *self.transport.write().await = transport;
         self.healthy.store(true, Ordering::Relaxed);
         Ok(())
     }
