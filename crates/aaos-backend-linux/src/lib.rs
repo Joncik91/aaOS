@@ -30,6 +30,50 @@ pub mod landlock_compile;
 pub mod seccomp_compile;
 pub mod worker;
 
+/// Detect whether the host permits the mount operations the backend
+/// needs inside an unprivileged user+mount namespace. Forks a child,
+/// unshares CLONE_NEWUSER|CLONE_NEWNS, and tries a tmpfs mount in
+/// /tmp. Returns true iff the mount succeeds.
+///
+/// Used by integration tests to skip on CI environments (GitHub
+/// Actions Azure runners) where AppArmor or similar LSMs deny
+/// unprivileged-userns mount operations despite
+/// `kernel.unprivileged_userns_clone=1`. Dev boxes and DO droplets
+/// return true.
+#[cfg(target_os = "linux")]
+pub fn probe_mount_capable() -> bool {
+    use nix::sched::{unshare, CloneFlags};
+    use nix::sys::wait::{waitpid, WaitStatus};
+    use nix::unistd::{fork, ForkResult};
+
+    // SAFETY: the child immediately unshares and calls exit; it does
+    // not return to the caller. The parent only waits for its status.
+    match unsafe { fork() } {
+        Ok(ForkResult::Child) => {
+            if unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS).is_err() {
+                std::process::exit(2);
+            }
+            let path = format!("/tmp/aaos-probe-{}", std::process::id());
+            if std::fs::create_dir_all(&path).is_err() {
+                std::process::exit(3);
+            }
+            let mounted = nix::mount::mount::<str, str, str, str>(
+                Some("tmpfs"),
+                path.as_str(),
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("size=1M"),
+            );
+            let _ = std::fs::remove_dir_all(&path);
+            std::process::exit(if mounted.is_ok() { 0 } else { 1 });
+        }
+        Ok(ForkResult::Parent { child }) => {
+            matches!(waitpid(child, None), Ok(WaitStatus::Exited(_, 0)))
+        }
+        Err(_) => false,
+    }
+}
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -858,48 +902,6 @@ impl AgentBackend for NamespacedBackend {
 mod tests {
     use super::*;
 
-    /// Detect whether the host permits the mount operations the backend
-    /// needs inside an unprivileged user+mount namespace. Forks a child,
-    /// unshares CLONE_NEWUSER|CLONE_NEWNS, and tries a tmpfs mount in
-    /// /tmp. Returns true iff the mount succeeds. Used to skip the e2e
-    /// test on CI environments where AppArmor or similar LSMs deny
-    /// unprivileged-userns mount operations despite
-    /// `unprivileged_userns_clone=1`.
-    #[cfg(target_os = "linux")]
-    fn probe_mount_capable() -> bool {
-        use nix::sched::{unshare, CloneFlags};
-        use nix::sys::wait::{waitpid, WaitStatus};
-        use nix::unistd::{fork, ForkResult};
-
-        // SAFETY: fork in a test context; the child immediately unshares
-        // and exits, does not return control to the tokio runtime.
-        match unsafe { fork() } {
-            Ok(ForkResult::Child) => {
-                if unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS).is_err() {
-                    std::process::exit(2);
-                }
-                let path = format!("/tmp/aaos-probe-{}", std::process::id());
-                if std::fs::create_dir_all(&path).is_err() {
-                    std::process::exit(3);
-                }
-                let mounted = nix::mount::mount::<str, str, str, str>(
-                    Some("tmpfs"),
-                    path.as_str(),
-                    Some("tmpfs"),
-                    nix::mount::MsFlags::empty(),
-                    Some("size=1M"),
-                );
-                let _ = std::fs::remove_dir_all(&path);
-                std::process::exit(if mounted.is_ok() { 0 } else { 1 });
-            }
-            Ok(ForkResult::Parent { child }) => match waitpid(child, None) {
-                Ok(WaitStatus::Exited(_, 0)) => true,
-                _ => false,
-            },
-            Err(_) => false,
-        }
-    }
-
     #[test]
     fn config_default_has_no_user_data_paths() {
         let cfg = NamespacedBackendConfig::default();
@@ -997,7 +999,7 @@ mod tests {
         // on the readiness timeout. See child-steps.log diagnostics in
         // CI runs 24608722044 / 24608802200 / 24608876000 for the
         // empirical evidence.
-        if !probe_mount_capable() {
+        if !super::probe_mount_capable() {
             eprintln!(
                 "SKIP: host forbids mount operations inside user namespaces \
                  (likely GitHub Actions or other LSM-restricted CI). \

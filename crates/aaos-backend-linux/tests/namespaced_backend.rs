@@ -12,9 +12,28 @@
 
 #![cfg(target_os = "linux")]
 
-use aaos_backend_linux::{NamespacedBackend, NamespacedBackendConfig, NamespacedState};
+use aaos_backend_linux::{
+    probe_mount_capable, NamespacedBackend, NamespacedBackendConfig, NamespacedState,
+};
 use aaos_core::{AgentBackend, AgentId, AgentLaunchSpec, AgentManifest, BackendHealth};
 use std::path::{Path, PathBuf};
+
+/// Returns true and prints a SKIP message if the host forbids mount
+/// operations inside unprivileged user+mount namespaces (e.g. GitHub
+/// Actions Azure runners with AppArmor restrictions). Tests should
+/// early-return when this returns true. See `probe_mount_capable`
+/// doc for background.
+fn should_skip_namespaced_test() -> bool {
+    if probe_mount_capable() {
+        return false;
+    }
+    eprintln!(
+        "SKIP: host forbids mount operations inside user namespaces \
+         (likely GitHub Actions or other LSM-restricted CI). \
+         Run this test on a real Linux host (dev box or DO droplet)."
+    );
+    true
+}
 
 /// Build a backend config with a session dir in a tempdir and the
 /// worker binary resolved to an absolute path under the workspace's
@@ -56,6 +75,9 @@ system_prompt: "integration test"
 #[tokio::test]
 #[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
 async fn launch_reaches_sandboxed_ready() {
+    if should_skip_namespaced_test() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let backend =
         NamespacedBackend::new(test_config(tmp.path())).expect("Landlock supported on this kernel");
@@ -70,6 +92,9 @@ async fn launch_reaches_sandboxed_ready() {
 #[tokio::test]
 #[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
 async fn stop_is_idempotent() {
+    if should_skip_namespaced_test() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
     let handle = backend.launch(sample_spec()).await.unwrap();
@@ -88,6 +113,9 @@ async fn health_detects_exit() {
     use nix::sys::signal::{kill, Signal};
     use nix::unistd::Pid;
 
+    if should_skip_namespaced_test() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
     let handle = backend.launch(sample_spec()).await.unwrap();
@@ -124,6 +152,9 @@ async fn ping_roundtrips_over_persistent_stream() {
     // the worker echoes it, `send_ping` asserts they match.
     use std::time::Duration;
 
+    if should_skip_namespaced_test() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
     let spec = sample_spec();
@@ -166,6 +197,9 @@ async fn worker_cannot_execve() {
     use aaos_backend_linux::broker_protocol::PokeOp;
     use std::time::Duration;
 
+    if should_skip_namespaced_test() {
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
     let spec = sample_spec();
