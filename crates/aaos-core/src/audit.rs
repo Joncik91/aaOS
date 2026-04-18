@@ -176,6 +176,11 @@ pub enum AuditEventKind {
         subtask_id: String,
         success: bool,
     },
+    SubtaskTtlExpired {
+        subtask_id: String,
+        /// Short machine-readable reason: "hops_exhausted" | "wall_clock_exceeded" | "dependency_ttl_cascade".
+        reason: String,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
@@ -572,6 +577,23 @@ mod tests {
             let original = serde_json::to_string(&e.event).unwrap();
             let rebuilt = serde_json::to_string(&back.event).unwrap();
             assert_eq!(original, rebuilt);
+        }
+    }
+
+    #[test]
+    fn subtask_ttl_expired_variant_roundtrips() {
+        let e = AuditEventKind::SubtaskTtlExpired {
+            subtask_id: "s1".into(),
+            reason: "wall_clock_exceeded".into(),
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        let back: AuditEventKind = serde_json::from_str(&s).unwrap();
+        match back {
+            AuditEventKind::SubtaskTtlExpired { subtask_id, reason } => {
+                assert_eq!(subtask_id, "s1");
+                assert_eq!(reason, "wall_clock_exceeded");
+            }
+            _ => panic!("wrong variant"),
         }
     }
 }
