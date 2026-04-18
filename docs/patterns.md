@@ -503,3 +503,59 @@ where weeks get lost.
 Derived from commits `4ad37a3` through `9d278ba` — seven-commit CI
 sequence that went from red-for-a-day to green once the first commit
 was "make the failure visible."
+
+## A unit test of a per-step mutation isn't a test of the sequence
+
+When a feature mutates a type across multiple steps (decrement a
+counter, increment a retry index, append to a history), a unit test
+that hard-codes the final state on entry is a tautology — it tests
+the branch taken at that state, not the path that leads there. If
+the test for a refuse-on-zero check literally sets `max_hops: 0`
+and asserts refusal, the decrement step can be entirely missing
+from the call graph and the test still passes.
+
+Phase F-b sub-project 1 shipped TTL-hops with a full-green suite
+including a unit test for `TaskTtl::decrement_hops`, a planner test
+for `apply_ttl_fallback`, and an inline integration test
+`hop_exhaustion_fails_subtask_before_launch`. All green. Every one
+tested a slice in isolation. None tested a 4-subtask plan arriving
+with `max_hops: Some(3)` and stepping down to refused at subtask D.
+The feature shipped non-functional — `decrement_hops` had zero
+callers in production code — and only surfaced on the first
+on-droplet e2e run.
+
+**Rule.** For any "decrement / advance / tick" type, the primary
+test must exercise the full sequence at real call sites, not just
+the final-state branch. If the test sets the input equal to the
+boundary condition it's checking, it's a tautology. Drive it from
+the state BEFORE the boundary and assert the walk reaches the
+boundary through the real path.
+
+Derived from the 2026-04-18 Phase F-b sub-project 1 e2e QA (see
+`docs/reflection/2026-04-18-f-b1-e2e-qa.md` BUG #5).
+
+## First on-production exercise finds what unit + CI never will
+
+Phase F-b sub-project 1 passed two-stage subagent-driven review on
+18 commits + full green CI on a real Ubuntu runner. First 20
+minutes driving the shipped binary on a Debian 13 droplet with a
+real LLM key surfaced seven distinct bugs, including one that
+shipped the marquee feature non-functional and one UX regression
+that made the first bug harder to detect.
+
+Reviewers catch correctness-per-commit but can't catch "this whole
+feature is non-functional when threaded through the real code
+path." Integration CI on a test host can't catch "the packaging
+postinst never starts the service" because integration CI pre-
+installs what it needs to exercise. The things that only surface
+in production surface only in production.
+
+**Rule.** Definition of Done for every Phase F sub-project
+includes a first-on-production e2e run against a real fresh host.
+Not a Docker container (matches CI too closely), not a local VM
+with existing state — a fresh cloud host installed from the shipped
+artifact with real credentials. Write the run as a reflection
+entry; every surfaced bug is expected, not embarrassing.
+
+Derived from the 2026-04-18 Phase F-b sub-project 1 e2e QA — see
+`docs/reflection/2026-04-18-f-b1-e2e-qa.md`.
