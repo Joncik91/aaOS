@@ -202,3 +202,38 @@ async fn get_agent_status_returns_running() {
     // the string "running" (unit variant → lowercase string).
     assert_eq!(resp["result"], json!("running"), "expected RunStatus::Running");
 }
+
+/// Build the echo-mcp-server binary, then run a full StdioTransport round-trip.
+#[tokio::test]
+#[ignore = "builds a child binary; run with cargo test -- --ignored"]
+async fn stdio_transport_echo_roundtrip() {
+    use aaos_mcp::client::{
+        session::McpSession,
+        transport::StdioTransport,
+    };
+
+    let fixture_dir = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/echo-mcp-server"
+    );
+    let manifest_path = format!("{fixture_dir}/Cargo.toml");
+
+    // Build the echo server
+    let status = std::process::Command::new("cargo")
+        .args(["build", "--manifest-path", &manifest_path])
+        .status()
+        .expect("cargo build");
+    assert!(status.success(), "echo-mcp-server build failed");
+
+    let binary = format!("{fixture_dir}/target/debug/echo-mcp-server");
+    let transport = StdioTransport::spawn(vec![binary]).expect("spawn");
+    let session = McpSession::connect("echo".into(), transport).await.unwrap();
+
+    assert!(session.is_healthy());
+    let tools = session.tools().await;
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "echo");
+
+    let result = session.call("echo", serde_json::json!({ "message": "hello" })).await.unwrap();
+    assert_eq!(result["echoed"]["message"], "hello");
+}

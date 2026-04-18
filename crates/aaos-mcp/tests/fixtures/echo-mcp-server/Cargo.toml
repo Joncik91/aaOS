@@ -1,0 +1,10 @@
+[package]
+name = "echo-mcp-server"
+version = "0.1.0"
+edition = "2021"
+
+# Empty [workspace] keeps this crate out of the parent workspace.
+[workspace]
+
+[dependencies]
+serde_json = "1"
