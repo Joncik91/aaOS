@@ -47,6 +47,9 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -W clippy::all
         continue-on-error: true
 
+      - name: cargo check --features mcp
+        run: cargo check -p agentd --features mcp
+
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
@@ -116,3 +119,6 @@ jobs:
       # Run those separately with the feature enabled.
       - name: cargo test -p agentd --features namespaced-agents -- --ignored
         run: cargo test -p agentd --features namespaced-agents --quiet -- --ignored
+
+      - name: cargo test -p aaos-mcp -- --ignored
+        run: cargo test -p aaos-mcp --quiet -- --ignored

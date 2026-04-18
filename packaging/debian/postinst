@@ -20,6 +20,12 @@ case "$1" in
               --no-create-home --shell /usr/sbin/nologin aaos
     fi
 
+    # Ensure the configuration directory exists. The daemon reads
+    # /etc/aaos/mcp-servers.yaml (MCP integration) from here at startup;
+    # the directory must exist even when the file is absent so operators
+    # can drop config files in place without restarting the package.
+    mkdir -p /etc/aaos
+
     # Lock down the env file (LLM API keys live here). systemd reads
     # EnvironmentFile= as root before de-privileging to User=aaos, so
     # 0600 root:root is enough for the service to start while denying
