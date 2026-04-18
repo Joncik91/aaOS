@@ -13,8 +13,14 @@ use std::sync::Arc;
 /// POST /mcp — JSON-RPC dispatcher.
 pub async fn handle_jsonrpc(
     State(backend): State<Arc<dyn McpServerBackend>>,
-    Json(req): Json<JsonRpcRequest>,
+    body: Result<Json<JsonRpcRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Json<JsonRpcResponse> {
+    let Json(req) = match body {
+        Ok(j) => j,
+        Err(_) => {
+            return Json(JsonRpcResponse::error(Value::Null, -32700, "Parse error"));
+        }
+    };
     let resp = match req.method.as_str() {
         "initialize" => JsonRpcResponse::success(
             req.id,
@@ -72,7 +78,7 @@ pub async fn handle_jsonrpc(
 }
 
 async fn dispatch_tool_call(
-    id: u64,
+    id: Value,
     params: &Value,
     backend: Arc<dyn McpServerBackend>,
 ) -> JsonRpcResponse {
