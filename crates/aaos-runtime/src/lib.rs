@@ -16,7 +16,10 @@ pub use handoff::{wrap_initial_message, HandoffContext, MAX_PRIOR_FINDINGS_BYTES
 pub use persistent::persistent_agent_loop;
 pub use process::{AgentCommand, AgentInfo, AgentProcess, AgentState};
 pub use registry::AgentRegistry;
-pub use scheduler::{Priority, RoundRobinScheduler, ScheduleEntry, Scheduler};
+pub use scheduler::{
+    LatencyTracker, Priority, RoundRobinScheduler, ScheduleEntry, Scheduler,
+    SubtaskWallClockTracker,
+};
 pub use services::InProcessAgentServices;
 pub use session::{ArchiveSegment, InMemorySessionStore, JsonlSessionStore, SessionStore};
 pub use supervisor::{RestartPolicy, SupervisedAgent, SupervisorConfig};
