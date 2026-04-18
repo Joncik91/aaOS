@@ -559,6 +559,25 @@ impl Server {
         Ok(result.response)
     }
 
+    /// Build the reasoning-slot scheduler + latency tracker used by
+    /// `run_subtask_inline`. Factored out of the three constructors
+    /// (new, with_llm_and_audit, with_memory) so they can't silently
+    /// diverge — a changed env-var name or default would otherwise
+    /// need to be updated in three places. See Phase F-b design.
+    fn build_scheduler_and_tracker() -> (
+        Arc<aaos_runtime::scheduler::ReasoningScheduler>,
+        Arc<dyn aaos_runtime::LatencyTracker>,
+    ) {
+        let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(3);
+        (
+            aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent),
+            Arc::new(aaos_runtime::SubtaskWallClockTracker::new()),
+        )
+    }
+
     /// Create a new server with default configuration.
     pub fn new() -> Self {
         let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
@@ -641,13 +660,7 @@ impl Server {
         // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
         // Slot count honors AAOS_MAX_CONCURRENT_INFERENCE (existing env var;
         // default 3). SchedulerView wraps the LLM client per subtask.
-        let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(3);
-        let reasoning_scheduler = aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent);
-        let latency_tracker: Arc<dyn aaos_runtime::LatencyTracker> =
-            Arc::new(aaos_runtime::SubtaskWallClockTracker::new());
+        let (reasoning_scheduler, latency_tracker) = Self::build_scheduler_and_tracker();
 
         Self {
             registry,
@@ -829,13 +842,7 @@ impl Server {
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
         // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
-        let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(3);
-        let reasoning_scheduler = aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent);
-        let latency_tracker: Arc<dyn aaos_runtime::LatencyTracker> =
-            Arc::new(aaos_runtime::SubtaskWallClockTracker::new());
+        let (reasoning_scheduler, latency_tracker) = Self::build_scheduler_and_tracker();
 
         let server = Arc::new(Self {
             registry,
@@ -958,13 +965,7 @@ impl Server {
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
         // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
-        let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(3);
-        let reasoning_scheduler = aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent);
-        let latency_tracker: Arc<dyn aaos_runtime::LatencyTracker> =
-            Arc::new(aaos_runtime::SubtaskWallClockTracker::new());
+        let (reasoning_scheduler, latency_tracker) = Self::build_scheduler_and_tracker();
 
         let server = Arc::new(Self {
             registry,
