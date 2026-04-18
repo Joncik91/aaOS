@@ -69,11 +69,11 @@ agents. This package installs the daemon plus the default bootstrap manifest.
 depends = "$auto, systemd, ca-certificates, ripgrep"
 section = "admin"
 priority = "optional"
-# The aaos-agent-worker binary is shipped as an asset but `cargo deb -p agentd`
-# by default only builds the agentd binary. Build the worker explicitly before
-# packaging so the asset resolves without the operator having to know.
-# (BUG #1 from the 2026-04-18 e2e QA reflection.)
-pre-build-command = "cargo build --release -p aaos-backend-linux --bin aaos-agent-worker"
+# cargo-deb (tested through v3.6.3) does not expose a pre-build hook in the
+# [package.metadata.deb] table. The `aaos-agent-worker` binary is shipped as
+# an asset below but `cargo deb -p agentd` alone does not build it. Use the
+# one-step wrapper `packaging/build-deb.sh` which builds both binaries and
+# then packs. See the BUG #1 note in packaging/build-deb.sh for context.
 assets = [
   ["../../target/release/agentd", "usr/bin/", "755"],
   ["../../target/release/aaos-agent-worker", "usr/bin/", "755"],
