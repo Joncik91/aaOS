@@ -181,6 +181,20 @@ pub enum AuditEventKind {
         /// Short machine-readable reason: "hops_exhausted" | "wall_clock_exceeded" | "dependency_ttl_cascade".
         reason: String,
     },
+    SubtaskModelEscalated {
+        subtask_id: String,
+        from_tier: u8,
+        to_tier: u8,
+        from_model: String,
+        to_model: String,
+        /// Machine-readable reason: "replan_retry" | "tool_repeat_guard" | "max_tokens".
+        reason: String,
+    },
+    ToolRepeatGuardFired {
+        agent_id: crate::AgentId,
+        tool: String,
+        attempt_count: u32,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
@@ -592,6 +606,61 @@ mod tests {
             AuditEventKind::SubtaskTtlExpired { subtask_id, reason } => {
                 assert_eq!(subtask_id, "s1");
                 assert_eq!(reason, "wall_clock_exceeded");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn subtask_model_escalated_variant_roundtrips() {
+        let e = AuditEventKind::SubtaskModelEscalated {
+            subtask_id: "s1".into(),
+            from_tier: 0,
+            to_tier: 1,
+            from_model: "deepseek-chat".into(),
+            to_model: "deepseek-reasoner".into(),
+            reason: "replan_retry".into(),
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        let back: AuditEventKind = serde_json::from_str(&s).unwrap();
+        match back {
+            AuditEventKind::SubtaskModelEscalated {
+                subtask_id,
+                from_tier,
+                to_tier,
+                from_model,
+                to_model,
+                reason,
+            } => {
+                assert_eq!(subtask_id, "s1");
+                assert_eq!(from_tier, 0);
+                assert_eq!(to_tier, 1);
+                assert_eq!(from_model, "deepseek-chat");
+                assert_eq!(to_model, "deepseek-reasoner");
+                assert_eq!(reason, "replan_retry");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn tool_repeat_guard_fired_variant_roundtrips() {
+        use crate::AgentId;
+        let e = AuditEventKind::ToolRepeatGuardFired {
+            agent_id: AgentId::new(),
+            tool: "web_fetch".into(),
+            attempt_count: 3,
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        let back: AuditEventKind = serde_json::from_str(&s).unwrap();
+        match back {
+            AuditEventKind::ToolRepeatGuardFired {
+                tool,
+                attempt_count,
+                ..
+            } => {
+                assert_eq!(tool, "web_fetch");
+                assert_eq!(attempt_count, 3);
             }
             _ => panic!("wrong variant"),
         }
