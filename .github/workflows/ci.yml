@@ -99,6 +99,12 @@ jobs:
           uname -a
           sysctl kernel.unprivileged_userns_clone 2>/dev/null || true
 
+      # Build the worker binary that namespaced-backend integration tests
+      # need. The tests assert the binary exists before launching; without
+      # this step they panic with a missing-binary error.
+      - name: Build worker binary
+        run: cargo build -p aaos-backend-linux --bin aaos-agent-worker
+
       # --ignored runs the #[ignore]-gated tests across the workspace.
       # Picks up ripgrep-backed grep tests, git_commit tests, and other
       # host-tool-dependent tests in aaos-tools.
