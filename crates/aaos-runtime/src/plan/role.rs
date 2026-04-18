@@ -786,4 +786,19 @@ retry: { max_attempts: 1 }
             "missing priority defaults to 128 (mid-bucket)"
         );
     }
+
+    #[test]
+    fn role_priority_explicit_value_roundtrips() {
+        let yaml = r#"
+name: r
+model: claude-haiku-4-5-20251001
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+priority: 64
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(role.priority, 64, "explicit priority must be preserved");
+    }
 }

@@ -220,5 +220,20 @@ mod plan_tests {
         let json = serde_json::to_string(&s2).unwrap();
         let back: Subtask = serde_json::from_str(&json).unwrap();
         assert_eq!(s2, back);
+
+        // Verify skip_serializing_if: None ttl must not appear in output JSON.
+        let s_none = Subtask {
+            id: "c".into(),
+            role: "writer".into(),
+            params: serde_json::json!({}),
+            depends_on: vec![],
+            ttl: None,
+        };
+        let json_none = serde_json::to_string(&s_none).unwrap();
+        assert!(
+            !json_none.contains("\"ttl\""),
+            "None ttl must be omitted from serialized JSON, got: {}",
+            json_none
+        );
     }
 }
