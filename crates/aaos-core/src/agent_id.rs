@@ -41,6 +41,13 @@ impl fmt::Display for AgentId {
     }
 }
 
+impl std::str::FromStr for AgentId {
+    type Err = uuid::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
