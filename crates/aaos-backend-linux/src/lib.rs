@@ -352,18 +352,30 @@ mod launch_impl {
             // parent's tokio I/O driver state; tokio can emit stderr
             // chatter when it polls fds after the mount namespace
             // transition. Redirect fd 2 to /dev/null before anything
-            // else runs.
+            // else runs — unless the operator explicitly wants to
+            // capture worker stderr for debugging.
             //
-            // WARNING: this also hides panic messages from inside the
-            // worker. If debugging a worker death (exit code 101, the
-            // Rust panic code), temporarily replace the dup2 target
-            // with a file under `/tmp/aaos-worker-stderr.log` — that fd
-            // remains valid after pivot_root. Do not leave that enabled
-            // in committed code (the file is unbounded).
-            if let Ok(devnull) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
+            // Set AAOS_NAMESPACED_WORKER_STDERR=/path/to/file to send the
+            // worker's stderr to a file instead. The fd remains valid
+            // after pivot_root. Unbounded file — operator is responsible
+            // for size management; only enable in tests / CI.
+            let stderr_target: Option<std::path::PathBuf> =
+                std::env::var_os("AAOS_NAMESPACED_WORKER_STDERR").map(std::path::PathBuf::from);
+            let stderr_fd = match &stderr_target {
+                Some(path) => std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok(),
+                None => std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/null")
+                    .ok(),
+            };
+            if let Some(f) = stderr_fd {
                 use std::os::fd::AsRawFd;
                 unsafe {
-                    libc::dup2(devnull.as_raw_fd(), 2);
+                    libc::dup2(f.as_raw_fd(), 2);
                 }
             }
 
@@ -931,6 +943,18 @@ mod tests {
             cfg.worker_binary.display()
         );
 
+        // Diagnostics: capture child-step progress + worker stderr under the
+        // tempdir so a launch timeout (e.g. on CI) surfaces the actual
+        // failure point instead of a bare 5s-timeout error.
+        let child_log = tmp.path().join("child-steps.log");
+        let worker_stderr = tmp.path().join("worker-stderr.log");
+        // SAFETY: test is single-threaded until backend.launch spawns the
+        // child; no other thread reads these env vars at this point.
+        unsafe {
+            std::env::set_var("AAOS_NAMESPACED_CHILD_DEBUG", &child_log);
+            std::env::set_var("AAOS_NAMESPACED_WORKER_STDERR", &worker_stderr);
+        }
+
         let backend = NamespacedBackend::new(cfg).expect("Landlock supported");
         let spec = AgentLaunchSpec {
             agent_id: AgentId::new(),
@@ -946,10 +970,25 @@ system_prompt: "x"
             workspace_path: PathBuf::new(),
             budget_config: None,
         };
-        let handle = backend
-            .launch(spec)
-            .await
-            .expect("namespaced launch should succeed on a capable host");
+        let handle = match backend.launch(spec).await {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("=== namespaced launch failed: {e} ===");
+                eprintln!("--- child-steps.log ---");
+                eprintln!(
+                    "{}",
+                    std::fs::read_to_string(&child_log)
+                        .unwrap_or_else(|_| "(no child step log — child never ran)".into())
+                );
+                eprintln!("--- worker-stderr.log ---");
+                eprintln!(
+                    "{}",
+                    std::fs::read_to_string(&worker_stderr)
+                        .unwrap_or_else(|_| "(no worker stderr — worker never reached exec)".into())
+                );
+                panic!("namespaced launch should succeed on a capable host: {e}");
+            }
+        };
         assert_eq!(handle.backend_kind, "namespaced");
         // Child is alive; verify /proc/<pid>/status shows we applied
         // the sandboxing primitives.
