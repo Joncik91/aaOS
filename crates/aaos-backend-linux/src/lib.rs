@@ -417,35 +417,46 @@ mod launch_impl {
 
             // Step B: detach mount propagation from the host so our
             // namespace-local mounts don't leak back. Prefer MS_PRIVATE;
-            // fall back to MS_SLAVE if the kernel rejects MS_PRIVATE
-            // with EACCES (happens inside restricted container hosts
-            // like GitHub Actions Azure runners, where / is mounted
-            // with propagation types the user namespace can't override
-            // but CAN convert to slave). MS_SLAVE is sufficient: it
-            // blocks outward propagation while still permitting the
-            // child's bind-mounts under new_root, which we pivot_root
-            // into anyway.
-            let b_result = nix::mount::mount::<str, str, str, str>(
+            // fall back to MS_SLAVE, then to no-op.
+            //
+            // Restricted container hosts (GitHub Actions Azure runners,
+            // some Docker-in-Docker setups) reject both MS_PRIVATE and
+            // MS_SLAVE on / with EACCES even inside a user+mount
+            // namespace, because AppArmor or an LSM blocks propagation
+            // changes. In that case we proceed without remounting.
+            // CLONE_NEWNS already isolated the mount namespace, and
+            // pivot_root + umount of the old root happens later — the
+            // only residual risk is a brief window where our tmpfs could
+            // propagate outward on a `shared` ancestor. Acceptable for
+            // ephemeral agent lifetimes; matches Docker's own fallback.
+            let b_private = nix::mount::mount::<str, str, str, str>(
                 None,
                 "/",
                 None,
                 nix::mount::MsFlags::MS_PRIVATE | nix::mount::MsFlags::MS_REC,
                 None,
-            )
-            .or_else(|_| {
-                nix::mount::mount::<str, str, str, str>(
-                    None,
-                    "/",
-                    None,
-                    nix::mount::MsFlags::MS_SLAVE | nix::mount::MsFlags::MS_REC,
-                    None,
-                )
-            });
-            match b_result {
+            );
+            match b_private {
                 Ok(_) => log_step("B-ms-private", None),
-                Err(e) => {
-                    log_step("B-ms-private", Some(&e.to_string()));
-                    return 11;
+                Err(private_err) => {
+                    match nix::mount::mount::<str, str, str, str>(
+                        None,
+                        "/",
+                        None,
+                        nix::mount::MsFlags::MS_SLAVE | nix::mount::MsFlags::MS_REC,
+                        None,
+                    ) {
+                        Ok(_) => log_step("B-ms-slave-fallback", None),
+                        Err(slave_err) => {
+                            // Both failed — host forbids propagation changes.
+                            // Log and continue; CLONE_NEWNS gives us an
+                            // isolated mount namespace anyway.
+                            log_step(
+                                "B-ms-nochange-fallback",
+                                Some(&format!("private={private_err}, slave={slave_err}")),
+                            );
+                        }
+                    }
                 }
             }
 
