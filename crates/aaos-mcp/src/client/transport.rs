@@ -55,7 +55,6 @@ struct StdioInner {
 
 pub struct StdioTransport {
     inner: Mutex<Option<StdioInner>>,
-    command: Vec<String>,
     closed: AtomicBool,
 }
 
@@ -76,7 +75,6 @@ impl StdioTransport {
 
         Ok(Arc::new(Self {
             inner: Mutex::new(Some(StdioInner { child, stdin, stdout })),
-            command,
             closed: AtomicBool::new(false),
         }))
     }
