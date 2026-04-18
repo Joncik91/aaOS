@@ -94,7 +94,7 @@ Full component sketch in [`distribution-architecture.md`](distribution-architect
 
 **Why this shape, not a microkernel fork.** aaOS's differentiation is capability semantics, delegation, auditability, and policy compilation — not owning a kernel. A microkernel migration pushes the "it ships" date years out while losing the Linux ecosystem (GPU drivers, package management, every tool an agent might call through typed wrappers). A Debian derivative puts the capability model in real users' hands within quarters, not years.
 
-Phase F splits into two explicit milestones.
+Phase F splits into three explicit milestones: **F-a** ships the `.deb` (complete); **F-b** closes the Standard-spec Agent-Kernel gaps the rubber-duck design named (reasoning-slot scheduler, dynamic model routing, runtime-side tool confinement, per-task TTL/latency); **F-c** bakes the derivative image.
 
 ### Phase F-a: `agentd` as a Debian package *(complete)*
 
@@ -138,7 +138,23 @@ The `.deb` itself — installable on any Debian 13 host.
 
 **Bidirectional MCP integration (2026-04-18).** New `aaos-mcp` crate, wired into `agentd` behind `--features mcp`. **Client:** for each entry in `/etc/aaos/mcp-servers.yaml` the runtime opens a stdio or HTTP session, runs the MCP `initialize` + `tools/list` handshake, and registers every remote tool into the existing `ToolRegistry` as `mcp.<server>.<tool>`. Remote tools invoke through the same capability-check/audit/narrow boundary as built-ins; no new `Capability` variants. Per-session reconnect loop with exponential backoff. **Server:** axum HTTP+SSE listener on `127.0.0.1:3781` (loopback only — no auth built in; operator's job to expose via SSH tunnel or Tailscale if needed). Exposes `submit_goal`, `get_agent_status`, `cancel_agent` as MCP tools so Claude Code, Cursor, or any other MCP client can delegate goals to aaOS. SSE stream at `GET /mcp/events?run_id=<id>` bridges audit events per run. Fifteen commits across 14 subagent-driven tasks, spec + quality review gated between each; integration tests plus an ignored stdio echo-server e2e. End-to-end verified on an ephemeral DigitalOcean droplet: `tools/call` for `submit_goal` spawns the bootstrap agent, routes the goal through the real DeepSeek LLM + tool path, and the capability system denies cross-trust writes as expected.
 
-### Phase F-b: Debian-derivative reference image
+### Phase F-b: Standard-spec completion *(next)*
+
+The rubber-duck design for an Agentic OS names a Standard tier with five Agent-Kernel primitives: a **Collaborative Framework** — task scheduler, semantic memory, standardized IAC, resource monitoring, abstracted filesystem. aaOS ships most of them today (see the audit in [architecture.md](architecture.md)). Phase F-b closes the four named gaps so a reader of "Agentic OS" finds the words map to shipped code, not to deferred entries in `ideas.md`.
+
+Scope-bounded; each gap is tracked in `ideas.md` with a linked design note and is promoted here because the Standard spec names it explicitly, not because a specific buyer asked for it.
+
+**Gap 1 — Reasoning-slot scheduler.** Today every agent is its own tokio task; `ScheduledLlmClient` is a semaphore over inference calls, not a scheduler. The Standard spec describes an Agent Kernel that swaps reasoning attention between agents based on a task queue — e.g., Agent A blocks on an HTTP response, so Agent B gets the reasoning slot. Target shape: a runtime-owned `ReasoningScheduler` that holds a priority queue of ready-to-reason agents, awards inference slots bounded by `AAOS_MAX_CONCURRENT_INFERENCE`, and preempts cleanly on blocking I/O. No preemption of running LLM calls — preemption is at the "who gets the next slot" granularity. Delivers the "swap Agent A's context to let Agent B process a reasoning chain" semantics the spec names. *Signal for promotion from ideas.md → here: already fired (named in the spec).*
+
+**Gap 2 — Dynamic model routing.** Role YAMLs pin a single `model` per role. The Standard spec's "Dynamic Resource Allocation" calls for per-subtask selection: cheap model for mechanical work, strong for reasoning, driven by live cost and latency signals. Target shape: per-subtask `ModelPolicy` field on roles (a short DSL — `mechanical → deepseek-chat`, `design → deepseek-reasoner`, escalation rules), a classifier that decides which bucket a subtask falls into, and a cost/latency feedback loop from `BudgetTracker` informing future routing. Builds on the existing `BudgetTracker` and `ScheduledLlmClient`; no new crates. *Was in ideas.md as "Dynamic model routing — cost- and latency-aware switching."*
+
+**Gap 3 — Runtime-side confinement of tool execution on `NamespacedBackend`.** `AAOS_DEFAULT_BACKEND=namespaced` currently applies namespaces + Landlock + seccomp to the worker subprocess, but the agent's LLM loop and tool invocations still execute in `agentd`'s address space. A reader of "namespaced backend" expects tool calls to be confined too — this is the Standard spec's "Abstracted Filesystem" claim at full strength. Target shape: the worker's agent loop actually drives the tool calls, routing requests over the already-shipped post-handshake broker stream; `agentd` resolves capabilities against the host-owned registry and either executes host-side (for now) or delegates to a worker-local tool runtime for pure-compute tools. Transport and handshake are in place (commit `7f7894d`); wiring the real tool invocations through is the remaining work. *Was in ideas.md as "Runtime-side confinement of tool execution for NamespacedBackend."*
+
+**Gap 4 — Explicit per-task TTL + latency as a first-class resource.** Safety primitive the Standard spec names under Edge Cases: "Max Hop / TTL counter for every task" to bound hallucination loops between agents. aaOS has a spawn-depth limit (5) and a tool-repeat guard (run 11), but no TTL on a task. Also promotes **latency** to a tracked resource alongside tokens — today `BudgetTracker` only sees tokens, but `ScheduledLlmClient` already records request start/end times and could feed them to the tracker without new infrastructure. Target shape: `TaskTtl { max_hops, max_wall_clock }` field on a subtask plan, decremented as the work moves between agents; `LatencyTracker` alongside `BudgetTracker`, both queryable from the dynamic model router (Gap 2). *New entry — add to ideas.md as a historical record after this phase ships.*
+
+**What this phase does not do.** No new isolation tier (that's Phase G). No distributed runtime (deferred in ideas.md). No cryptographic identity (deferred in ideas.md). No Agent Market or Natural Language Dashboard (those are Advanced spec, not Standard). No new kernel-level security primitive — Landlock + seccomp + namespaces stay the backstop.
+
+### Phase F-c: Debian-derivative reference image
 
 A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the aaOS `.deb`, enables the service, and bakes opinionated defaults.
 
@@ -151,7 +167,7 @@ A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls
 - Custom motd pointing at the socket, the journal, and the docs URL.
 - journald as the default audit sink.
 
-**What the derivative does not do.** We do not maintain our own apt repos. We do not track CVEs. We do not maintain the kernel. We do not run a release-engineering cadence. Upstream Debian does all of that; the derivative pulls from `deb.debian.org` like every other Debian install. Our work is confined to the `.deb` (Phase F-a) and the Packer pipeline + default config (Phase F-b).
+**What the derivative does not do.** We do not maintain our own apt repos. We do not track CVEs. We do not maintain the kernel. We do not run a release-engineering cadence. Upstream Debian does all of that; the derivative pulls from `deb.debian.org` like every other Debian install. Our work is confined to the `.deb` (Phase F-a) and the Packer pipeline + default config (Phase F-c).
 
 **Isolation layers used by the derivative.**
 - **Namespaces** for per-agent isolation (mount, pid, net, user, cgroup).
@@ -185,7 +201,7 @@ namespaces and the worker binary built):
 
 Phase F-a shipped 2026-04-15: `.deb` build reproducible via `cargo deb -p agentd`, installs cleanly on Debian 13, service starts, socket live at `/run/agentd/agentd.sock`, purge cleans state + user. `NamespacedBackend` available under the `namespaced-agents` feature but default stays `InProcessBackend` on the package install until there's CI coverage of the feature-on build on Debian 13.
 
-Next: Phase F-b — Packer pipeline producing a Debian-derivative image with the `.deb` preinstalled, `namespaced` backend as default, desktop meta-packages stripped, opinionated motd/config. First cloud target + bootable ISO.
+Next: Phase F-b — Standard-spec completion (reasoning-slot scheduler + dynamic model routing + runtime-side tool confinement on NamespacedBackend + per-task TTL/latency tracking). Then Phase F-c — Packer pipeline producing a Debian-derivative image with the `.deb` preinstalled, `namespaced` backend as default, desktop meta-packages stripped, opinionated motd/config. First cloud target + bootable ISO.
 
 ## Phase G: Isolation Ladder *(research branch)*
 
@@ -205,9 +221,8 @@ The roadmap above describes what's *shipped* and what's *queued as a phase*. The
 
 Each item links to the full "why deferred + signal to reconsider" entry in [`ideas.md`](ideas.md).
 
-- **[Runtime-side confinement of tool execution on `NamespacedBackend`](ideas.md#runtime-side-confinement-of-tool-execution-for-namespacedbackend).** `AAOS_DEFAULT_BACKEND=namespaced` today applies the sandbox (namespaces + Landlock + seccomp) to the agent's worker process, but the agent's LLM loop and tool invocations still execute in `agentd`'s address space. A user who reads "namespaced backend" expects tool calls to be confined too. The broker↔worker stream work closes this gap; single-node deployments don't force it yet.
-- **[Dynamic model routing](ideas.md#dynamic-model-routing--cost--and-latency-aware-switching).** Role YAMLs pin a single `model` per role. Cursor-style automatic routing (cheap model for mechanical edits, strong model for design) isn't built — we do it manually today at the subagent-dispatch layer. No real cost pressure yet.
-- ~~**Runtime tool authoring via MCP.**~~ **Shipped 2026-04-18** (see Phase F-a follow-ups below). Bidirectional MCP support behind `--features mcp` in the new `aaos-mcp` crate: client-side registers external MCP servers' tools as `mcp.<server>.<tool>` in the runtime registry; server-side exposes `submit_goal` / `get_agent_status` / `cancel_agent` on `127.0.0.1:3781` so external MCP clients (Claude Code, Cursor, other agents) can delegate goals to aaOS. Config via `/etc/aaos/mcp-servers.yaml`; silently disabled if absent.
+Three items from the original "Standard spec" rubber-duck have been promoted to the active Phase F-b scope above (reasoning-slot scheduler, dynamic model routing, runtime-side confinement of tool execution, per-task TTL + latency). One — runtime tool authoring via MCP — already shipped (Phase F-a follow-up, 2026-04-18). What remains below are the genuinely Advanced-tier items the rubber-duck frames as "ecosystem" concerns, deferred with named signals to reconsider.
+
 - **[Distributed / multi-host agent runtime](ideas.md#distributed--multi-host-agent-runtime).** Every agent runs in a single `agentd` on a single host. Cross-host delegation, multi-tenant swarms, and the HMAC-signed-token transport that would require are all Phase-G-or-later.
 - **[Cryptographic agent identity](ideas.md#cryptographic-agent-identity).** Commit trailers carry a prose "Co-Authored-By: aaOS builder role (ephemeral droplet, run X)" but there's no signature. Meaningful only once either multi-host transport lands or key storage moves out of `agentd`'s address space (TPM2 / HSM / enclave).
 
