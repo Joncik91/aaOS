@@ -40,6 +40,9 @@ case "$1" in
     ;;
 esac
 
+# cargo-deb appends systemd-units directives here (daemon-reload, enable,
+# start) because `systemd-units = { enable = true, start = true }` is set
+# in crates/agentd/Cargo.toml [package.metadata.deb].
 #DEBHELPER#
 
 exit 0

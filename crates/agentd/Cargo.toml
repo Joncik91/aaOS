@@ -89,5 +89,5 @@ conf-files = [
   "/etc/aaos/roles/generalist.yaml",
 ]
 maintainer-scripts = "../../packaging/debian/"
-systemd-units = { unit-name = "agentd", enable = false, start = false }
+systemd-units = { unit-name = "agentd", enable = true, start = true }
 
