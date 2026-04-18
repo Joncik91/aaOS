@@ -415,15 +415,33 @@ mod launch_impl {
                 }
             }
 
-            // Step B: make current mount propagation private so our
-            // namespace-local mounts don't leak to the host.
-            match nix::mount::mount::<str, str, str, str>(
+            // Step B: detach mount propagation from the host so our
+            // namespace-local mounts don't leak back. Prefer MS_PRIVATE;
+            // fall back to MS_SLAVE if the kernel rejects MS_PRIVATE
+            // with EACCES (happens inside restricted container hosts
+            // like GitHub Actions Azure runners, where / is mounted
+            // with propagation types the user namespace can't override
+            // but CAN convert to slave). MS_SLAVE is sufficient: it
+            // blocks outward propagation while still permitting the
+            // child's bind-mounts under new_root, which we pivot_root
+            // into anyway.
+            let b_result = nix::mount::mount::<str, str, str, str>(
                 None,
                 "/",
                 None,
                 nix::mount::MsFlags::MS_PRIVATE | nix::mount::MsFlags::MS_REC,
                 None,
-            ) {
+            )
+            .or_else(|_| {
+                nix::mount::mount::<str, str, str, str>(
+                    None,
+                    "/",
+                    None,
+                    nix::mount::MsFlags::MS_SLAVE | nix::mount::MsFlags::MS_REC,
+                    None,
+                )
+            });
+            match b_result {
                 Ok(_) => log_step("B-ms-private", None),
                 Err(e) => {
                     log_step("B-ms-private", Some(&e.to_string()));
