@@ -33,6 +33,9 @@ Every tool invocation, capability grant, denial, revocation, and agent lifecycle
 - LLM hallucination or fabrication. Mitigated at the prompt layer, but not a security boundary.
 - Prompt-injected goal text that manipulates *within* the agent's granted capabilities. If a grant is too wide, injection widens the blast radius up to that grant — not beyond it.
 - Denial of service. Single-operator system; DoS is easy and not the threat model.
+- Multi-tenant isolation between distinct tenants' agents on the same `agentd`. aaOS today is single-operator; cross-tenant defence requires runtime-side tool confinement on `NamespacedBackend` (see [`docs/ideas.md`](docs/ideas.md#runtime-side-confinement-of-tool-execution-for-namespacedbackend)) which is deferred until a multi-tenant deployment actually exists.
+- Cross-host trust. No cross-host or cross-process token transport ships today, so we do not defend something that does not exist. When that transport lands (see [`docs/ideas.md`](docs/ideas.md#distributed--multi-host-agent-runtime)), HMAC-signed tokens with external key storage become the mitigation.
+- Cryptographic authorship attestation. Audit events and commit trailers carry prose claims about which agent did what; those claims are not signed. Raising them to signed attestations requires either multi-host transport or hardware-rooted key storage (see [`docs/ideas.md`](docs/ideas.md#cryptographic-agent-identity)).
 
 ## Reporting a vulnerability
 

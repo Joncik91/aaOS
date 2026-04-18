@@ -196,3 +196,17 @@ With two backend implementations already proving `AgentServices` is substrate-ag
 **Why this matters.** The `AgentServices` trait was originally pitched as "future syscall interface." Reframe: it's a **substrate-agnostic ABI**. An operator picks their isolation level based on threat model and resource budget, not on what kernel we happened to build.
 
 **Prerequisites.** Phase F ships. Real workloads on hardened Linux prove the capability model. If tenant-isolation pressure emerges, MicroVM backend is the next layer. Microkernel only if formally-verified enforcement is the buyer's gating requirement.
+
+## Known architectural gaps
+
+The roadmap above describes what's *shipped* and what's *queued as a phase*. There's a third category: capabilities a reader of "Agentic Operating System" would reasonably expect that aaOS **has deliberately deferred** with named signals to reconsider. Naming them here, next to the ship log, so the gap between aspiration and delivery stays honest.
+
+Each item links to the full "why deferred + signal to reconsider" entry in [`ideas.md`](ideas.md).
+
+- **[Runtime-side confinement of tool execution on `NamespacedBackend`](ideas.md#runtime-side-confinement-of-tool-execution-for-namespacedbackend).** `AAOS_DEFAULT_BACKEND=namespaced` today applies the sandbox (namespaces + Landlock + seccomp) to the agent's worker process, but the agent's LLM loop and tool invocations still execute in `agentd`'s address space. A user who reads "namespaced backend" expects tool calls to be confined too. The broker↔worker stream work closes this gap; single-node deployments don't force it yet.
+- **[Dynamic model routing](ideas.md#dynamic-model-routing--cost--and-latency-aware-switching).** Role YAMLs pin a single `model` per role. Cursor-style automatic routing (cheap model for mechanical edits, strong model for design) isn't built — we do it manually today at the subagent-dispatch layer. No real cost pressure yet.
+- **[Runtime tool authoring via MCP](ideas.md#runtime-tool-authoring-via-mcp-server-integration).** aaOS ships 16 built-in tools. Registering MCP servers at startup to consume the existing tool ecosystem (Playwright, filesystem, Notion, Slack, database connectors) is not implemented. The 16 cover current single-operator workloads; an MCP adapter is the natural extension surface when they don't.
+- **[Distributed / multi-host agent runtime](ideas.md#distributed--multi-host-agent-runtime).** Every agent runs in a single `agentd` on a single host. Cross-host delegation, multi-tenant swarms, and the HMAC-signed-token transport that would require are all Phase-G-or-later.
+- **[Cryptographic agent identity](ideas.md#cryptographic-agent-identity).** Commit trailers carry a prose "Co-Authored-By: aaOS builder role (ephemeral droplet, run X)" but there's no signature. Meaningful only once either multi-host transport lands or key storage moves out of `agentd`'s address space (TPM2 / HSM / enclave).
+
+The pattern is intentional: we ship for the single-operator, single-node, trusted-`agentd` threat model that a Debian derivative actually serves, and defer the distributed / cryptographic / cost-optimizing layers until a specific workload or buyer demands them. Each deferral has a concrete signal-to-reconsider; promotion from ideas.md to roadmap happens when that signal fires, not on speculation.
