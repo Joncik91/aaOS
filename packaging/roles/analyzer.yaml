@@ -1,5 +1,8 @@
 name: analyzer
 model: deepseek-chat
+model_ladder:
+  - deepseek-chat        # tier 0: fine for extracting facts from pre-fetched content
+  - deepseek-reasoner    # tier 1: escalate when the LLM loops or hits max-tokens
 parameters:
   inputs:
     type: string_list

@@ -1,5 +1,8 @@
 name: writer
 model: deepseek-chat
+model_ladder:
+  - deepseek-chat        # tier 0: fine for typical synthesis
+  - deepseek-reasoner    # tier 1: escalate on replan / repeat / max-tokens
 parameters:
   inputs:
     type: string_list
