@@ -71,13 +71,25 @@ Built-in tools: `echo`, `web_fetch`, `file_read`, `file_read_many`, `file_list`,
 
 ### 5. IPC Layer (`aaos-ipc`)
 
-MCP-native inter-agent communication:
+Internal inter-agent communication uses an aaOS-native JSON-RPC envelope historically branded "MCP" inside the codebase. That internal bus is distinct from the real Model Context Protocol support added in `aaos-mcp` — see the dedicated section below.
 
-- **McpMessage** — JSON-RPC 2.0 envelope with aaOS metadata (sender, recipient, trace_id, capability token)
+- **McpMessage** — JSON-RPC 2.0 envelope with aaOS metadata (sender, recipient, trace_id, capability token). Despite the name, this is not the MCP wire protocol; it's the legacy internal bus.
 - **McpResponse** — Success/error response with responder metadata
 - **MessageRouter** — Routes messages with capability validation. Supports both fire-and-forget (`route()`) and request-response (`register_pending()` / `respond()`) via a `DashMap<Uuid, oneshot::Sender<McpResponse>>` pending-response map.
 - **SchemaValidator** — Validates payloads against registered schemas
 - **`send_and_wait()`** — Method on `AgentServices` for request-response IPC. Creates a oneshot channel, registers it on the router, routes the message, and awaits the response with a configurable timeout. Capability-checked.
+
+### 5b. Model Context Protocol Integration (`aaos-mcp`, feature-gated)
+
+New in Phase F. Bidirectional MCP (2024-11 spec) support lives in the `aaos-mcp` crate and is wired into `agentd` behind the `mcp` cargo feature. Config is loaded from `/etc/aaos/mcp-servers.yaml` at startup; if the file is absent, both subsystems are silently disabled and the daemon behaves identically to a non-mcp build.
+
+- **MCP client** — For each configured server (transport: `stdio` or `http`), `aaos-mcp::client::McpClient::connect_and_register` opens a session (JSON-RPC `initialize` → `tools/list`), wraps each remote tool in an `McpToolProxy`, and registers it into the runtime's `ToolRegistry` under the name `mcp.<server>.<tool>`. Proxied tools invoke exactly like built-ins: capability-checked at the registry boundary, audited on invoke/result, narrowable via the existing `Capability::ToolInvoke { tool_name }` mechanism. Per-session reconnect loop runs with exponential backoff (1s → 30s cap). A session that goes unhealthy returns `CoreError::ToolUnavailable` on subsequent calls until it recovers.
+- **MCP server** — When `server.enabled: true` in config, an axum HTTP+SSE listener binds `127.0.0.1:3781` (loopback only — no auth; operator's job to expose it over SSH tunnel or Tailscale if remote access is needed). Exposes three tools:
+  - `submit_goal(goal, role?)` — routes the goal to the persistent bootstrap agent via the existing `ensure_bootstrap_running()` / `route_goal_to()` path. Returns the bootstrap's `AgentId` as `run_id`.
+  - `get_agent_status(run_id)` — returns `running`, `completed`, `failed`, or `notfound`.
+  - `cancel_agent(run_id)` — delegates to `AgentRegistry::stop_sync`.
+- **Server-Sent Events** — `GET /mcp/events?run_id=<id>` subscribes to the `BroadcastAuditLog` and streams events filtered to the given agent as SSE frames. The stream terminates on client disconnect without affecting the run.
+- **No new capability variants** — Remote MCP tools are granted the same way as built-ins: manifest entry `tool: mcp.<server>.<tool>` produces a `Capability::ToolInvoke` for that tool name. The MCP server itself enforces its own input-level auth; aaOS treats the remote as a trusted tool source.
 
 ### 6. Bootstrap & Orchestration Layer
 

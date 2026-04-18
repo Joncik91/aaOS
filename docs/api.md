@@ -45,3 +45,35 @@ echo '{"jsonrpc":"2.0","id":1,"method":"agent.run","params":{
   s.connect('/tmp/aaos-sock/agentd.sock'); \
   s.sendall((sys.stdin.read()+'\n').encode()); print(s.recv(4096).decode())"
 ```
+
+## MCP Server API (loopback only, `--features mcp`)
+
+When `agentd` is built with `--features mcp` and `/etc/aaos/mcp-servers.yaml` has `server.enabled: true`, an HTTP+SSE listener binds `127.0.0.1:3781`. The endpoint speaks [Model Context Protocol](https://modelcontextprotocol.io) (2024-11 spec) so external MCP clients (Claude Code, Cursor, other agents) can delegate goals into aaOS.
+
+Three tools are exposed via the standard MCP `tools/call` method:
+
+| Tool | Input | Output |
+|------|-------|--------|
+| `submit_goal` | `{ goal: string, role?: string }` | `{ run_id: string }` |
+| `get_agent_status` | `{ run_id: string }` | `"running" \| "completed" \| "failed" \| "notfound"` |
+| `cancel_agent` | `{ run_id: string }` | `{ cancelled: bool }` |
+
+There is no auth on the endpoint. The binding is loopback-only by design — remote access is the operator's responsibility (SSH tunnel, Tailscale, or a local reverse proxy with auth).
+
+### Example — submit a goal over MCP
+
+```bash
+curl -X POST http://127.0.0.1:3781/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"submit_goal",
+                 "arguments":{"goal":"fetch HN top 5 and summarize"}}}'
+```
+
+### Example — stream audit events for a run as SSE
+
+```bash
+curl -N "http://127.0.0.1:3781/mcp/events?run_id=<uuid>"
+```
+
+Each frame is a standard SSE event whose `data:` line is a JSON-serialized `AuditEvent`, filtered to the given `run_id`. The stream ends when the agent terminates or the client disconnects.

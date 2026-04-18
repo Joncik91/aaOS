@@ -37,6 +37,8 @@ The derivative curates which of Debian's primitives are exposed, wraps them in t
 - `agentd` operator CLI — same binary as the daemon. Subcommands `submit | list | status | stop | logs` connect to the socket. Non-root operators join the `aaos` system group (`sudo adduser $USER aaos`) to get socket access. Ships with an `agentd(1)` man page.
 - `/etc/aaos/manifests/` — agent manifest library. Bootstrap manifest ships with the package; operators drop additional manifests here.
 - `/etc/aaos/skills/` — AgentSkills bundle. 21 skills ship by default, extensible.
+- `/etc/aaos/roles/` — role catalog for computed orchestration. Four roles ship (fetcher, writer, analyzer, generalist); operator-extensible.
+- `/etc/aaos/mcp-servers.yaml` — optional. When present and `agentd` is built with `--features mcp`, declares external MCP servers to consume as tool sources and/or enables a loopback MCP server on `127.0.0.1:3781`. Absent → MCP silently disabled.
 - `/var/lib/aaos/memory/` — persistent memory for agents with stable identity.
 - `/var/lib/aaos/sessions/` — session history for persistent agents.
 - `/var/lib/aaos/workspace/` — per-goal workspace directories.
@@ -52,6 +54,7 @@ aaOS issues capability tokens. Enforcement uses Linux primitives as backstops so
 | `network_access: [api.example.com]` | Custom capability check | nftables rule, network namespace with filtered egress |
 | `tool: web_fetch` | Tool registry lookup | Seccomp allow: `socket`, `connect`, `sendto`, `recvfrom`; deny the rest |
 | `spawn_child: [research]` | Capability match on child manifest name | No Linux backstop — aaOS-only policy |
+| `tool: mcp.<server>.<tool>` | Tool registry lookup (proxy registers as the same tool-invoke capability variant as built-ins) | Remote MCP server's own input validation; the proxy is trusted once registered |
 | Budget (`max_tokens`) | `BudgetTracker` atomic CAS | cgroup v2 memory.max for process resources |
 
 **Key point:** seccomp is a damage-limiter, not the capability model. Landlock is a filesystem backstop, not the capability model. aaOS's token logic stays the policy layer; Linux primitives are the kernel-level "even if the application-level check is bypassed, the kernel still refuses" safety net.
