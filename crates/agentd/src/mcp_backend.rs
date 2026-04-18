@@ -13,8 +13,11 @@ impl McpServerBackend for Server {
     async fn submit_goal(
         &self,
         goal: String,
-        _role: Option<String>,
+        role: Option<String>,
     ) -> anyhow::Result<AgentId> {
+        if let Some(r) = &role {
+            tracing::warn!(role = %r, "role parameter in submit_goal is not yet supported — submitting to default bootstrap");
+        }
         let bootstrap_id = self.ensure_bootstrap_running().await?;
         self.route_goal_to(bootstrap_id, &goal).await?;
         Ok(bootstrap_id)

@@ -71,7 +71,11 @@ async fn main() -> anyhow::Result<()> {
                 use aaos_mcp::config::McpConfig;
                 match McpConfig::load() {
                     Ok(Some(mcp_cfg)) => {
-                        let _mcp_client = aaos_mcp::client::McpClient::connect_and_register(
+                        // The McpClient value is dropped here intentionally. Sessions stay alive because:
+                        // - McpToolProxy instances in tool_registry hold Arc<McpSession> clones
+                        // - spawn_reconnect_loop tasks hold their own Arc<McpSession> clones
+                        // Dropping McpClient only drops the Vec<Arc<McpSession>> in its sessions() field.
+                        let _ = aaos_mcp::client::McpClient::connect_and_register(
                             &mcp_cfg.client,
                             &server.tool_registry,
                         )
