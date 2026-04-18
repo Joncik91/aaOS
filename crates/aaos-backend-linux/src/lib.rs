@@ -858,6 +858,48 @@ impl AgentBackend for NamespacedBackend {
 mod tests {
     use super::*;
 
+    /// Detect whether the host permits the mount operations the backend
+    /// needs inside an unprivileged user+mount namespace. Forks a child,
+    /// unshares CLONE_NEWUSER|CLONE_NEWNS, and tries a tmpfs mount in
+    /// /tmp. Returns true iff the mount succeeds. Used to skip the e2e
+    /// test on CI environments where AppArmor or similar LSMs deny
+    /// unprivileged-userns mount operations despite
+    /// `unprivileged_userns_clone=1`.
+    #[cfg(target_os = "linux")]
+    fn probe_mount_capable() -> bool {
+        use nix::sched::{unshare, CloneFlags};
+        use nix::sys::wait::{waitpid, WaitStatus};
+        use nix::unistd::{fork, ForkResult};
+
+        // SAFETY: fork in a test context; the child immediately unshares
+        // and exits, does not return control to the tokio runtime.
+        match unsafe { fork() } {
+            Ok(ForkResult::Child) => {
+                if unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS).is_err() {
+                    std::process::exit(2);
+                }
+                let path = format!("/tmp/aaos-probe-{}", std::process::id());
+                if std::fs::create_dir_all(&path).is_err() {
+                    std::process::exit(3);
+                }
+                let mounted = nix::mount::mount::<str, str, str, str>(
+                    Some("tmpfs"),
+                    path.as_str(),
+                    Some("tmpfs"),
+                    nix::mount::MsFlags::empty(),
+                    Some("size=1M"),
+                );
+                let _ = std::fs::remove_dir_all(&path);
+                std::process::exit(if mounted.is_ok() { 0 } else { 1 });
+            }
+            Ok(ForkResult::Parent { child }) => match waitpid(child, None) {
+                Ok(WaitStatus::Exited(_, 0)) => true,
+                _ => false,
+            },
+            Err(_) => false,
+        }
+    }
+
     #[test]
     fn config_default_has_no_user_data_paths() {
         let cfg = NamespacedBackendConfig::default();
@@ -944,6 +986,23 @@ mod tests {
     async fn namespaced_backend_end_to_end() {
         if !landlock_compile::is_supported() {
             eprintln!("SKIP: Landlock not supported on this kernel");
+            return;
+        }
+        // GitHub Actions Azure runners grant `kernel.unprivileged_userns_clone`
+        // but AppArmor on the runner host denies mount operations inside
+        // those namespaces (both propagation changes on / AND new tmpfs
+        // mounts fail with EACCES). There is no way to test the real
+        // sandboxing primitives in that environment — the kernel supports
+        // them but the host LSM forbids them. Skip rather than hang for 5s
+        // on the readiness timeout. See child-steps.log diagnostics in
+        // CI runs 24608722044 / 24608802200 / 24608876000 for the
+        // empirical evidence.
+        if !probe_mount_capable() {
+            eprintln!(
+                "SKIP: host forbids mount operations inside user namespaces \
+                 (likely GitHub Actions or other LSM-restricted CI). \
+                 Run this test on a real Linux host (dev box or DO droplet)."
+            );
             return;
         }
         use aaos_core::{AgentId, AgentManifest};
