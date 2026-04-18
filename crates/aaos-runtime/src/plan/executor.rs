@@ -23,6 +23,12 @@ use crate::plan::{
     SubtaskId, SubtaskResult,
 };
 
+/// Sentinel error-message string used by `race_deadline` to signal a TTL
+/// wall-clock expiry back to `spawn_subtask`. Extracted to a const so a
+/// typo on either side is caught at compile time. A future refactor
+/// should promote this to a proper `CoreError::TtlExpired` variant.
+const TTL_WALL_CLOCK_SENTINEL: &str = "ttl wall-clock exceeded";
+
 /// Per-subtask executor overrides derived from the role's `budget` + `retry`
 /// fields. The runner uses these to build a non-default `ExecutorConfig`
 /// instead of swallowing the role author's intent (which was the primary
@@ -378,7 +384,7 @@ impl PlanExecutor {
 
         match raced {
             Ok(r) => Ok(r),
-            Err(CoreError::Ipc(ref m)) if m == "ttl wall-clock exceeded" => {
+            Err(CoreError::Ipc(ref m)) if m == TTL_WALL_CLOCK_SENTINEL => {
                 self.audit_log.record(AuditEvent::new(
                     AgentId::from_uuid(uuid::Uuid::nil()),
                     AuditEventKind::SubtaskTtlExpired {
@@ -413,7 +419,7 @@ where
             tokio::select! {
                 r = fut => r,
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(d)) => {
-                    Err(CoreError::Ipc("ttl wall-clock exceeded".into()))
+                    Err(CoreError::Ipc(TTL_WALL_CLOCK_SENTINEL.into()))
                 }
             }
         }
