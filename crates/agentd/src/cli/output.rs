@@ -17,7 +17,8 @@ pub fn is_operator_visible(event: &AuditEvent) -> bool {
         | AuditEventKind::ToolInvoked { .. }
         | AuditEventKind::AgentExecutionCompleted { .. }
         | AuditEventKind::AgentLoopStopped { .. }
-        | AuditEventKind::CapabilityDenied { .. } => true,
+        | AuditEventKind::CapabilityDenied { .. }
+        | AuditEventKind::SubtaskTtlExpired { .. } => true,
         // Show only failed tool results — successes are implied by
         // the next event in the stream and would double the noise.
         AuditEventKind::ToolResult { success, .. } => !success,
@@ -98,6 +99,14 @@ pub fn format_operator_line(event: &AuditEvent, agent_name: &str, colorize: bool
                 text
             }
         }
+        AuditEventKind::SubtaskTtlExpired { subtask_id, reason } => {
+            let label = format!("TTL expired ({}): {}", reason, subtask_id);
+            if colorize {
+                format!("\x1b[33m{}\x1b[0m", label) // yellow — warning semantics
+            } else {
+                label
+            }
+        }
         other => format!("{:?}", other),
     };
 
@@ -164,6 +173,16 @@ mod tests {
                     path_glob: "/etc/*".into(),
                 },
                 reason: "not in allowed paths".into(),
+            }
+        )));
+    }
+
+    #[test]
+    fn visible_subtask_ttl_expired() {
+        assert!(is_operator_visible(&evt(
+            AuditEventKind::SubtaskTtlExpired {
+                subtask_id: "task-123".into(),
+                reason: "wall_clock_exceeded".into(),
             }
         )));
     }
@@ -271,6 +290,18 @@ mod tests {
         let s = format_operator_line(&e, "child", false);
         assert!(s.contains("capability denied"));
         assert!(s.contains("not granted"));
+    }
+
+    #[test]
+    fn format_ttl_expired_line() {
+        let e = evt(AuditEventKind::SubtaskTtlExpired {
+            subtask_id: "x".into(),
+            reason: "wall_clock_exceeded".into(),
+        });
+        let s = format_operator_line(&e, "bootstrap", false);
+        assert!(s.contains("TTL expired"), "got: {}", s);
+        assert!(s.contains("wall_clock_exceeded"), "got: {}", s);
+        assert!(s.contains("x"), "got: {}", s);
     }
 
     // ---- Colorization ----
