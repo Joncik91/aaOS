@@ -243,6 +243,14 @@ impl AuditEvent {
 /// Trait for audit event sinks.
 pub trait AuditLog: Send + Sync {
     fn record(&self, event: AuditEvent);
+
+    /// Return a snapshot of all events recorded so far. Default returns
+    /// empty (safe for write-only / broadcast-only impls that don't
+    /// retain events). Implementations that retain events (in-memory
+    /// store, broadcast wrapping an in-memory store) should override.
+    fn events_snapshot(&self) -> Vec<AuditEvent> {
+        Vec::new()
+    }
 }
 
 /// Audit log that writes JSON-lines to stdout.
@@ -302,6 +310,10 @@ impl AuditLog for InMemoryAuditLog {
             }
         }
         events.push_back(event);
+    }
+
+    fn events_snapshot(&self) -> Vec<AuditEvent> {
+        self.events()
     }
 }
 

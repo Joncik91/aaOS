@@ -36,6 +36,10 @@ impl AuditLog for BroadcastAuditLog {
         // send() errors only when there are zero subscribers — that's fine.
         let _ = self.tx.send(for_broadcast);
     }
+
+    fn events_snapshot(&self) -> Vec<AuditEvent> {
+        self.inner.events_snapshot()
+    }
 }
 
 #[cfg(test)]

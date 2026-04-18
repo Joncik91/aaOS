@@ -160,18 +160,63 @@ impl PlanExecutor {
                     ));
                     return Ok(result);
                 }
-                Err(ExecutorError::Correctable(reason)) if replans_used < self.max_replans => {
+                Err(ExecutorError::Correctable { reason, failures })
+                    if replans_used < self.max_replans =>
+                {
                     self.audit_log.record(AuditEvent::new(
                         AgentId::from_uuid(uuid::Uuid::nil()),
                         AuditEventKind::PlanReplanned {
                             reason: reason.clone(),
                         },
                     ));
-                    plan = self
+
+                    // Phase F-b/2: decide per-subtask escalation.
+                    let mut tier_bumps: std::collections::HashMap<String, u8> =
+                        std::collections::HashMap::new();
+                    for f in &failures {
+                        let Some(role) = self.catalog.get(&f.role) else {
+                            continue;
+                        };
+                        let ladder = role
+                            .resolved_ladder()
+                            .unwrap_or_else(|_| vec![role.model.clone()]);
+                        let current_tier = plan
+                            .subtasks
+                            .iter()
+                            .find(|s| s.id == f.subtask_id)
+                            .map(|s| s.current_model_tier)
+                            .unwrap_or(0);
+                        if let Some(signal) = crate::plan::escalation::decide_escalation(
+                            f,
+                            &role.escalate_on,
+                            ladder.len(),
+                            current_tier,
+                        ) {
+                            let new_tier = (current_tier + 1).min((ladder.len() - 1) as u8);
+                            tier_bumps.insert(f.subtask_id.clone(), new_tier);
+                            self.audit_log.record(AuditEvent::new(
+                                AgentId::from_uuid(uuid::Uuid::nil()),
+                                AuditEventKind::SubtaskModelEscalated {
+                                    subtask_id: f.subtask_id.clone(),
+                                    from_tier: current_tier,
+                                    to_tier: new_tier,
+                                    from_model: ladder[current_tier as usize].clone(),
+                                    to_model: ladder[new_tier as usize].clone(),
+                                    reason: signal.reason().to_string(),
+                                },
+                            ));
+                        }
+                    }
+
+                    let new_plan_from_planner = self
                         .planner
                         .replan(goal, &self.catalog, &plan, &reason)
                         .await
                         .map_err(ExecutorError::from)?;
+
+                    let mut new_plan = new_plan_from_planner;
+                    crate::plan::escalation::carry_tiers_forward(&mut new_plan, &plan, &tier_bumps);
+                    plan = new_plan;
                     self.write_plan_json(&run_root, &plan)?;
                     replans_used += 1;
                 }
@@ -205,17 +250,26 @@ impl PlanExecutor {
         // unless the planner literally emits max_hops=0.
         let mut plan_owned = plan.clone();
         apply_depth_to_hops(&mut plan_owned);
-        let batches = topo_batches(&plan_owned).map_err(ExecutorError::Correctable)?;
+        let batches = topo_batches(&plan_owned).map_err(|reason| ExecutorError::Correctable {
+            reason,
+            failures: vec![],
+        })?;
 
         // Pre-validate all subtasks BEFORE spawning anything.
         for s in &plan_owned.subtasks {
             let role = self
                 .catalog
                 .get(&s.role)
-                .ok_or_else(|| ExecutorError::Correctable(format!("unknown role: {}", s.role)))?;
+                .ok_or_else(|| ExecutorError::Correctable {
+                    reason: format!("unknown role: {}", s.role),
+                    failures: vec![],
+                })?;
             let resolved = subs.apply(&s.params);
             role.validate_params(&resolved)
-                .map_err(ExecutorError::Correctable)?;
+                .map_err(|reason| ExecutorError::Correctable {
+                    reason,
+                    failures: vec![],
+                })?;
         }
 
         let mut results: HashMap<SubtaskId, SubtaskResult> = HashMap::new();
@@ -232,6 +286,12 @@ impl PlanExecutor {
             let batch_results = join_all(spawns).await;
 
             let mut first_failure: Option<String> = None;
+            // Collected per-subtask failure metadata for the replan loop.
+            // Tuple shape: (subtask_id, agent_id_if_known, role_name).
+            // agent_id is Uuid::nil() for pre-spawn failures (TTL, runner
+            // Err before agent spawned); a real AgentId for post-spawn
+            // declared-output-missing failures.
+            let mut failed_ids_with_agents: Vec<(String, AgentId, String)> = Vec::new();
             for (subtask, result) in batch.iter().zip(batch_results) {
                 match result {
                     Ok(r) => {
@@ -256,6 +316,11 @@ impl PlanExecutor {
                                     subtask.id, subtask.role, reason
                                 ));
                             }
+                            failed_ids_with_agents.push((
+                                subtask.id.clone(),
+                                r.agent_id,
+                                subtask.role.clone(),
+                            ));
                             continue;
                         }
                         self.audit_log.record(AuditEvent::new(
@@ -281,12 +346,33 @@ impl PlanExecutor {
                                 subtask.id, subtask.role, e
                             ));
                         }
+                        failed_ids_with_agents.push((
+                            subtask.id.clone(),
+                            AgentId::from_uuid(uuid::Uuid::nil()),
+                            subtask.role.clone(),
+                        ));
                     }
                 }
             }
 
             if let Some(reason) = first_failure {
-                return Err(ExecutorError::Correctable(reason));
+                let events = self.audit_log.events_snapshot();
+                let failures: Vec<crate::plan::escalation::FailedSubtask> = failed_ids_with_agents
+                    .iter()
+                    .map(|(subtask_id, agent_id, role)| {
+                        let observed = crate::plan::escalation::signals_for_subtask(
+                            subtask_id,
+                            &[*agent_id],
+                            &events,
+                        );
+                        crate::plan::escalation::FailedSubtask {
+                            subtask_id: subtask_id.clone(),
+                            role: role.clone(),
+                            observed_signals: observed,
+                        }
+                    })
+                    .collect();
+                return Err(ExecutorError::Correctable { reason, failures });
             }
         }
 
@@ -305,7 +391,10 @@ impl PlanExecutor {
         let role = self
             .catalog
             .get(&subtask.role)
-            .ok_or_else(|| ExecutorError::Correctable(format!("unknown role: {}", subtask.role)))?;
+            .ok_or_else(|| ExecutorError::Correctable {
+                reason: format!("unknown role: {}", subtask.role),
+                failures: vec![],
+            })?;
         let resolved_params = subs.apply(&subtask.params);
 
         // TTL hop check. If the subtask arrives with max_hops=0 we've
@@ -321,10 +410,10 @@ impl PlanExecutor {
                             reason: "hops_exhausted".into(),
                         },
                     ));
-                    return Err(ExecutorError::Correctable(format!(
-                        "subtask '{}' TTL hops exhausted",
-                        subtask.id
-                    )));
+                    return Err(ExecutorError::Correctable {
+                        reason: format!("subtask '{}' TTL hops exhausted", subtask.id),
+                        failures: vec![],
+                    });
                 }
             }
         }
@@ -370,10 +459,13 @@ impl PlanExecutor {
                                 reason: "wall_clock_exceeded".into(),
                             },
                         ));
-                        Err(ExecutorError::Correctable(format!(
-                            "subtask '{}' exceeded wall-clock TTL",
-                            subtask_id_owned
-                        )))
+                        Err(ExecutorError::Correctable {
+                            reason: format!(
+                                "subtask '{}' exceeded wall-clock TTL",
+                                subtask_id_owned
+                            ),
+                            failures: vec![],
+                        })
                     }
                     Err(e) => Err(ExecutorError::Terminal(e)),
                 };
@@ -390,7 +482,20 @@ impl PlanExecutor {
         // LLM-powered role path: render the manifest + first message, pull
         // the role's budget + retry into per-subtask ExecutorConfig overrides,
         // dispatch through the LLM runner.
-        let manifest_yaml = role.render_manifest(&resolved_params);
+        //
+        // Phase F-b/2: pick the model from the role's ladder using the
+        // subtask's `current_model_tier`. Planner emits 0; replan loop
+        // increments on escalation signals. `resolved_ladder` is fallible
+        // (mis-configured YAML), but the catalog loader has already
+        // validated every role at startup — the unwrap_or_else here is a
+        // belt-and-braces fallback to `[role.model]` for code paths that
+        // build a RoleCatalog by hand (tests, fallback_generalist_plan).
+        let ladder = role
+            .resolved_ladder()
+            .unwrap_or_else(|_| vec![role.model.clone()]);
+        let tier = (subtask.current_model_tier as usize).min(ladder.len() - 1);
+        let model_for_this_tier = &ladder[tier];
+        let manifest_yaml = role.render_manifest_with_model(model_for_this_tier, &resolved_params);
         let message = role.render_message(&resolved_params);
 
         // max_iterations = retry.max_attempts + 10, floor 10. The +10 is
@@ -422,10 +527,10 @@ impl PlanExecutor {
                         reason: "wall_clock_exceeded".into(),
                     },
                 ));
-                Err(ExecutorError::Correctable(format!(
-                    "subtask '{}' exceeded wall-clock TTL",
-                    subtask_id_owned
-                )))
+                Err(ExecutorError::Correctable {
+                    reason: format!("subtask '{}' exceeded wall-clock TTL", subtask_id_owned),
+                    failures: vec![],
+                })
             }
             Err(e) => Err(ExecutorError::Terminal(e)),
         }
@@ -458,8 +563,16 @@ where
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExecutorError {
-    #[error("planner-correctable: {0}")]
-    Correctable(String),
+    /// Planner-correctable failure. `reason` is the human-readable string
+    /// the planner sees on replan. `failures` carries structured per-
+    /// subtask metadata the replan loop uses for model-tier escalation.
+    /// When the failure is not per-subtask (e.g. "empty plan"),
+    /// `failures` is empty.
+    #[error("planner-correctable: {reason}")]
+    Correctable {
+        reason: String,
+        failures: Vec<crate::plan::escalation::FailedSubtask>,
+    },
     #[error("terminal: {0}")]
     Terminal(#[from] CoreError),
 }
@@ -467,7 +580,10 @@ pub enum ExecutorError {
 impl From<PlannerError> for ExecutorError {
     fn from(e: PlannerError) -> Self {
         match e {
-            PlannerError::Malformed(msg) => ExecutorError::Correctable(msg),
+            PlannerError::Malformed(msg) => ExecutorError::Correctable {
+                reason: msg,
+                failures: vec![],
+            },
             PlannerError::LlmCall(msg) => {
                 ExecutorError::Terminal(CoreError::Ipc(format!("planner LLM: {msg}")))
             }
@@ -639,7 +755,7 @@ mod tests {
             .execute_plan(&bad_plan, &tmp.path().to_path_buf())
             .await
             .unwrap_err();
-        assert!(matches!(err, ExecutorError::Correctable(_)));
+        assert!(matches!(err, ExecutorError::Correctable { .. }));
     }
 
     #[tokio::test]
@@ -664,7 +780,7 @@ mod tests {
             .execute_plan(&bad_plan, &tmp.path().to_path_buf())
             .await
             .unwrap_err();
-        assert!(matches!(err, ExecutorError::Correctable(_)));
+        assert!(matches!(err, ExecutorError::Correctable { .. }));
     }
 
     #[tokio::test]
@@ -875,7 +991,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            ExecutorError::Correctable(msg) => {
+            ExecutorError::Correctable { reason: msg, .. } => {
                 assert!(msg.contains("subtask 'hn'"), "got: {}", msg);
                 assert!(msg.contains("role 'fetcher'"), "got: {}", msg);
                 assert!(msg.contains("HTTP 404"), "got: {}", msg);
@@ -945,7 +1061,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            ExecutorError::Correctable(msg) => {
+            ExecutorError::Correctable { reason: msg, .. } => {
                 assert!(msg.contains("did not produce"), "got: {msg}");
                 assert!(msg.contains("{report}"), "got: {msg}");
             }
@@ -1079,7 +1195,7 @@ mod tests {
             .execute_plan(&plan, &tmp.path().to_path_buf())
             .await
             .unwrap_err();
-        assert!(matches!(err, ExecutorError::Correctable(_)));
+        assert!(matches!(err, ExecutorError::Correctable { .. }));
 
         let events = audit_concrete.events();
         let good_ok = events.iter().any(|e| matches!(
@@ -1182,7 +1298,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
         assert!(
-            matches!(&result, Err(ExecutorError::Correctable(_))),
+            matches!(&result, Err(ExecutorError::Correctable { .. })),
             "expected hop-exhausted subtask to produce Correctable failure; got {:?}",
             result.as_ref().err()
         );
@@ -1459,6 +1575,122 @@ mod tests {
             !dependent_started,
             "dependent must not launch after its dep failed via TTL"
         );
+    }
+
+    #[tokio::test]
+    async fn subtask_escalates_on_replan_retry() {
+        use crate::plan::default_escalation_signals;
+        use aaos_core::AuditEventKind;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // Role with a 2-tier ladder. The scripted planner returns a
+        // single-subtask plan both on initial plan() and on replan();
+        // the runner fails on the first attempt (tier 0 = fast-stub)
+        // and succeeds on the second (tier 1 = slow-stub).
+        let mut catalog = RoleCatalog::default();
+        let mut role = make_role_for_tests("writer");
+        role.model = "fast-stub".into();
+        role.model_ladder = vec!["fast-stub".into(), "slow-stub".into()];
+        role.escalate_on = default_escalation_signals();
+        catalog.roles_mut().insert("writer".into(), role);
+
+        let attempt_counter = Arc::new(AtomicU32::new(0));
+        let counter_inner = attempt_counter.clone();
+
+        let runner: SubtaskRunner = Arc::new(move |id, manifest_yaml, _m, _o, _d| {
+            let counter = counter_inner.clone();
+            Box::pin(async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    assert!(
+                        manifest_yaml.contains("model: fast-stub"),
+                        "attempt 0 must use fast-stub: {manifest_yaml}"
+                    );
+                    Err(aaos_core::CoreError::Ipc("deliberate failure".into()))
+                } else {
+                    assert!(
+                        manifest_yaml.contains("model: slow-stub"),
+                        "attempt 1 must use slow-stub: {manifest_yaml}"
+                    );
+                    Ok(SubtaskResult {
+                        subtask_id: id,
+                        agent_id: AgentId::new(),
+                        response: "ok".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    })
+                }
+            })
+        });
+
+        // Two identical plan replies: first is the initial plan(), second
+        // is the replan() after the tier-0 failure. Keeping the subtask id
+        // stable across both plans lets carry_tiers_forward bump tier 0 -> 1.
+        let plan_json = r#"{"subtasks":[{"id":"t1","role":"writer","params":{},"depends_on":[]}],"final_output":"/out"}"#;
+        let scripted = Arc::new(ScriptedLlm::new(vec![plan_json.into(), plan_json.into()]));
+        let planner = Arc::new(Planner::new(scripted, "deepseek-chat".into()));
+
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(
+            Arc::new(catalog),
+            planner,
+            runner,
+            audit.clone() as Arc<dyn AuditLog>,
+            std::env::temp_dir(),
+        );
+
+        let result = exec.run("any goal", uuid::Uuid::new_v4()).await;
+        assert!(
+            result.is_ok(),
+            "expected run to succeed after one escalation: {result:?}"
+        );
+
+        let escalations: Vec<_> = audit
+            .events()
+            .into_iter()
+            .filter(|e| matches!(&e.event, AuditEventKind::SubtaskModelEscalated { .. }))
+            .collect();
+        assert_eq!(
+            escalations.len(),
+            1,
+            "expected exactly one escalation event"
+        );
+        if let AuditEventKind::SubtaskModelEscalated {
+            from_model,
+            to_model,
+            reason,
+            ..
+        } = &escalations[0].event
+        {
+            assert_eq!(from_model, "fast-stub");
+            assert_eq!(to_model, "slow-stub");
+            assert_eq!(reason, "replan_retry");
+        }
+    }
+
+    // Helper — produces a role with valid defaults, overridable by caller.
+    fn make_role_for_tests(name: &str) -> Role {
+        use crate::plan::default_escalation_signals;
+        Role {
+            name: name.into(),
+            model: "stub".into(),
+            parameters: Default::default(),
+            capabilities: vec![],
+            system_prompt: "x".into(),
+            message_template: "y".into(),
+            budget: RoleBudget {
+                max_input_tokens: 1000,
+                max_output_tokens: 1000,
+            },
+            retry: RoleRetry {
+                max_attempts: 1,
+                on: vec![],
+            },
+            priority: 128,
+            scaffold: None,
+            model_ladder: vec![],
+            escalate_on: default_escalation_signals(),
+        }
     }
 
     #[tokio::test]
