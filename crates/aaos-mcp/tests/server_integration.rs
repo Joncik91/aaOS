@@ -61,6 +61,14 @@ async fn start_server(backend: Arc<dyn McpServerBackend>) -> String {
         axum::serve(listener, app).await.unwrap();
     });
 
+    // Wait until the server is actually accepting connections
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
     addr
 }
 
@@ -114,7 +122,7 @@ async fn tools_list_returns_three_tools() {
 #[tokio::test]
 async fn submit_goal_returns_run_id() {
     let backend = MockBackend::new();
-    let addr = start_server(backend).await;
+    let addr = start_server(backend.clone() as Arc<dyn McpServerBackend>).await;
     let client = reqwest::Client::new();
 
     let resp = client
@@ -135,7 +143,13 @@ async fn submit_goal_returns_run_id() {
         .unwrap();
 
     assert!(resp["result"]["run_id"].is_string());
-    assert!(resp["error"].is_null());
+    // `error` is skipped when absent (skip_serializing_if); an error response
+    // would serialize it as a JSON object. Checking is_object() correctly
+    // distinguishes success (absent/null) from error (object).
+    assert!(!resp["error"].is_object(), "unexpected error: {:?}", resp["error"]);
+
+    let submitted = backend.submitted.lock().unwrap();
+    assert_eq!(submitted.as_slice(), &["fetch HN and summarise"]);
 }
 
 #[tokio::test]
@@ -160,4 +174,31 @@ async fn cancel_agent_returns_cancelled_true() {
         .unwrap();
 
     assert_eq!(resp["result"]["cancelled"], true);
+}
+
+#[tokio::test]
+async fn get_agent_status_returns_running() {
+    let backend = MockBackend::new();
+    let addr = start_server(backend.clone() as Arc<dyn McpServerBackend>).await;
+    let client = reqwest::Client::new();
+
+    let fake_id = AgentId::new().to_string();
+    let resp = client
+        .post(format!("http://{addr}/mcp"))
+        .json(&json!({
+            "jsonrpc": "2.0", "id": 1,
+            "method": "tools/call",
+            "params": { "name": "get_agent_status", "arguments": { "run_id": fake_id } }
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json::<serde_json::Value>()
+        .await
+        .unwrap();
+
+    assert!(!resp["error"].is_object(), "unexpected error: {:?}", resp["error"]);
+    // RunStatus::Running with #[serde(rename_all = "lowercase")] serializes as
+    // the string "running" (unit variant → lowercase string).
+    assert_eq!(resp["result"], json!("running"), "expected RunStatus::Running");
 }
