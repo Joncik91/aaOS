@@ -34,6 +34,11 @@ pub struct Subtask {
     pub params: Value,
     #[serde(default)]
     pub depends_on: Vec<SubtaskId>,
+    /// Optional per-subtask TTL. Populated by the planner from role defaults
+    /// + env, or left None for no bound. Existing serialized plans without
+    /// this field deserialize to None (back-compat).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<aaos_core::TaskTtl>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -116,6 +121,7 @@ mod plan_tests {
             role: "role".into(),
             params: json!({}),
             depends_on: deps.iter().map(|s| s.to_string()).collect(),
+            ttl: None,
         }
     }
 
@@ -187,5 +193,32 @@ mod plan_tests {
         let p = plan_of(vec![subtask("a", &["b"]), subtask("b", &["a"])]);
         let err = topo_batches(&p).unwrap_err();
         assert!(err.contains("cycle"), "err: {}", err);
+    }
+
+    #[test]
+    fn subtask_ttl_serde_roundtrip_and_default() {
+        use aaos_core::TaskTtl;
+        use std::time::Duration;
+
+        // Default: no ttl — back-compat for serialized plans without the field.
+        let s: Subtask =
+            serde_json::from_str(r#"{"id":"a","role":"writer","params":{},"depends_on":[]}"#)
+                .unwrap();
+        assert!(s.ttl.is_none(), "missing ttl must deserialize as None");
+
+        // With ttl.
+        let s2 = Subtask {
+            id: "b".into(),
+            role: "writer".into(),
+            params: serde_json::json!({}),
+            depends_on: vec![],
+            ttl: Some(TaskTtl {
+                max_hops: Some(3),
+                max_wall_clock: Some(Duration::from_secs(30)),
+            }),
+        };
+        let json = serde_json::to_string(&s2).unwrap();
+        let back: Subtask = serde_json::from_str(&json).unwrap();
+        assert_eq!(s2, back);
     }
 }

@@ -432,6 +432,7 @@ pub fn fallback_generalist_plan(goal: &str, catalog: &RoleCatalog) -> Result<Pla
             role: "generalist".into(),
             params: serde_json::json!({ "task_description": goal }),
             depends_on: vec![],
+            ttl: None,
         }],
         final_output: "/".into(),
     })
@@ -477,6 +478,7 @@ mod tests {
                 max_attempts: 1,
                 on: vec![],
             },
+            priority: 128,
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -507,6 +509,7 @@ mod tests {
                 role: "wizard".into(),
                 params: serde_json::json!({}),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -530,6 +533,7 @@ mod tests {
                 role: "fetcher".into(),
                 params: serde_json::json!({"url": "https://x.com"}),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -577,6 +581,7 @@ mod tests {
                         "workspace": "{run}/hn.html"
                     }),
                     depends_on: vec![],
+                    ttl: None,
                 },
                 Subtask {
                     id: "lob".into(),
@@ -586,6 +591,7 @@ mod tests {
                         "workspace": "{run}/lob.html"
                     }),
                     depends_on: vec![],
+                    ttl: None,
                 },
             ],
             final_output: "/out".into(),
@@ -634,6 +640,7 @@ mod tests {
                 max_attempts: 1,
                 on: vec![],
             },
+            priority: 128,
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -734,6 +741,7 @@ mod tests {
                     "workspace": "{run}/hn.html"
                 }),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -776,6 +784,7 @@ mod tests {
                 max_attempts: 1,
                 on: vec![],
             },
+            priority: 128,
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -800,6 +809,7 @@ mod tests {
                 role: "reporter".into(),
                 params: serde_json::json!({ "report": report_path.to_str().unwrap() }),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -833,6 +843,7 @@ mod tests {
                 role: "reporter".into(),
                 params: serde_json::json!({ "report": report_path.to_str().unwrap() }),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -860,6 +871,7 @@ mod tests {
                     "workspace": "{run}/a.html"
                 }),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -916,6 +928,7 @@ mod tests {
                         "workspace": "{run}/good.html"
                     }),
                     depends_on: vec![],
+                    ttl: None,
                 },
                 Subtask {
                     id: "bad".into(),
@@ -925,6 +938,7 @@ mod tests {
                         "workspace": "{run}/bad.html"
                     }),
                     depends_on: vec![],
+                    ttl: None,
                 },
             ],
             final_output: "/out".into(),

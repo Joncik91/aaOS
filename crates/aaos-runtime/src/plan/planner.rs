@@ -306,6 +306,7 @@ mod tests {
                 max_attempts: 1,
                 on: vec![],
             },
+            priority: 128,
             scaffold: None,
         };
         let mut cat = RoleCatalog::default();
@@ -334,6 +335,7 @@ mod tests {
                 role: "fetcher".into(),
                 params: serde_json::json!({}),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -349,6 +351,7 @@ mod tests {
                 role: "wizard".into(),
                 params: serde_json::json!({}),
                 depends_on: vec![],
+                ttl: None,
             }],
             final_output: "/out".into(),
         };
@@ -376,12 +379,14 @@ mod tests {
                     role: "fetcher".into(),
                     params: serde_json::json!({}),
                     depends_on: vec![],
+                    ttl: None,
                 },
                 Subtask {
                     id: "a".into(),
                     role: "fetcher".into(),
                     params: serde_json::json!({}),
                     depends_on: vec![],
+                    ttl: None,
                 },
             ],
             final_output: "/out".into(),

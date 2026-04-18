@@ -80,10 +80,20 @@ pub struct Role {
     pub message_template: String,
     pub budget: RoleBudget,
     pub retry: RoleRetry,
+    /// Scheduling-priority hint. Lower numbers get their turn earlier when
+    /// two subtasks share the same TTL deadline. Missing in YAML = 128
+    /// (mid-bucket). Roles that produce critical-path work (writer,
+    /// analyzer) can declare e.g. `priority: 64`.
+    #[serde(default = "default_role_priority")]
+    pub priority: u8,
     /// When present, the runtime executes this role via a deterministic
     /// scaffold instead of an LLM loop. Absence (None) = LLM-powered role.
     #[serde(default)]
     pub scaffold: Option<RoleScaffold>,
+}
+
+fn default_role_priority() -> u8 {
+    128
 }
 
 impl Role {
@@ -758,5 +768,22 @@ retry: { max_attempts: 1, on: [] }
         assert!(got.is_some());
         let (_, _, name) = got.unwrap();
         assert_eq!(name, "inputs");
+    }
+
+    #[test]
+    fn role_priority_defaults_to_128() {
+        let yaml = r#"
+name: r
+model: claude-haiku-4-5-20251001
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            role.priority, 128,
+            "missing priority defaults to 128 (mid-bucket)"
+        );
     }
 }
