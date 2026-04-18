@@ -58,11 +58,18 @@ mod serde_duration {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Duration>, D::Error> {
+        /// Upper bound for max_wall_clock — 30 days. Longer than any reasonable
+        /// subtask TTL, far from Instant-arithmetic overflow territory. Rejects
+        /// adversarial or accidentally huge values at deserialize time so the
+        /// executor's `Instant::now() + d` can't panic downstream.
+        const MAX_WALL_CLOCK_SECS: f64 = 86_400.0 * 30.0;
+
         let opt = Option::<f64>::deserialize(d)?;
         opt.map(|secs| {
-            if !secs.is_finite() || secs < 0.0 {
+            if !secs.is_finite() || secs < 0.0 || secs > MAX_WALL_CLOCK_SECS {
                 return Err(serde::de::Error::custom(format!(
-                    "TaskTtl.max_wall_clock must be a non-negative finite number of seconds, got {secs}"
+                    "TaskTtl.max_wall_clock must be a non-negative finite number of seconds \
+                     no greater than {MAX_WALL_CLOCK_SECS} (30 days), got {secs}"
                 )));
             }
             Ok(Duration::from_secs_f64(secs))
@@ -123,5 +130,19 @@ mod tests {
         let s = serde_json::to_string(&t).unwrap();
         let back: TaskTtl = serde_json::from_str(&s).unwrap();
         assert_eq!(t, back);
+    }
+
+    #[test]
+    fn deserialize_rejects_excessive_wall_clock() {
+        let excessive = r#"{"max_wall_clock": 1e17}"#;
+        let result: Result<TaskTtl, _> = serde_json::from_str(excessive);
+        assert!(result.is_err(), "1e17 seconds must be rejected (> 30 days)");
+
+        let reasonable = r#"{"max_wall_clock": 86400.0}"#;
+        let ok: TaskTtl = serde_json::from_str(reasonable).unwrap();
+        assert_eq!(
+            ok.max_wall_clock,
+            Some(std::time::Duration::from_secs(86_400))
+        );
     }
 }

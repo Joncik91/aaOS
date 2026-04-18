@@ -1097,5 +1097,15 @@ mod tests {
             1,
             "expected exactly one SubtaskTtlExpired event with reason=hops_exhausted"
         );
+
+        let started = audit
+            .events()
+            .into_iter()
+            .filter(|e| matches!(&e.event, AuditEventKind::SubtaskStarted { subtask_id, .. } if subtask_id == "expired"))
+            .count();
+        assert_eq!(
+            started, 0,
+            "SubtaskStarted must not fire for a TTL-exhausted subtask (invariant would regress if hop check were moved after the Started record)"
+        );
     }
 }
