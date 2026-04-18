@@ -24,6 +24,9 @@ pub enum CoreError {
     #[error("tool not found: {0}")]
     ToolNotFound(String),
 
+    #[error("tool unavailable: {0}")]
+    ToolUnavailable(String),
+
     #[error("schema validation failed: {0}")]
     SchemaValidation(String),
 
