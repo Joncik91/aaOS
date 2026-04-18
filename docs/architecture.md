@@ -35,7 +35,20 @@ Each subtask's LLM client is wrapped in a `SchedulerView` before `AgentExecutor`
 
 **Scope — what SchedulerView does and does NOT wrap.** The scheduler wraps subtask-agent LLM calls (everything reached through `Server::execute_agent_for_subtask`). It does NOT wrap the Planner's own DAG-producing LLM call or the Bootstrap agent's top-level LLM loop — those still go through the raw `llm_client` directly. Inference concurrency for non-subtask traffic is bounded by the legacy `ScheduledLlmClient` semaphore (constructed around the underlying LLM client in `agentd::main`). This means `AAOS_MAX_CONCURRENT_INFERENCE` is still the load-bearing backstop. The new scheduler is an inner gate for subtask-agent work, not a wholesale replacement.
 
-The `LatencyTracker` trait has a minimal `SubtaskWallClockTracker` impl today (per-subtask cumulative elapsed via `DashMap`); per-model p50/p95 lands with Gap 2.
+The `LatencyTracker` trait has a minimal `SubtaskWallClockTracker` impl; sub-project 2 adds `PerModelLatencyTracker` as a second impl keyed by model name (256-sample bounded ring per model, p50/p95 queries) and a `CompositeLatencyTracker` that fans out `record()` to both.
+
+#### Dynamic Model Routing (Phase F-b sub-project 2)
+
+Each `Role` declares a `model_ladder: Vec<String>` (ordered list; tier 0 == `role.model`, invariant enforced at catalog load) and an `escalate_on: Vec<EscalationSignal>` (defaults to all three). `Subtask.current_model_tier: u8` indexes into the ladder at spawn time — `role.render_manifest_with_model(ladder[tier], params)` produces the per-subtask manifest. The executor's replan path runs `decide_escalation` on each failed subtask against a structured `Vec<FailedSubtask>` (carried through `ExecutorError::Correctable.failures`); on a configured signal it bumps the tier up to `ladder.len() - 1`, emits `SubtaskModelEscalated`, and `carry_tiers_forward` merges the bump into the planner's new plan by subtask-id match.
+
+Three escalation signals, in priority order (highest wins when multiple fired):
+1. `ReplanRetry` — any `SubtaskCompleted{success: false}` for this subtask in the failed attempt.
+2. `MaxTokens` — any `AgentExecutionCompleted{stop_reason: "MaxTokens"}` for this subtask's agent id.
+3. `ToolRepeatGuard` — any `ToolRepeatGuardFired` for this subtask's agent id.
+
+Signals are scanned from the audit broadcast via `AuditLog::events_snapshot()` (default-empty trait method; `InMemoryAuditLog` + `BroadcastAuditLog` override).
+
+**Scope:** signal-based routing only; no cost math, no classifier. `PerModelLatencyTracker` collects per-model p50/p95 into 256-sample bounded rings but is not consumed by any routing decision in v1 — future cost-aware routing can read from it.
 
 ### 3. Agent Memory Layer (`aaos-memory`)
 
