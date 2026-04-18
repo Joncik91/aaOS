@@ -37,12 +37,28 @@ case "$1" in
       chown root:root /etc/default/aaos || true
       chmod 0600 /etc/default/aaos || true
     fi
+
+    # Enable + start the daemon on fresh installs. When `maintainer-scripts`
+    # is set in [package.metadata.deb], cargo-deb copies our scripts
+    # verbatim and does NOT append its own `systemd-units` directives —
+    # even with `systemd-units = { enable = true, start = true }` set.
+    # So we do the systemd wiring manually here. `|| true` keeps a missing
+    # DEEPSEEK_API_KEY at /etc/default/aaos from failing the package
+    # install; operators see `systemctl status agentd` after install if the
+    # start failed.
+    if [ -d /run/systemd/system ]; then
+      systemctl --system daemon-reload >/dev/null 2>&1 || true
+      if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper unmask agentd.service >/dev/null 2>&1 || true
+        deb-systemd-helper enable agentd.service >/dev/null 2>&1 || true
+      else
+        systemctl enable agentd.service >/dev/null 2>&1 || true
+      fi
+      systemctl start agentd.service >/dev/null 2>&1 || true
+    fi
     ;;
 esac
 
-# cargo-deb appends systemd-units directives here (daemon-reload, enable,
-# start) because `systemd-units = { enable = true, start = true }` is set
-# in crates/agentd/Cargo.toml [package.metadata.deb].
 #DEBHELPER#
 
 exit 0
