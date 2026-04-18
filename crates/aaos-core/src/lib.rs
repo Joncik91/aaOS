@@ -8,6 +8,7 @@ pub mod error;
 pub mod manifest;
 pub mod services;
 pub mod skill;
+pub mod task_ttl;
 pub mod tool_definition;
 
 pub use agent_id::AgentId;
@@ -30,4 +31,5 @@ pub use services::{
     AgentServices, ApprovalResult, ApprovalService, NoOpApprovalService, TokenUsage,
 };
 pub use skill::{discover_skills, Skill, SkillMetadata};
+pub use task_ttl::TaskTtl;
 pub use tool_definition::ToolDefinition;
