@@ -43,13 +43,30 @@ impl SchedulerView {
 #[async_trait]
 impl LlmClient for SchedulerView {
     async fn complete(&self, req: CompletionRequest) -> LlmResult<CompletionResponse> {
+        tracing::debug!(
+            subtask_id = %self.subtask_id,
+            priority = self.priority,
+            deadline = ?self.deadline,
+            "SchedulerView: acquiring reasoning slot"
+        );
         let _permit = self
             .scheduler
             .acquire_slot(self.subtask_id.clone(), self.priority, self.deadline)
             .await;
+        tracing::debug!(
+            subtask_id = %self.subtask_id,
+            "SchedulerView: slot awarded, calling inner LlmClient"
+        );
         let start = Instant::now();
         let result = self.inner.complete(req).await;
-        self.latency.record(&self.subtask_id, start.elapsed());
+        let elapsed = start.elapsed();
+        self.latency.record(&self.subtask_id, elapsed);
+        tracing::debug!(
+            subtask_id = %self.subtask_id,
+            elapsed_ms = elapsed.as_millis() as u64,
+            ok = result.is_ok(),
+            "SchedulerView: inner complete returned"
+        );
         result
     }
 
