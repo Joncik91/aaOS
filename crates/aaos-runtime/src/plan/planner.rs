@@ -284,6 +284,71 @@ pub fn apply_ttl_fallback(plan: &mut Plan, fallback: Option<aaos_core::TaskTtl>)
     }
 }
 
+/// Compute each subtask's depth (longest path from any root in the DAG)
+/// and subtract it from its `ttl.max_hops`, saturating at 0. Subtasks with
+/// `ttl: None` or `max_hops: None` are left untouched.
+///
+/// Rationale: the plan is pre-expanded at planner time (full DAG up front),
+/// so "hops remaining" at launch equals initial_max_hops minus the subtask's
+/// depth from roots. A root subtask (depth 0) keeps its full budget; a
+/// depth-N subtask sees initial - N. When the result would be 0 or less, we
+/// store `max_hops = 0` so `spawn_subtask`'s refuse-on-zero check fires
+/// cleanly and emits `SubtaskTtlExpired { reason: "hops_exhausted" }`.
+///
+/// This is the single call site that the `TaskTtl::decrement_hops` method
+/// in aaos-core was intended to support; we do the decrement in bulk here
+/// rather than per-spawn because the plan's per-subtask `ttl` field doesn't
+/// carry across spawns (each subtask gets its own filled-in copy from
+/// `apply_ttl_fallback`, so a per-spawn decrement has no place to store
+/// state for the child).
+pub fn apply_depth_to_hops(plan: &mut Plan) {
+    use std::collections::HashMap;
+
+    // Build id -> depends_on map keyed by index so we can fill depths in
+    // topo order without mutating the subtasks list we're iterating.
+    let id_to_idx: HashMap<String, usize> = plan
+        .subtasks
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.id.clone(), i))
+        .collect();
+
+    // depth[i] = longest path from any root to subtask i. Compute by
+    // repeatedly relaxing until stable. This is O(subtasks^2) worst case
+    // but plans are tiny (< 20 subtasks in practice), and it naturally
+    // tolerates any subtask ordering in `plan.subtasks` without requiring
+    // a pre-sort. Unknown deps would have been caught by topo_batches; we
+    // silently skip them here to avoid a second error surface.
+    let n = plan.subtasks.len();
+    let mut depth: Vec<u32> = vec![0; n];
+    let mut changed = true;
+    let mut iterations = 0;
+    while changed && iterations <= n {
+        changed = false;
+        iterations += 1;
+        for (i, s) in plan.subtasks.iter().enumerate() {
+            let mut max_dep_depth: Option<u32> = None;
+            for d in &s.depends_on {
+                if let Some(&j) = id_to_idx.get(d) {
+                    let cand = depth[j] + 1;
+                    max_dep_depth = Some(max_dep_depth.map_or(cand, |m| m.max(cand)));
+                }
+            }
+            let new_depth = max_dep_depth.unwrap_or(0);
+            if new_depth > depth[i] {
+                depth[i] = new_depth;
+                changed = true;
+            }
+        }
+    }
+
+    for (i, s) in plan.subtasks.iter_mut().enumerate() {
+        let Some(ttl) = s.ttl.as_mut() else { continue };
+        let Some(hops) = ttl.max_hops else { continue };
+        ttl.max_hops = Some(hops.saturating_sub(depth[i]));
+    }
+}
+
 /// Build a TaskTtl from environment defaults. Returns None if both
 /// `AAOS_DEFAULT_TASK_TTL_HOPS` and `AAOS_DEFAULT_TASK_TTL_WALL_CLOCK_S`
 /// are unset. Called by the planner when a subtask arrives from the LLM
@@ -526,5 +591,154 @@ mod tests {
             plan.subtasks[0].ttl.is_none(),
             "None fallback must leave subtask ttls untouched"
         );
+    }
+
+    #[test]
+    fn apply_depth_to_hops_chain_decrements_along_longest_path() {
+        // A -> B -> C chain, max_hops=3 on all. Depths: 0, 1, 2. After
+        // decrement: 3, 2, 1.
+        let ttl = aaos_core::TaskTtl {
+            max_hops: Some(3),
+            max_wall_clock: None,
+        };
+        let mut plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "a".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec![],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "b".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec!["a".into()],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "c".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec!["b".into()],
+                    ttl: Some(ttl.clone()),
+                },
+            ],
+            final_output: "c".into(),
+        };
+
+        apply_depth_to_hops(&mut plan);
+
+        assert_eq!(plan.subtasks[0].ttl.as_ref().unwrap().max_hops, Some(3));
+        assert_eq!(plan.subtasks[1].ttl.as_ref().unwrap().max_hops, Some(2));
+        assert_eq!(plan.subtasks[2].ttl.as_ref().unwrap().max_hops, Some(1));
+    }
+
+    #[test]
+    fn apply_depth_to_hops_saturates_at_zero() {
+        // max_hops=1, chain of 3 — C's depth=2 > 1, should saturate to 0.
+        let ttl = aaos_core::TaskTtl {
+            max_hops: Some(1),
+            max_wall_clock: None,
+        };
+        let mut plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "a".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec![],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "b".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec!["a".into()],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "c".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec!["b".into()],
+                    ttl: Some(ttl.clone()),
+                },
+            ],
+            final_output: "c".into(),
+        };
+
+        apply_depth_to_hops(&mut plan);
+
+        assert_eq!(plan.subtasks[0].ttl.as_ref().unwrap().max_hops, Some(1));
+        assert_eq!(plan.subtasks[1].ttl.as_ref().unwrap().max_hops, Some(0));
+        assert_eq!(plan.subtasks[2].ttl.as_ref().unwrap().max_hops, Some(0));
+    }
+
+    #[test]
+    fn apply_depth_to_hops_uses_longest_path_not_min() {
+        // Diamond: A at 0, B depends on A (depth 1), C depends on A (depth 1),
+        // D depends on B AND C (depth 2). max_hops=5 -> 5,4,4,3.
+        let ttl = aaos_core::TaskTtl {
+            max_hops: Some(5),
+            max_wall_clock: None,
+        };
+        let mut plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "a".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec![],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "b".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec!["a".into()],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "c".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec!["a".into()],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "d".into(),
+                    role: "x".into(),
+                    params: serde_json::json!({}),
+                    depends_on: vec!["b".into(), "c".into()],
+                    ttl: Some(ttl.clone()),
+                },
+            ],
+            final_output: "d".into(),
+        };
+
+        apply_depth_to_hops(&mut plan);
+
+        assert_eq!(plan.subtasks[0].ttl.as_ref().unwrap().max_hops, Some(5));
+        assert_eq!(plan.subtasks[1].ttl.as_ref().unwrap().max_hops, Some(4));
+        assert_eq!(plan.subtasks[2].ttl.as_ref().unwrap().max_hops, Some(4));
+        assert_eq!(plan.subtasks[3].ttl.as_ref().unwrap().max_hops, Some(3));
+    }
+
+    #[test]
+    fn apply_depth_to_hops_leaves_none_ttl_untouched() {
+        let mut plan = Plan {
+            subtasks: vec![Subtask {
+                id: "a".into(),
+                role: "x".into(),
+                params: serde_json::json!({}),
+                depends_on: vec![],
+                ttl: None,
+            }],
+            final_output: "a".into(),
+        };
+        apply_depth_to_hops(&mut plan);
+        assert!(plan.subtasks[0].ttl.is_none());
     }
 }

@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use aaos_core::{AgentId, AuditEvent, AuditEventKind, AuditLog, CoreError};
 
 use crate::plan::{
-    topo_batches, Plan, PlanResult, Planner, PlannerError, RoleCatalog, Substitutions, Subtask,
-    SubtaskId, SubtaskResult,
+    planner::apply_depth_to_hops, topo_batches, Plan, PlanResult, Planner, PlannerError,
+    RoleCatalog, Substitutions, Subtask, SubtaskId, SubtaskResult,
 };
 
 /// Sentinel error-message string used by `race_deadline` to signal a TTL
@@ -196,10 +196,19 @@ impl PlanExecutor {
         use futures::future::join_all;
 
         let subs = Substitutions::new(run_root.clone());
-        let batches = topo_batches(plan).map_err(ExecutorError::Correctable)?;
+
+        // Work on a depth-adjusted clone of the plan. Each subtask's
+        // `ttl.max_hops` is reduced by its depth from roots (longest path
+        // in the DAG), saturating at 0. This is the actual TTL-hops
+        // decrement — without it, every subtask in a chain sees the same
+        // initial value and the refuse-on-zero check below never fires
+        // unless the planner literally emits max_hops=0.
+        let mut plan_owned = plan.clone();
+        apply_depth_to_hops(&mut plan_owned);
+        let batches = topo_batches(&plan_owned).map_err(ExecutorError::Correctable)?;
 
         // Pre-validate all subtasks BEFORE spawning anything.
-        for s in &plan.subtasks {
+        for s in &plan_owned.subtasks {
             let role = self
                 .catalog
                 .get(&s.role)
@@ -1092,7 +1101,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hop_exhaustion_fails_subtask_before_launch() {
+    async fn hop_exhaustion_no_hops_left_refuses_launch() {
+        // Clarifies: this is the "zero hops on entry" case. The subtask has
+        // `max_hops: Some(0)` already when execute_plan sees it (either the
+        // planner emitted that, or the depth decrement saturated it). The
+        // chained-decrement behaviour is covered by
+        // hop_chain_decrements_along_depth.
         use aaos_core::TaskTtl;
 
         // Same catalog pattern as other tests — fetcher_catalog() already
@@ -1154,6 +1168,110 @@ mod tests {
             started, 0,
             "SubtaskStarted must not fire for a TTL-exhausted subtask (invariant would regress if hop check were moved after the Started record)"
         );
+    }
+
+    #[tokio::test]
+    async fn hop_chain_decrements_along_depth() {
+        // Real multi-subtask chain A->B->C with max_hops=2. After depth
+        // decrement: A effective=2, B effective=1, C effective=0 -> C
+        // refused. This is the test that would have caught BUG #5 — the
+        // prior hop_exhaustion test hard-coded max_hops=Some(0) which only
+        // proved the refuse branch, not the per-depth decrement path.
+        use aaos_core::{AuditEventKind, TaskTtl};
+
+        let cat = Arc::new(fetcher_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let audit_trait: Arc<dyn AuditLog> = audit.clone();
+        let exec = PlanExecutor::new(
+            cat,
+            planner,
+            stub_runner(),
+            audit_trait,
+            std::env::temp_dir(),
+        );
+
+        let ttl = TaskTtl {
+            max_hops: Some(2),
+            max_wall_clock: None,
+        };
+        let plan = Plan {
+            subtasks: vec![
+                Subtask {
+                    id: "a".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({"url": "https://x.com", "workspace": "/tmp/x"}),
+                    depends_on: vec![],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "b".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({"url": "https://y.com", "workspace": "/tmp/y"}),
+                    depends_on: vec!["a".into()],
+                    ttl: Some(ttl.clone()),
+                },
+                Subtask {
+                    id: "c".into(),
+                    role: "fetcher".into(),
+                    params: serde_json::json!({"url": "https://z.com", "workspace": "/tmp/z"}),
+                    depends_on: vec!["b".into()],
+                    ttl: Some(ttl.clone()),
+                },
+            ],
+            final_output: "c".into(),
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        assert!(
+            result.is_err(),
+            "C should have been refused by TTL hops exhaustion; got {:?}",
+            result.as_ref().map(|_| "Ok")
+        );
+
+        let events = audit.events();
+
+        // C got hops_exhausted.
+        let c_expired = events
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, AuditEventKind::SubtaskTtlExpired { subtask_id, reason }
+                    if subtask_id == "c" && reason == "hops_exhausted")
+            })
+            .count();
+        assert_eq!(c_expired, 1, "C must emit SubtaskTtlExpired hops_exhausted");
+
+        // A and B must NOT have fired SubtaskTtlExpired — they launched fine.
+        let a_expired = events
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, AuditEventKind::SubtaskTtlExpired { subtask_id, .. }
+                    if subtask_id == "a")
+            })
+            .count();
+        assert_eq!(a_expired, 0, "A must NOT fire SubtaskTtlExpired");
+
+        let b_expired = events
+            .iter()
+            .filter(|e| {
+                matches!(&e.event, AuditEventKind::SubtaskTtlExpired { subtask_id, .. }
+                    if subtask_id == "b")
+            })
+            .count();
+        assert_eq!(b_expired, 0, "B must NOT fire SubtaskTtlExpired");
+
+        // And A + B must have actually Started.
+        let a_started = events.iter().any(|e| {
+            matches!(&e.event,
+            AuditEventKind::SubtaskStarted { subtask_id, .. } if subtask_id == "a")
+        });
+        let b_started = events.iter().any(|e| {
+            matches!(&e.event,
+            AuditEventKind::SubtaskStarted { subtask_id, .. } if subtask_id == "b")
+        });
+        assert!(a_started, "A must have been launched (SubtaskStarted)");
+        assert!(b_started, "B must have been launched (SubtaskStarted)");
     }
 
     #[tokio::test]
