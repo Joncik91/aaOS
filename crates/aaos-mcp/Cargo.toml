@@ -19,6 +19,8 @@ tracing      = { workspace = true }
 reqwest      = { workspace = true }
 axum         = { workspace = true }
 uuid         = { workspace = true }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { workspace = true }
