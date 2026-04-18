@@ -1786,4 +1786,137 @@ mod tests {
             .collect();
         assert_eq!(expired.len(), 1, "expected SubtaskTtlExpired event");
     }
+
+    #[tokio::test]
+    async fn subtask_does_not_escalate_when_signal_disabled() {
+        use crate::plan::EscalationSignal;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let mut catalog = RoleCatalog::default();
+        let mut role = make_role_for_tests("writer");
+        role.model = "fast-stub".into();
+        role.model_ladder = vec!["fast-stub".into(), "slow-stub".into()];
+        // ONLY max_tokens is configured — ReplanRetry will fire but be
+        // ignored.
+        role.escalate_on = vec![EscalationSignal::MaxTokens];
+        catalog.roles_mut().insert("writer".into(), role);
+
+        let attempt_counter = Arc::new(AtomicU32::new(0));
+        let counter_inner = attempt_counter.clone();
+        let runner: SubtaskRunner = Arc::new(move |_id, manifest_yaml, _, _, _| {
+            let counter = counter_inner.clone();
+            Box::pin(async move {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                // Every attempt should use fast-stub because the only
+                // configured signal (MaxTokens) never fires.
+                assert!(
+                    manifest_yaml.contains("model: fast-stub"),
+                    "all attempts must stay at fast-stub; attempt {attempt}"
+                );
+                Err(aaos_core::CoreError::Ipc("fail again".into()))
+            })
+        });
+
+        // Scripted planner returns an identical plan multiple times. The runner
+        // always fails, so replan will keep firing. We provide enough plans so
+        // the test runs through multiple attempts without exhausting replies.
+        // Since MaxTokens is the only signal in escalate_on and it never fires,
+        // no escalation should occur across any replan attempt.
+        let plan_json = r#"{"subtasks":[{"id":"t1","role":"writer","params":{},"depends_on":[]}],"final_output":"/out"}"#;
+        let mut plan_replies = vec![];
+        for _ in 0..10 {
+            plan_replies.push(plan_json.to_string());
+        }
+        let scripted = Arc::new(ScriptedLlm::new(plan_replies));
+        let planner = Arc::new(Planner::new(scripted, "deepseek-chat".into()));
+
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(
+            Arc::new(catalog),
+            planner,
+            runner,
+            audit.clone() as Arc<dyn AuditLog>,
+            std::env::temp_dir(),
+        );
+
+        let _ = exec.run("any goal", uuid::Uuid::new_v4()).await;
+
+        let escalations: Vec<_> = audit
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    &e.event,
+                    aaos_core::AuditEventKind::SubtaskModelEscalated { .. }
+                )
+            })
+            .collect();
+        assert!(
+            escalations.is_empty(),
+            "no escalation should fire when the only signal seen is not in escalate_on; got {}",
+            escalations.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn subtask_escalation_caps_at_ladder_top() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let mut catalog = RoleCatalog::default();
+        let mut role = make_role_for_tests("writer");
+        role.model = "fast-stub".into();
+        role.model_ladder = vec!["fast-stub".into(), "slow-stub".into()];
+        catalog.roles_mut().insert("writer".into(), role);
+
+        let attempt_counter = Arc::new(AtomicU32::new(0));
+        let counter_inner = attempt_counter.clone();
+        let runner: SubtaskRunner = Arc::new(move |_id, _m, _msg, _o, _d| {
+            let counter = counter_inner.clone();
+            Box::pin(async move {
+                let _ = counter.fetch_add(1, Ordering::SeqCst);
+                Err(aaos_core::CoreError::Ipc("always fail".into()))
+            })
+        });
+
+        // Scripted planner with identical plans. The runner always fails, which
+        // triggers replan. The ladder has only 2 tiers (fast-stub and slow-stub).
+        // The first failure should escalate tier 0 -> 1. The second failure at
+        // tier 1 cannot escalate further — the ladder is exhausted — so exactly
+        // one escalation should fire regardless of how many replans follow.
+        let plan_json = r#"{"subtasks":[{"id":"t1","role":"writer","params":{},"depends_on":[]}],"final_output":"/out"}"#;
+        let mut plan_replies = vec![];
+        for _ in 0..10 {
+            plan_replies.push(plan_json.to_string());
+        }
+        let scripted = Arc::new(ScriptedLlm::new(plan_replies));
+        let planner = Arc::new(Planner::new(scripted, "deepseek-chat".into()));
+
+        let audit: Arc<InMemoryAuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(
+            Arc::new(catalog),
+            planner,
+            runner,
+            audit.clone() as Arc<dyn AuditLog>,
+            std::env::temp_dir(),
+        );
+
+        let _ = exec.run("any goal", uuid::Uuid::new_v4()).await;
+
+        let escalations: Vec<_> = audit
+            .events()
+            .into_iter()
+            .filter(|e| {
+                matches!(
+                    &e.event,
+                    aaos_core::AuditEventKind::SubtaskModelEscalated { .. }
+                )
+            })
+            .collect();
+        assert_eq!(
+            escalations.len(),
+            1,
+            "ladder length 2 → exactly one escalation possible; got {}",
+            escalations.len()
+        );
+    }
 }
