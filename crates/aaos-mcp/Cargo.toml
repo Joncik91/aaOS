@@ -23,4 +23,7 @@ tokio-stream = { workspace = true }
 futures-util = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
+tokio        = { workspace = true }
+reqwest      = { workspace = true }
+async-trait  = { workspace = true }
+aaos-core    = { workspace = true }
