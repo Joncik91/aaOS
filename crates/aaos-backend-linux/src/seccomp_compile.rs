@@ -113,10 +113,26 @@ mod linux_impl {
             libc::SYS_getdents64,
         ]);
         // `epoll_pwait2`, `poll` aren't present on all arches in
-        // libc 0.2; try via libc::SYS_epoll_pwait2 behind cfg.
+        // libc 0.2; add them via literal syscall numbers behind cfg.
+        //
+        // Tokio 1.x on modern kernels uses `epoll_pwait2` (it accepts a
+        // timespec for sub-millisecond timeouts); without this, tokio's
+        // I/O driver returns EPERM from poll and panics the worker with
+        // "unexpected error when polling the I/O driver". Observed on
+        // Debian 13 / kernel 6.12.43 with tokio 1.50 — the previous
+        // `stderr → /dev/null` redirect in child_fn hid the panic, so
+        // the worker silently died right after `sandboxed-ready`.
         #[cfg(target_arch = "x86_64")]
         {
+            // SYS_epoll_wait: legacy no-signal-mask variant. mio on 6.12
+            // can still fall back to it (the "no sigmask" fast path).
+            v.push(libc::SYS_epoll_wait);
             v.extend([libc::SYS_poll, libc::SYS_stat, libc::SYS_lstat]);
+            v.push(441); // epoll_pwait2 on x86_64
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            v.push(441); // epoll_pwait2 on aarch64 (same number on all arches in 5.11+)
         }
         // Filesystem (Landlock gates further)
         v.extend([

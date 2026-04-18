@@ -348,13 +348,18 @@ mod launch_impl {
         // Child function. MUST NOT panic. Every early-exit returns a specific
         // status code that maps to a failure step — see comments.
         let child_fn = Box::new(move || -> isize {
-            // Silence stderr in the child. The clone'd child inherits the
-            // parent's tokio I/O driver state; tokio can emit a noisy
-            // panic to stderr when it polls fds after the mount namespace
-            // transition. That panic is cosmetic — child_fn completes
-            // successfully, execve replaces the image, the worker runs
-            // normally. But the stderr output pollutes test runs.
-            // Redirect fd 2 to /dev/null before anything else runs.
+            // Silence the child's stderr. The clone'd child inherits the
+            // parent's tokio I/O driver state; tokio can emit stderr
+            // chatter when it polls fds after the mount namespace
+            // transition. Redirect fd 2 to /dev/null before anything
+            // else runs.
+            //
+            // WARNING: this also hides panic messages from inside the
+            // worker. If debugging a worker death (exit code 101, the
+            // Rust panic code), temporarily replace the dup2 target
+            // with a file under `/tmp/aaos-worker-stderr.log` — that fd
+            // remains valid after pivot_root. Do not leave that enabled
+            // in committed code (the file is unbounded).
             if let Ok(devnull) = std::fs::OpenOptions::new().write(true).open("/dev/null") {
                 use std::os::fd::AsRawFd;
                 unsafe {
