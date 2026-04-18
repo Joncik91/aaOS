@@ -13,13 +13,47 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use aaos_core::AgentId;
+use tokio::net::unix::OwnedWriteHalf;
 use tokio::sync::{oneshot, Mutex};
 
 use crate::broker_protocol::PolicyDescription;
+use crate::broker_protocol::{PokeOp, Request, WireRequest, WireResponse};
+
+/// Pending in-flight request awaiting a response. The reader task takes
+/// the oneshot sender out of the map when a matching response arrives
+/// and sends the response through it, unblocking the caller awaiting the
+/// other end of the channel.
+type PendingResponses = Mutex<HashMap<u64, oneshot::Sender<WireResponse>>>;
+
+/// Errors raised when sending a request to a worker over the persistent
+/// post-handshake stream.
+#[derive(Debug, thiserror::Error)]
+pub enum SendError {
+    /// No write half installed on the session (e.g. the handshake
+    /// hasn't run yet, or it failed). Calling a send_* method before
+    /// the session is ready is a programmer error; surfacing it as a
+    /// proper error rather than a panic makes tests more informative.
+    #[error("broker session has no write half — handshake did not complete?")]
+    NotConnected,
+    /// Underlying socket I/O failed.
+    #[error("broker I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    /// Could not serialize the outgoing request.
+    #[error("serialize request: {0}")]
+    Serialize(serde_json::Error),
+    /// The reader task was torn down (worker exited, broker shutdown)
+    /// between the time we parked the oneshot receiver and now.
+    #[error("response channel closed — worker gone")]
+    ResponseChannelClosed,
+    /// The worker did not reply within the deadline.
+    #[error("timeout waiting for response to request {request_id} after {elapsed_ms} ms")]
+    Timeout { request_id: u64, elapsed_ms: u64 },
+}
 
 /// One session = one launched worker.
 pub struct BrokerSession {
@@ -55,6 +89,23 @@ pub struct BrokerSession {
     /// [`crate::broker_protocol::Request::SandboxedReady`]. This is
     /// the signal that unblocks `launch()`.
     pub sandboxed_ready_tx: Mutex<Option<oneshot::Sender<()>>>,
+
+    /// Write half of the persistent broker↔worker stream. Installed by
+    /// `install_post_handshake_stream` once the handshake completes.
+    /// Guarded by `Mutex` so concurrent `send_*` callers serialize their
+    /// writes — the wire protocol is line-oriented, partial writes would
+    /// corrupt the framing.
+    write_half: Mutex<Option<OwnedWriteHalf>>,
+
+    /// In-flight requests awaiting responses from the worker. The reader
+    /// task populates the tx side; `send_request` awaits the rx side.
+    /// Keyed by `WireRequest.id`.
+    pending: Arc<PendingResponses>,
+
+    /// Monotonic request-id source. Starts at 100 so it cannot collide
+    /// with the `Ready` (1) and `SandboxedReady` (2) ids used during the
+    /// handshake.
+    next_request_id: AtomicU64,
 }
 
 impl BrokerSession {
@@ -81,6 +132,9 @@ impl BrokerSession {
             created_at: now,
             last_activity: Mutex::new(now),
             sandboxed_ready_tx: Mutex::new(Some(tx)),
+            write_half: Mutex::new(None),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            next_request_id: AtomicU64::new(100),
         };
         (session, rx)
     }
@@ -126,6 +180,186 @@ impl BrokerSession {
                 "sandboxed-ready fired twice; second fire ignored"
             );
         }
+    }
+
+    /// Install the persistent post-handshake stream. Called by the
+    /// backend after `run_handshake` completes: the stream's read half
+    /// becomes a reader task that populates `pending`, the write half
+    /// is stored so `send_*` methods can issue requests.
+    ///
+    /// The reader task exits when the worker closes the socket (clean
+    /// shutdown) or when the read fails (crash). On exit it drains the
+    /// pending map, dropping any parked `oneshot::Sender`s — callers
+    /// awaiting on the matching rx get `ResponseChannelClosed`.
+    pub async fn install_post_handshake_stream(
+        self: Arc<Self>,
+        read_half: tokio::net::unix::OwnedReadHalf,
+        write_half: OwnedWriteHalf,
+    ) {
+        {
+            let mut guard = self.write_half.lock().await;
+            *guard = Some(write_half);
+        }
+        let pending = self.pending.clone();
+        let agent_id = self.agent_id;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+
+            let mut reader = BufReader::new(read_half);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => {
+                        tracing::debug!(%agent_id, "broker reader: worker closed");
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(%agent_id, error=%e, "broker reader: read failed");
+                        break;
+                    }
+                }
+                let trimmed = line.trim_end();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let resp: WireResponse = match serde_json::from_str(trimmed) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            %agent_id,
+                            error=%e,
+                            line=%trimmed,
+                            "broker reader: malformed response"
+                        );
+                        continue;
+                    }
+                };
+                let tx = {
+                    let mut map = pending.lock().await;
+                    map.remove(&resp.id)
+                };
+                match tx {
+                    Some(sender) => {
+                        let _ = sender.send(resp);
+                    }
+                    None => {
+                        tracing::warn!(
+                            %agent_id,
+                            id = resp.id,
+                            "broker reader: response to unknown request id"
+                        );
+                    }
+                }
+            }
+
+            // Reader exiting — drain pending so any awaiters wake up with
+            // ResponseChannelClosed rather than hanging forever.
+            let mut map = pending.lock().await;
+            map.clear();
+        });
+    }
+
+    /// Send a request to the worker and await the matching response.
+    /// Serializes, writes a newline-terminated JSON frame, parks a
+    /// oneshot receiver in `pending`, waits until the reader task
+    /// routes the response (or the deadline elapses).
+    async fn send_request(
+        &self,
+        req: Request,
+        timeout: Duration,
+    ) -> Result<WireResponse, SendError> {
+        let id = self.next_request_id.fetch_add(1, Ordering::AcqRel);
+        let wire = WireRequest::new(id, req);
+        let mut buf = serde_json::to_vec(&wire).map_err(SendError::Serialize)?;
+        buf.push(b'\n');
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut map = self.pending.lock().await;
+            map.insert(id, tx);
+        }
+
+        // Write the frame. On failure, evict our pending entry so the
+        // reader task doesn't later find a stray sender for an id that
+        // never went on the wire.
+        {
+            let mut guard = self.write_half.lock().await;
+            let wh = guard.as_mut().ok_or(SendError::NotConnected)?;
+            use tokio::io::AsyncWriteExt;
+            if let Err(e) = wh.write_all(&buf).await {
+                self.pending.lock().await.remove(&id);
+                return Err(SendError::Io(e));
+            }
+            if let Err(e) = wh.flush().await {
+                self.pending.lock().await.remove(&id);
+                return Err(SendError::Io(e));
+            }
+        }
+
+        match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(_closed)) => Err(SendError::ResponseChannelClosed),
+            Err(_) => {
+                // Timed out — pull our entry back so a late-arriving
+                // response isn't matched to a ghost waiter.
+                self.pending.lock().await.remove(&id);
+                Err(SendError::Timeout {
+                    request_id: id,
+                    elapsed_ms: timeout.as_millis() as u64,
+                })
+            }
+        }
+    }
+
+    /// Send a `Ping` and assert the returned nonce matches. Returns the
+    /// round-trip elapsed time as a diagnostic — callers that just want
+    /// liveness can `.is_ok()` the result.
+    ///
+    /// First real transport use of the persistent post-handshake stream.
+    /// No sandbox-escape semantics; a successful Pong proves the channel
+    /// exists and framing survives a round trip.
+    pub async fn send_ping(&self, nonce: u64, timeout: Duration) -> Result<Duration, SendError> {
+        let started = Instant::now();
+        let resp = self.send_request(Request::Ping { nonce }, timeout).await?;
+        if let Some(err) = resp.error {
+            return Err(SendError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("ping failed: {} ({})", err.message, err.code),
+            )));
+        }
+        let result = resp.result.unwrap_or(serde_json::Value::Null);
+        let echoed = result
+            .get("nonce")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| {
+                SendError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "ping response missing nonce",
+                ))
+            })?;
+        if echoed != nonce {
+            return Err(SendError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("ping nonce mismatch: sent {nonce}, got {echoed}"),
+            )));
+        }
+        Ok(started.elapsed())
+    }
+
+    /// Send a `Poke` request to the worker and await its response. The
+    /// response semantics match what the worker's `handle_poke_with_id`
+    /// produces — this method just plumbs the round-trip. Integration
+    /// tests that exercise sandbox-escape paths (`TryExecve`,
+    /// `TryReadHostPath`) use this instead of reinventing the wire
+    /// dance.
+    pub async fn send_poke(
+        &self,
+        op: PokeOp,
+        timeout: Duration,
+    ) -> Result<WireResponse, SendError> {
+        self.send_request(Request::Poke { op }, timeout).await
     }
 }
 

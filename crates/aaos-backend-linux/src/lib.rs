@@ -143,6 +143,18 @@ impl NamespacedBackend {
     pub fn session_count(&self) -> usize {
         self.sessions.len()
     }
+
+    /// Look up the live session for an agent. Returns `None` if the
+    /// agent has never launched or has already stopped. Used by
+    /// integration tests and, eventually, by higher-level code that
+    /// wants to send `Ping` / `Poke` / `InvokeTool` over the
+    /// persistent stream.
+    pub fn session(
+        &self,
+        agent_id: &aaos_core::AgentId,
+    ) -> Option<Arc<crate::broker_session::BrokerSession>> {
+        self.sessions.get(agent_id)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -188,7 +200,13 @@ mod launch_impl {
     pub(super) async fn run_handshake(
         stream: tokio::net::UnixStream,
         session: Arc<BrokerSession>,
-    ) -> std::result::Result<(), BackendError> {
+    ) -> std::result::Result<
+        (
+            tokio::net::unix::OwnedReadHalf,
+            tokio::net::unix::OwnedWriteHalf,
+        ),
+        BackendError,
+    > {
         let peer = peer_creds_from_stream(&stream).map_err(BackendError::BrokerIoFailed)?;
         if let Err(e) = session.peer_creds_match(peer) {
             return Err(match e {
@@ -281,7 +299,15 @@ mod launch_impl {
             )));
         }
         session.fire_sandboxed_ready().await;
-        Ok(())
+
+        // Return the split halves so the backend can install them on
+        // the session as the persistent post-handshake transport.
+        // BufReader::into_inner() gets the raw OwnedReadHalf back; any
+        // bytes the reader already buffered are still there, but in
+        // practice the handshake reads exactly two full lines and
+        // nothing spills over.
+        let read_half = reader.into_inner();
+        Ok((read_half, write_half))
     }
 
     /// Clone a child with NEWUSER+NEWNS+NEWIPC, write uid/gid maps,
@@ -676,15 +702,22 @@ mod launch_impl {
 
         let timeout_ms = backend.config.ready_timeout_ms;
         let handshake_session = session_arc.clone();
+        let install_session = session_arc.clone();
         let handshake = async move {
             let (stream, _addr) = listener
                 .accept()
                 .await
                 .map_err(BackendError::BrokerIoFailed)?;
-            run_handshake(stream, handshake_session).await?;
+            let (read_half, write_half) = run_handshake(stream, handshake_session).await?;
             sandboxed_rx
                 .await
                 .map_err(|_| BackendError::ReadyTimeout { timeout_ms })?;
+            // Handshake complete, sandbox is in force. Hand the persistent
+            // stream to the session so broker→worker traffic (Ping, Poke,
+            // future InvokeTool) has a transport.
+            install_session
+                .install_post_handshake_stream(read_half, write_half)
+                .await;
             Ok::<_, BackendError>(())
         };
 

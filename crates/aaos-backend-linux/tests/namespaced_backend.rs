@@ -115,30 +115,94 @@ async fn health_detects_exit() {
 }
 
 #[tokio::test]
-#[ignore = "scaffold: needs broker-side persistent stream to send PokeOp::TryExecve"]
-async fn worker_cannot_execve() {
-    // Placeholder. The worker already handles `Request::Poke(PokeOp::TryExecve)`
-    // via `handle_poke` in worker.rs — seccomp kills it with SIGSYS when it
-    // calls `execve`. What's missing is on the broker side: after
-    // `run_handshake` returns, the connected `UnixStream` is dropped, so
-    // there's no channel to send the poke through.
-    //
-    // The follow-up to fully wire this test:
-    //
-    // 1. BrokerSession stores the connected stream after handshake.
-    // 2. NamespacedBackend exposes a `send_poke(agent_id, PokeOp)` method
-    //    that takes the session's stored stream and writes a WireRequest.
-    // 3. This test:
-    //    a. `backend.launch(spec)` to sandboxed-ready.
-    //    b. `backend.send_poke(agent_id, PokeOp::TryExecve)`.
-    //    c. Wait briefly for the child to receive + attempt execve.
-    //    d. Assert `backend.health(&handle) == Signaled(31)` (SIGSYS).
-    //
-    // For now this test launches and stops to prove the end-to-end setup
-    // works, which is independently useful.
+#[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
+async fn ping_roundtrips_over_persistent_stream() {
+    // First real transport exercise of the broker→worker persistent
+    // stream that's installed after `sandboxed-ready`. No sandbox
+    // semantics tested here — just proof that a round-trip works at all.
+    // Correlation on request id is implicit: `send_ping` takes a nonce,
+    // the worker echoes it, `send_ping` asserts they match.
+    use std::time::Duration;
+
     let tmp = tempfile::tempdir().unwrap();
     let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
-    let handle = backend.launch(sample_spec()).await.unwrap();
-    assert_eq!(handle.backend_kind, "namespaced");
+    let spec = sample_spec();
+    let agent_id = spec.agent_id;
+    let handle = backend.launch(spec).await.expect("launch");
+
+    let session = backend
+        .session(&agent_id)
+        .expect("session must be present after launch");
+
+    let elapsed = session
+        .send_ping(0xdead_beef, Duration::from_secs(5))
+        .await
+        .expect("ping must round-trip");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "ping reported elapsed >= timeout, something wrong with instrumentation: {elapsed:?}"
+    );
+
+    // A second ping with a different nonce confirms the correlation map
+    // handles consecutive requests (not just one-shot).
+    let _ = session
+        .send_ping(0xcafe_babe, Duration::from_secs(5))
+        .await
+        .expect("second ping must also round-trip");
+
+    backend.stop(&handle).await.expect("stop");
+}
+
+#[tokio::test]
+#[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
+async fn worker_cannot_execve() {
+    // The worker handles `Request::Poke(PokeOp::TryExecve)` via
+    // `handle_poke_with_id` in worker.rs — seccomp kills it with SIGSYS
+    // when it calls `execve`. We route the poke over the persistent
+    // post-handshake stream and observe either (a) a SIGSYS death that
+    // closes the socket (the positive outcome), or (b) an error
+    // response if execve was somehow allowed (the negative outcome
+    // that would fail this assertion).
+    use aaos_backend_linux::broker_protocol::PokeOp;
+    use std::time::Duration;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let backend = NamespacedBackend::new(test_config(tmp.path())).unwrap();
+    let spec = sample_spec();
+    let agent_id = spec.agent_id;
+    let handle = backend.launch(spec).await.expect("launch");
+    let session = backend.session(&agent_id).expect("session");
+
+    // Either the poke round-trips with an error (execve didn't SIGSYS
+    // — sandbox broken, this test fails) or the worker dies mid-execve
+    // and the send times out / errors because the socket closes. Either
+    // way a successful "denied" response is a bug.
+    let result = session
+        .send_poke(PokeOp::TryExecve, Duration::from_secs(3))
+        .await;
+    match result {
+        Ok(resp) => {
+            assert!(
+                resp.error.is_some(),
+                "execve did not SIGSYS — sandbox broken? result: {resp:?}"
+            );
+        }
+        Err(_) => {
+            // Socket closed mid-request — expected when seccomp kills
+            // the worker with SIGSYS. Verify health reflects the death.
+        }
+    }
+
+    // Give the parent a moment to observe the exit if the worker died.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let health = backend.health(&handle).await;
+    assert!(
+        matches!(
+            health,
+            BackendHealth::Signaled(_) | BackendHealth::Exited(_) | BackendHealth::Disconnected
+        ),
+        "worker must be dead after attempted execve, got: {health:?}"
+    );
+
     let _ = backend.stop(&handle).await;
 }

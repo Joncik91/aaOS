@@ -190,7 +190,10 @@ mod linux_impl {
                 }
             };
             let resp = match req.request {
-                Request::Poke { op } => handle_poke(op),
+                Request::Ping { nonce } => {
+                    WireResponse::success(req.id, serde_json::json!({ "nonce": nonce }))
+                }
+                Request::Poke { op } => handle_poke_with_id(req.id, op),
                 _ => WireResponse::error(req.id, -32601, "worker: unsupported request"),
             };
             let mut buf = serde_json::to_vec(&resp)
@@ -203,7 +206,7 @@ mod linux_impl {
         }
     }
 
-    fn handle_poke(op: crate::broker_protocol::PokeOp) -> WireResponse {
+    fn handle_poke_with_id(req_id: u64, op: crate::broker_protocol::PokeOp) -> WireResponse {
         use crate::broker_protocol::PokeOp;
         match op {
             PokeOp::TryExecve => {
@@ -219,15 +222,17 @@ mod linux_impl {
                     libc::execve(path, argv.as_ptr(), envp.as_ptr());
                 }
                 // Only reachable if seccomp didn't kill us.
-                WireResponse::error(0, -32001, "execve did not SIGSYS — sandbox broken")
+                WireResponse::error(req_id, -32001, "execve did not SIGSYS — sandbox broken")
             }
             PokeOp::TryReadHostPath { path } => match std::fs::read_to_string(&path) {
                 Ok(_) => WireResponse::error(
-                    0,
+                    req_id,
                     -32002,
                     format!("landlock allowed read of {}", path.display()),
                 ),
-                Err(e) => WireResponse::success(0, serde_json::json!({"denied": e.to_string()})),
+                Err(e) => {
+                    WireResponse::success(req_id, serde_json::json!({"denied": e.to_string()}))
+                }
             },
         }
     }

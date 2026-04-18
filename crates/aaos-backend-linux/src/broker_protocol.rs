@@ -29,7 +29,12 @@ pub mod method {
     pub const POKE: &str = "poke";
 }
 
-/// Worker → broker requests.
+/// Requests that cross the broker↔worker channel.
+///
+/// `Ready` and `SandboxedReady` are worker→broker announcements sent during
+/// the handshake (and handled inline in `run_handshake`). `Ping` and `Poke`
+/// are broker→worker messages sent over the persistent post-handshake
+/// stream; the worker's `agent_loop` dispatches them and replies.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "method", content = "params", rename_all = "kebab-case")]
 pub enum Request {
@@ -41,6 +46,11 @@ pub enum Request {
     /// seccomp have returned successfully. Confinement is in force
     /// before the broker observes this message.
     SandboxedReady,
+    /// Broker→worker liveness probe. Worker echoes the nonce back in
+    /// the response's `result.nonce` field. First real round-trip on
+    /// the persistent post-handshake stream; no sandbox-escape
+    /// semantics, purely a transport proof of life.
+    Ping { nonce: u64 },
     /// Debug / integration-test helper: instruct the worker to attempt
     /// a specific operation (e.g. try `execve`) so tests can observe
     /// the sandbox's response. Not part of production traffic.
