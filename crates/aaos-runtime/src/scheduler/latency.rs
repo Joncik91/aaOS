@@ -4,6 +4,7 @@
 //! so the TTL watcher and (eventually) Gap 2's router can query it. Per-
 //! model aggregation lives behind the trait for Gap 2 to add later.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::DashMap;
@@ -44,6 +45,38 @@ impl LatencyTracker for SubtaskWallClockTracker {
     }
 }
 
+/// Delegating LatencyTracker that forwards every record call to all
+/// inner trackers. Used by agentd to feed both SubtaskWallClockTracker
+/// (for TTL) and PerModelLatencyTracker (for observability) from one
+/// SchedulerView::new wrap.
+pub struct CompositeLatencyTracker {
+    inner: Vec<Arc<dyn LatencyTracker>>,
+}
+
+impl CompositeLatencyTracker {
+    pub fn new(inner: Vec<Arc<dyn LatencyTracker>>) -> Self {
+        Self { inner }
+    }
+}
+
+impl LatencyTracker for CompositeLatencyTracker {
+    fn record(&self, subtask_id: &str, elapsed: std::time::Duration) {
+        for t in &self.inner {
+            t.record(subtask_id, elapsed);
+        }
+    }
+    fn wall_clock_elapsed(&self, subtask_id: &str) -> std::time::Duration {
+        // Return the first non-zero result from any inner tracker.
+        for t in &self.inner {
+            let d = t.wall_clock_elapsed(subtask_id);
+            if d != std::time::Duration::ZERO {
+                return d;
+            }
+        }
+        std::time::Duration::ZERO
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +97,32 @@ mod tests {
         assert_eq!(t.wall_clock_elapsed("a"), Duration::from_millis(350));
         assert_eq!(t.wall_clock_elapsed("b"), Duration::from_millis(50));
         assert_eq!(t.wall_clock_elapsed("c"), Duration::ZERO);
+    }
+
+    #[test]
+    fn composite_fans_out_records_to_all_inner_trackers() {
+        use super::*;
+        use crate::scheduler::PerModelLatencyTracker;
+        use std::sync::Arc;
+
+        let wall = Arc::new(SubtaskWallClockTracker::new());
+        let per_model = Arc::new(PerModelLatencyTracker::new());
+        per_model.register("a", "deepseek-chat");
+
+        let composite: Arc<dyn LatencyTracker> = Arc::new(CompositeLatencyTracker::new(vec![
+            wall.clone() as Arc<dyn LatencyTracker>,
+            per_model.clone() as Arc<dyn LatencyTracker>,
+        ]));
+
+        composite.record("a", std::time::Duration::from_millis(100));
+
+        assert_eq!(
+            wall.wall_clock_elapsed("a"),
+            std::time::Duration::from_millis(100)
+        );
+        assert_eq!(
+            per_model.p50("deepseek-chat").unwrap(),
+            std::time::Duration::from_millis(100)
+        );
     }
 }

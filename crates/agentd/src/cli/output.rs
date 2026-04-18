@@ -18,7 +18,9 @@ pub fn is_operator_visible(event: &AuditEvent) -> bool {
         | AuditEventKind::AgentExecutionCompleted { .. }
         | AuditEventKind::AgentLoopStopped { .. }
         | AuditEventKind::CapabilityDenied { .. }
-        | AuditEventKind::SubtaskTtlExpired { .. } => true,
+        | AuditEventKind::SubtaskTtlExpired { .. }
+        | AuditEventKind::SubtaskModelEscalated { .. }
+        | AuditEventKind::ToolRepeatGuardFired { .. } => true,
         // Show only failed tool results — successes are implied by
         // the next event in the stream and would double the noise.
         AuditEventKind::ToolResult { success, .. } => !success,
@@ -103,6 +105,33 @@ pub fn format_operator_line(event: &AuditEvent, agent_name: &str, colorize: bool
             let label = format!("TTL expired ({}): {}", reason, subtask_id);
             if colorize {
                 format!("\x1b[33m{}\x1b[0m", label) // yellow — warning semantics
+            } else {
+                label
+            }
+        }
+        AuditEventKind::SubtaskModelEscalated {
+            subtask_id,
+            from_model,
+            to_model,
+            reason,
+            ..
+        } => {
+            let label =
+                format!("model escalated ({reason}): {subtask_id} — {from_model} → {to_model}");
+            if colorize {
+                format!("\x1b[36m{label}\x1b[0m") // cyan — informational
+            } else {
+                label
+            }
+        }
+        AuditEventKind::ToolRepeatGuardFired {
+            tool,
+            attempt_count,
+            ..
+        } => {
+            let label = format!("repeat guard: {tool} (attempt {attempt_count})");
+            if colorize {
+                format!("\x1b[33m{label}\x1b[0m") // yellow — warning
             } else {
                 label
             }
@@ -379,6 +408,47 @@ mod tests {
     }
 
     // ---- Timestamp ----
+
+    #[test]
+    fn model_escalated_is_operator_visible() {
+        use aaos_core::{AgentId, AuditEvent, AuditEventKind};
+        let e = AuditEvent::new(
+            AgentId::from_uuid(uuid::Uuid::nil()),
+            AuditEventKind::SubtaskModelEscalated {
+                subtask_id: "analyze".into(),
+                from_tier: 0,
+                to_tier: 1,
+                from_model: "deepseek-chat".into(),
+                to_model: "deepseek-reasoner".into(),
+                reason: "replan_retry".into(),
+            },
+        );
+        assert!(is_operator_visible(&e));
+        let rendered = format_operator_line(&e, "bootstrap", false);
+        assert!(rendered.contains("model escalated"), "got: {rendered}");
+        assert!(rendered.contains("replan_retry"), "got: {rendered}");
+        assert!(rendered.contains("analyze"), "got: {rendered}");
+        assert!(rendered.contains("deepseek-chat"), "got: {rendered}");
+        assert!(rendered.contains("deepseek-reasoner"), "got: {rendered}");
+    }
+
+    #[test]
+    fn tool_repeat_guard_is_operator_visible() {
+        use aaos_core::{AgentId, AuditEvent, AuditEventKind};
+        let e = AuditEvent::new(
+            AgentId::new(),
+            AuditEventKind::ToolRepeatGuardFired {
+                agent_id: AgentId::new(),
+                tool: "web_fetch".into(),
+                attempt_count: 3,
+            },
+        );
+        assert!(is_operator_visible(&e));
+        let rendered = format_operator_line(&e, "writer", false);
+        assert!(rendered.contains("repeat guard"), "got: {rendered}");
+        assert!(rendered.contains("web_fetch"), "got: {rendered}");
+        assert!(rendered.contains("3"), "got: {rendered}");
+    }
 
     #[test]
     fn format_line_includes_timestamp_in_hh_mm_ss() {

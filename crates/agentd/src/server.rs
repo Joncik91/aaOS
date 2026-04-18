@@ -73,6 +73,10 @@ pub struct Server {
     /// Per-subtask wall-clock tracker. Queried by the TTL watcher; Gap 2
     /// will add a per-model variant implementing the same trait.
     pub(crate) latency_tracker: Arc<dyn aaos_runtime::LatencyTracker>,
+    /// Per-model latency tracker. Fed observability-only samples via
+    /// `CompositeLatencyTracker` alongside `latency_tracker`. Used by
+    /// the router/introspection path; not consulted for TTL.
+    pub(crate) per_model_latency: Arc<aaos_runtime::scheduler::PerModelLatencyTracker>,
 }
 
 impl Server {
@@ -504,6 +508,20 @@ impl Server {
             aaos_core::CoreError::Ipc("no LLM client configured for subtask execution".into())
         })?;
 
+        // Phase F-b/2: register subtask→model for per-model latency stats.
+        // Use the manifest's own model field — that's what the subtask
+        // will actually call (render_manifest_with_model baked it in
+        // based on the current tier in spawn_subtask).
+        self.per_model_latency.register(subtask_id, &manifest.model);
+
+        // Composite tracker feeds both SubtaskWallClockTracker (TTL-consuming)
+        // and PerModelLatencyTracker (observability) from one wrap.
+        let composite: Arc<dyn aaos_runtime::LatencyTracker> =
+            Arc::new(aaos_runtime::scheduler::CompositeLatencyTracker::new(vec![
+                self.latency_tracker.clone(),
+                self.per_model_latency.clone() as Arc<dyn aaos_runtime::LatencyTracker>,
+            ]));
+
         // Wrap the real client with a per-subtask SchedulerView so every
         // complete() call routes through the reasoning scheduler and
         // records elapsed time in the latency tracker. Priority from
@@ -513,7 +531,7 @@ impl Server {
             Arc::new(aaos_runtime::scheduler::SchedulerView::new(
                 raw_llm,
                 self.reasoning_scheduler.clone(),
-                self.latency_tracker.clone(),
+                composite,
                 subtask_id.to_string(),
                 128,
                 deadline,
@@ -567,6 +585,7 @@ impl Server {
     fn build_scheduler_and_tracker() -> (
         Arc<aaos_runtime::scheduler::ReasoningScheduler>,
         Arc<dyn aaos_runtime::LatencyTracker>,
+        Arc<aaos_runtime::scheduler::PerModelLatencyTracker>,
     ) {
         let max_concurrent = std::env::var("AAOS_MAX_CONCURRENT_INFERENCE")
             .ok()
@@ -575,6 +594,7 @@ impl Server {
         (
             aaos_runtime::scheduler::ReasoningScheduler::new(max_concurrent),
             Arc::new(aaos_runtime::SubtaskWallClockTracker::new()),
+            Arc::new(aaos_runtime::scheduler::PerModelLatencyTracker::new()),
         )
     }
 
@@ -660,7 +680,8 @@ impl Server {
         // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
         // Slot count honors AAOS_MAX_CONCURRENT_INFERENCE (existing env var;
         // default 3). SchedulerView wraps the LLM client per subtask.
-        let (reasoning_scheduler, latency_tracker) = Self::build_scheduler_and_tracker();
+        let (reasoning_scheduler, latency_tracker, per_model_latency) =
+            Self::build_scheduler_and_tracker();
 
         Self {
             registry,
@@ -683,6 +704,7 @@ impl Server {
             backend,
             reasoning_scheduler,
             latency_tracker,
+            per_model_latency,
         }
     }
 
@@ -842,7 +864,8 @@ impl Server {
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
         // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
-        let (reasoning_scheduler, latency_tracker) = Self::build_scheduler_and_tracker();
+        let (reasoning_scheduler, latency_tracker, per_model_latency) =
+            Self::build_scheduler_and_tracker();
 
         let server = Arc::new(Self {
             registry,
@@ -865,6 +888,7 @@ impl Server {
             backend,
             reasoning_scheduler,
             latency_tracker,
+            per_model_latency,
         });
         server.install_plan_executor_runner();
         server
@@ -965,7 +989,8 @@ impl Server {
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
         // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
-        let (reasoning_scheduler, latency_tracker) = Self::build_scheduler_and_tracker();
+        let (reasoning_scheduler, latency_tracker, per_model_latency) =
+            Self::build_scheduler_and_tracker();
 
         let server = Arc::new(Self {
             registry,
@@ -988,6 +1013,7 @@ impl Server {
             backend,
             reasoning_scheduler,
             latency_tracker,
+            per_model_latency,
         });
         server.install_plan_executor_runner();
         server
