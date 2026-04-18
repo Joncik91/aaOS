@@ -472,3 +472,34 @@ the same every time, it belongs in a scaffold.
 Derived from the 2026-04-17 role-budget-wiring run — four iterations
 chasing a fetcher stall that only went away when we accepted the
 fetcher shouldn't be an LLM at all.
+
+## Make the failure visible before trying to fix it
+
+CI failed on `namespaced_backend_end_to_end` every run since the
+ignored-test job landed. The error was "worker did not reach
+sandboxed-ready within 5000ms" — a pure symptom. Four speculative
+fixes were tempting: raise the timeout, skip the test, drop the CI
+step, retry. None would have identified the actual cause.
+
+The backend's child process already had an opt-in step logger
+(`AAOS_NAMESPACED_CHILD_DEBUG`) gated on an env var nobody had set in
+CI. Wiring the test to set that env var AND capture worker stderr
+(via a new `AAOS_NAMESPACED_WORKER_STDERR` env var), then dumping
+both files on launch failure, turned one blind 5-second timeout into
+a labeled trail: `A-pipe-read: ok / B-ms-private: ERR EACCES`. From
+there the root cause took one CI run to confirm: the GitHub Actions
+Azure runner's AppArmor profile denies all mount operations inside
+unprivileged user namespaces, regardless of `unprivileged_userns_clone`.
+The kernel has the primitives, the host LSM forbids them. The right
+fix is `probe_mount_capable()` + skip — not any of the speculative
+options.
+
+**Rule.** When a test reports a timeout or a generic "X didn't
+happen," step one is always to make the failure concrete. Pipe
+stderr to a file, add a step log, attach a strace, dump state on
+timeout. The diagnostic commit is cheap; the speculative fix is
+where weeks get lost.
+
+Derived from commits `4ad37a3` through `9d278ba` — seven-commit CI
+sequence that went from red-for-a-day to green once the first commit
+was "make the failure visible."
