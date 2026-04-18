@@ -219,13 +219,16 @@ async fn stdio_transport_echo_roundtrip() {
     let manifest_path = format!("{fixture_dir}/Cargo.toml");
 
     // Build the echo server
-    let status = std::process::Command::new("cargo")
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let target_dir = format!("{fixture_dir}/target");
+    let status = std::process::Command::new(&cargo)
         .args(["build", "--manifest-path", &manifest_path])
+        .env("CARGO_TARGET_DIR", &target_dir)
         .status()
         .expect("cargo build");
     assert!(status.success(), "echo-mcp-server build failed");
 
-    let binary = format!("{fixture_dir}/target/debug/echo-mcp-server");
+    let binary = format!("{target_dir}/debug/echo-mcp-server");
     let transport = StdioTransport::spawn(vec![binary]).expect("spawn");
     let session = McpSession::connect("echo".into(), transport).await.unwrap();
 

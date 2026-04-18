@@ -8,7 +8,7 @@ fn main() {
     let mut out = std::io::BufWriter::new(stdout.lock());
 
     for line in stdin.lock().lines() {
-        let line = line.unwrap();
+        let Ok(line) = line else { break };
         if line.is_empty() { continue; }
         let req: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
@@ -47,7 +47,11 @@ fn main() {
             }),
         };
 
-        writeln!(out, "{}", serde_json::to_string(&resp).unwrap()).unwrap();
-        out.flush().unwrap();
+        if writeln!(out, "{}", serde_json::to_string(&resp).unwrap()).is_err() {
+            break;
+        }
+        if out.flush().is_err() {
+            break;
+        }
     }
 }
