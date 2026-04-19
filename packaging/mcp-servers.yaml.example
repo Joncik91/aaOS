@@ -1,0 +1,76 @@
+# aaOS MCP server configuration — template.
+#
+# Copy this file to /etc/aaos/mcp-servers.yaml and uncomment the sections
+# you need. After editing, restart agentd:
+#
+#   sudo cp /etc/aaos/mcp-servers.yaml.example /etc/aaos/mcp-servers.yaml
+#   sudoedit /etc/aaos/mcp-servers.yaml
+#   sudo systemctl restart agentd
+#
+# Two independent subsystems live here:
+#
+#   * `client.servers` — EXTERNAL MCP servers aaOS talks TO.  Each entry
+#     becomes a set of aaOS tools named `mcp.<name>.<tool>`.  Tools route
+#     through the same capability-check + audit path as built-ins.
+#
+#   * `server` — aaOS's OWN loopback-only MCP server.  External MCP
+#     clients (Claude Code, Cursor, any MCP-speaking agent) can delegate
+#     goals to aaOS via `submit_goal`, `get_agent_status`, `cancel_agent`.
+#     Listens on 127.0.0.1 only; operators who want remote access should
+#     tunnel via SSH or Tailscale, not expose the bind directly.
+#
+# Leaving this file absent (no /etc/aaos/mcp-servers.yaml) disables both
+# subsystems — MCP is opt-in even in a feature-enabled build.
+# ---------------------------------------------------------------------------
+
+# ===========================================================================
+# Client — external MCP servers aaOS consumes
+# ===========================================================================
+#
+# client:
+#   servers:
+#
+#     # Example 1: the GitHub MCP server (HTTP transport).
+#     #   `url` is the MCP endpoint, not the GitHub API directly.  The
+#     #   `mcp-server-github` binary (or a hosted equivalent) sits in front
+#     #   of the GitHub API and exposes MCP tools over HTTP.
+#     #
+#     #   Registered tools: mcp.github.list_issues, mcp.github.create_pr, ...
+#     - name: github
+#       transport: http
+#       url: https://mcp.githubcopilot.com/mcp
+#
+#     # Example 2: a locally-running filesystem MCP server (stdio transport).
+#     #   aaOS spawns the command, speaks JSON-RPC over its stdin/stdout.
+#     #   The server's own policy decides what paths it will touch — aaOS
+#     #   still capability-checks every mcp.filesystem.* call separately.
+#     #
+#     #   Registered tools: mcp.filesystem.read_file, mcp.filesystem.list_dir, ...
+#     - name: filesystem
+#       transport: stdio
+#       command:
+#         - npx
+#         - -y
+#         - "@modelcontextprotocol/server-filesystem"
+#         - /srv/aaos-shared
+#
+#     # Example 3: a git MCP server (stdio), pointing at a specific repo.
+#     - name: git
+#       transport: stdio
+#       command:
+#         - uvx
+#         - mcp-server-git
+#         - --repository
+#         - /srv/aaos-work
+
+# ===========================================================================
+# Server — aaOS's own MCP listener
+# ===========================================================================
+#
+# Enabling this lets Claude Code, Cursor, or any MCP client register aaOS
+# as a tool source and delegate goals to it.  Bound to loopback only;
+# operators who need remote access should SSH-tunnel or Tailscale.
+#
+# server:
+#   enabled: true
+#   bind: "127.0.0.1:3781"
