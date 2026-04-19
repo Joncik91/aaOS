@@ -378,6 +378,16 @@ impl Server {
 
         // Spawn the child — same pattern as run_subtask_inline. Scopeguard
         // ensures cleanup on any return path.
+        //
+        // Intentionally NOT launching a NamespacedBackend worker for
+        // scaffolds — today's workers have no visibility into
+        // /var/lib/aaos/workspace/ (the mount namespace only exposes
+        // /scratch + shared_libs per PolicyDescription). Scaffolds are
+        // the workflow's plumbing (fetch → write to workspace →
+        // hand-off), so running them daemon-side keeps files flowing
+        // into the shared workspace. Confining scaffolds requires a
+        // design round on workspace bind-mounts — tracked for a
+        // follow-up sub-project.
         let agent_id = self
             .registry
             .spawn(manifest.clone())
@@ -531,19 +541,27 @@ impl Server {
             let _ = cleanup_registry.stop_sync(aid);
         });
 
-        // Phase F-b/3b: when a NamespacedBackend is active, launch a
-        // worker session for this subtask agent so tool calls route
-        // worker-side (real confinement), not daemon-side (NoSession
-        // fallback). `execute_agent_for_subtask` runs the LLM loop in
-        // the daemon; only the tool calls cross to the worker. Opt-out
-        // via AAOS_INLINE_SUBTASKS_DAEMON_SIDE=1 for latency-sensitive
-        // workloads that explicitly want the daemon-side path.
+        // Phase F-b/3b: when a NamespacedBackend is active AND the
+        // operator has explicitly opted in via AAOS_CONFINE_SUBTASKS=1,
+        // launch a worker session for this subtask agent so tool calls
+        // route worker-side (real confinement).
+        //
+        // Opt-in, not opt-out, because today's workers cannot access
+        // /var/lib/aaos/workspace/ (the mount namespace exposes only
+        // /scratch + shared_libs per PolicyDescription). The canonical
+        // goal — fetcher → workspace → analyzer → writer — depends on
+        // workspace access; confining subtasks without workspace
+        // bind-mounts breaks that flow with ENOENT from inside the
+        // worker. Flag stays off until workspace-mount design lands
+        // (tracked for a follow-up sub-project). Confinement still
+        // activates for `spawn_agent`-launched children, which are
+        // the intended target of sub-project 3 today.
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
         let _namespaced_guard = {
-            let skip = std::env::var("AAOS_INLINE_SUBTASKS_DAEMON_SIDE")
+            let confine = std::env::var("AAOS_CONFINE_SUBTASKS")
                 .map(|v| v == "1")
                 .unwrap_or(false);
-            if !skip {
+            if confine {
                 self.launch_worker_session_for_subtask(agent_id, &manifest)
                     .await
             } else {
