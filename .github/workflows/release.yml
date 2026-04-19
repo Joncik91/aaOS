@@ -11,6 +11,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+# softprops/action-gh-release creates the Release + uploads the .deb.
+# Default GITHUB_TOKEN is read-only for `contents` on many repos;
+# grant write explicitly so the Release step succeeds.
+permissions:
+  contents: write
+
 jobs:
   build-deb:
     name: Build aaOS .deb (Debian 13)
