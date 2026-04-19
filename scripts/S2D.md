@@ -8,9 +8,13 @@ Scope: the class of bug that unit tests + `cargo fmt` + `cargo clippy` cannot ca
 
 On every `git commit`:
 
-1. Look at staged `.rs` files. If none, skip.
-2. Pick a candidate spec — `S2D_SPEC` env override, else newest `docs/phase-*-plan.md` or `docs/phase-*-design.md`.
-3. Send spec + staged diff to Claude Haiku with a fixed review prompt.
+1. Look at staged `.rs` files. If none, skip silently.
+2. **Detect a candidate spec**, in this priority order:
+   - `S2D_SPEC` env var (explicit override).
+   - `Plan: <path>` or `Spec: <path>` trailer in the commit message (read from `.git/COMMIT_EDITMSG`).
+   - Any `docs/phase-*-plan.md` / `docs/phase-*-design.md` reference mentioned *inside the staged diff* (code comment, doc link, etc.).
+   - **None of the above → skip silently.** S2D will not pick an arbitrary plan to second-guess a bug fix or refactor.
+3. Send spec + staged diff to `claude -p --model haiku` with a fixed review prompt.
 4. If Haiku replies `S2D_OK`, the commit proceeds.
 5. Otherwise, print the reviewer's gap list and block the commit.
 
@@ -32,11 +36,12 @@ S2D is advisory — every override has a one-line escape hatch:
 
 | Situation | How |
 |-----------|-----|
-| One-off refactor that deliberately diverges from any spec | `S2D_DISABLE=1 git commit ...` |
+| Bug fix, refactor, or any commit not implementing a phase plan | (auto — no spec referenced = skip silently) |
 | Non-code commit where S2D would waste cycles | (auto — no `.rs` files staged = skip) |
+| Plan-driven commit, and you want S2D to review against plan X | put `Plan: docs/phase-X-plan.md` in the commit message, OR set `S2D_SPEC=docs/phase-X-plan.md`, OR cite the plan path in a code comment inside the diff |
 | Reviewer is flagging a false positive and you've read + disagreed | `git commit --no-verify` |
-| Want to aim at a specific spec | `S2D_SPEC=<path/to/local/plan.md> git commit ...` |
-| Want a different model | `S2D_MODEL=claude-sonnet-4-6 git commit ...` |
+| Want a different model | `S2D_MODEL=sonnet git commit ...` |
+| Kill the hook entirely for one commit | `S2D_DISABLE=1 git commit ...` |
 
 ## What it catches (empirically)
 

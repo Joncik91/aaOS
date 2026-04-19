@@ -51,13 +51,50 @@ if ! command -v claude >/dev/null 2>&1; then
     exit 0
 fi
 
-# 3. Find a candidate spec. Prefer $S2D_SPEC; else newest plan/design doc.
+# 3. Find a candidate spec, but ONLY if this commit is plausibly
+#    implementing one. Previously the hook picked the newest
+#    phase-*-plan.md regardless of whether the diff had anything to
+#    do with it — which false-positived on bug fixes, soak-test fixes,
+#    cross-cutting refactors, etc. (soak-test finding 2026-04-19).
+#
+# Detection order (first match wins):
+#   (a) S2D_SPEC env var — explicit operator override
+#   (b) Commit message — set `git config commit.template` with a
+#       "Plan: <path>" or "Spec: <path>" trailer, OR paste one into
+#       the commit message while editing. The hook reads
+#       .git/COMMIT_EDITMSG (populated by `git commit -m ...` + the
+#       editor-opened template).
+#   (c) Diff content — if the staged diff *mentions* a
+#       docs/phase-*-plan.md or docs/phase-*-design.md path, that's
+#       the spec this commit claims to implement (typically via a
+#       block comment citing the plan, or a roadmap/reflection entry
+#       link).
+#
+# If none of (a), (b), (c) matches: skip the review. A plan-unrelated
+# commit (bug fix, refactor, docs tweak) should not burn a Haiku call
+# just to get flagged against an arbitrary doc.
 spec_path="${S2D_SPEC:-}"
+
 if [ -z "$spec_path" ]; then
-    spec_path=$(ls -t docs/phase-*-plan.md docs/phase-*-design.md 2>/dev/null | head -1 || true)
+    # (b) Commit message / trailer.
+    if [ -f .git/COMMIT_EDITMSG ]; then
+        spec_path=$(grep -iE '^(Plan|Spec): ' .git/COMMIT_EDITMSG 2>/dev/null \
+            | head -1 | sed -E 's/^[^:]+: *//' | tr -d ' ')
+    fi
 fi
+
+if [ -z "$spec_path" ]; then
+    # (c) Scan the diff for a phase-*-plan.md or phase-*-design.md
+    #     reference. Matches paths mentioned in added code/comment lines.
+    spec_path=$(git diff --cached -- '*.rs' '*.md' '*.toml' \
+        | grep -oE 'docs/phase-[a-z0-9_-]+-(plan|design|qa-plan)\.md' \
+        | head -1 || true)
+fi
+
 if [ -z "$spec_path" ] || [ ! -f "$spec_path" ]; then
-    echo "info: S2D — no candidate spec doc found (docs/phase-*-plan.md); review skipped" >&2
+    # No spec claimed → not a plan-driven commit. Skip silently.
+    # Operators who want S2D on an ad-hoc commit: set S2D_SPEC=...
+    # or add `Plan: docs/phase-...-plan.md` to the commit message.
     exit 0
 fi
 
