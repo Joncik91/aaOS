@@ -8,13 +8,13 @@
 .DS_Store
 docs/superpowers/
 docs/product-brief.md
-docs/phase-b-design.md
-docs/phase-b-plan.md
-docs/phase-c1-design.md
-docs/phase-c1-plan.md
-docs/phase-c2-design.md
-docs/phase-c2-plan.md
-docs/phase-c3-design.md
+# Phase plans + designs — working artifacts for Claude / Qwen / Copilot
+# cycles. Glob so new phases (F-b/3, F-b/4, G, ...) don't have to
+# re-edit this file. The code, reflection entries, and commit messages
+# are the durable public record; plans are iterated drafts.
+docs/phase-*-plan.md
+docs/phase-*-design.md
+docs/phase-*-qa-plan.md
 CLAUDE.md
 
 # Private security-gaps ledger. Public docs publish shipped fixes and
