@@ -8,3 +8,4 @@ pub mod mcp_backend;
 pub mod server;
 pub mod spawn_agents_tool;
 pub mod spawn_tool;
+pub mod workspace_gc;

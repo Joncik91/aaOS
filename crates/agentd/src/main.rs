@@ -102,6 +102,15 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // Workspace GC: prune /var/lib/aaos/workspace/<run>/ older
+            // than AAOS_WORKSPACE_TTL_DAYS (default 7). Runs once now
+            // (startup sweep) and hourly thereafter. No-op if
+            // AAOS_WORKSPACE_TTL_DAYS=0.
+            let workspace_base = std::env::var("AAOS_WORKSPACE_BASE")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("/var/lib/aaos/workspace"));
+            agentd::workspace_gc::spawn(workspace_base);
+
             server.listen(&socket).await?;
         }
         Command::Submit {

@@ -382,11 +382,48 @@ fn expand_capability(template: &str, params: &serde_json::Value) -> Vec<String> 
                 out.push_str(&template[end..]);
                 substitute_tokens(&out, params)
             })
+            .filter(|rendered| !has_unresolved_template_token(rendered))
             .collect();
     }
 
     // No array expansion — fall back to single-substitution behavior.
-    vec![substitute_tokens(template, params)]
+    let rendered = substitute_tokens(template, params);
+    if has_unresolved_template_token(&rendered) {
+        // Dropping the capability is safer than granting the LLM a literal
+        // `{placeholder}` as a file path (soak-test Bug 5 from 2026-04-19:
+        // the generalist role emitted `file_write: {workspace}` when
+        // workspace was unset, and downstream tools then wrote to a file
+        // literally named `{workspace}`). A missing-param capability
+        // almost certainly means the operator's plan forgot to set that
+        // param; silently dropping + logging lets the rest of the role's
+        // capabilities still take effect.
+        tracing::warn!(
+            template = %template,
+            "role capability has unresolved template token after substitution; \
+             dropping capability. Missing param in plan? Template: {template}"
+        );
+        return Vec::new();
+    }
+    vec![rendered]
+}
+
+/// True if `s` contains a `{name}` token that no substitution resolved.
+/// Used by `expand_capability` to drop capabilities that reference params
+/// the plan didn't set, rather than emit a literal template string that
+/// would later be interpreted as a real path.
+fn has_unresolved_template_token(s: &str) -> bool {
+    // Any `{` followed by a closing `}` with non-empty content between
+    // means a token survived substitution. False positives on literal
+    // braces in prose are acceptable — role capability strings are
+    // structured (prefix + path) and don't legitimately contain `{...}`
+    // except as template tokens.
+    let Some(open) = s.find('{') else {
+        return false;
+    };
+    let Some(close_rel) = s[open + 1..].find('}') else {
+        return false;
+    };
+    close_rel > 0 // non-empty inside the braces
 }
 
 /// Locate a `{name.*}` token in `s`. Returns `(start, end, name)` where
@@ -936,5 +973,79 @@ retry: { max_attempts: 1 }
 "#;
         let role: Role = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(role.escalate_on, vec![EscalationSignal::MaxTokens]);
+    }
+
+    // --- Unresolved-template-token drop (soak-test Bug 5) ---
+
+    #[test]
+    fn expand_capability_drops_unresolved_template() {
+        // workspace param is missing from params → the capability
+        // `file_write: {workspace}` should drop, not emit a literal.
+        let params = serde_json::json!({ "task_description": "some goal" });
+        let caps = expand_capability("file_write: {workspace}", &params);
+        assert!(
+            caps.is_empty(),
+            "unresolved {{workspace}} must drop, not emit literal: {caps:?}"
+        );
+    }
+
+    #[test]
+    fn expand_capability_keeps_resolved_template() {
+        let params = serde_json::json!({ "workspace": "/tmp/run-x/out.md" });
+        let caps = expand_capability("file_write: {workspace}", &params);
+        assert_eq!(caps, vec!["file_write: /tmp/run-x/out.md"]);
+    }
+
+    #[test]
+    fn expand_capability_keeps_no_template_literal() {
+        let params = serde_json::json!({});
+        let caps = expand_capability("tool: web_fetch", &params);
+        assert_eq!(caps, vec!["tool: web_fetch"]);
+    }
+
+    #[test]
+    fn render_manifest_omits_caps_with_missing_params() {
+        // Mirror the real generalist bug: template says `{workspace}` but
+        // caller passes only `task_description`. Rendered manifest must
+        // NOT carry `file_write: {workspace}` as a grant.
+        let role = Role {
+            name: "generalist".into(),
+            model: "deepseek-chat".into(),
+            model_ladder: vec![],
+            escalate_on: vec![],
+            parameters: Default::default(),
+            capabilities: vec!["tool: file_write".into(), "file_write: {workspace}".into()],
+            system_prompt: "x".into(),
+            message_template: "y".into(),
+            budget: RoleBudget {
+                max_input_tokens: 1000,
+                max_output_tokens: 1000,
+            },
+            retry: RoleRetry {
+                max_attempts: 1,
+                on: vec![],
+            },
+            scaffold: None,
+            priority: 128,
+        };
+        let yaml = role.render_manifest(&serde_json::json!({}));
+        assert!(
+            !yaml.contains("{workspace}"),
+            "rendered manifest must not carry literal {{workspace}}: {yaml}"
+        );
+        assert!(
+            yaml.contains("tool: file_write"),
+            "other capabilities must still render: {yaml}"
+        );
+    }
+
+    #[test]
+    fn has_unresolved_template_token_cases() {
+        assert!(has_unresolved_template_token("file_write: {workspace}"));
+        assert!(has_unresolved_template_token("/some/{placeholder}/path.md"));
+        assert!(!has_unresolved_template_token("/resolved/path.md"));
+        assert!(!has_unresolved_template_token("tool: web_fetch"));
+        // Empty braces aren't a real template token; don't drop for them.
+        assert!(!has_unresolved_template_token("literal {} braces"));
     }
 }

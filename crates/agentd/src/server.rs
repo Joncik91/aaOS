@@ -261,14 +261,40 @@ impl Server {
         let roles_dir = std::path::PathBuf::from(
             std::env::var("AAOS_ROLES_DIR").unwrap_or_else(|_| "/etc/aaos/roles".into()),
         );
+        // Per-file pre-scan: name each broken YAML individually before the
+        // terminal catalog-load error. Any single malformed file fails the
+        // whole catalog; silent failure here was Bug 8 from the 2026-04-19
+        // soak-test — operators had no signal which file was wrong.
+        if let Ok(entries) = std::fs::read_dir(&roles_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("yaml") {
+                    continue;
+                }
+                if let Ok(contents) = std::fs::read_to_string(&path) {
+                    if let Err(e) = serde_yaml::from_str::<serde_yaml::Value>(&contents) {
+                        tracing::error!(
+                            file = %path.display(),
+                            error = %e,
+                            "role YAML failed to parse — this role will not load. \
+                             Fix the file or remove it, then restart agentd."
+                        );
+                    }
+                }
+            }
+        }
+
         let catalog = match RoleCatalog::load_from_dir(&roles_dir) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(
+                // error! (not warn!) because computed orchestration is the
+                // intended path for every non-Bootstrap goal. A single
+                // malformed role file disables the entire catalog.
+                tracing::error!(
                     error = %e,
                     dir = %roles_dir.display(),
-                    "role catalog unavailable; computed orchestration disabled \
-                     (falling back to bootstrap manifest)"
+                    "role catalog FAILED TO LOAD; computed orchestration disabled. \
+                     See per-file errors above."
                 );
                 return (None, None);
             }

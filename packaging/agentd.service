@@ -1,6 +1,6 @@
 [Unit]
 Description=aaOS agent daemon
-Documentation=https://github.com/jounes/aaOS
+Documentation=https://github.com/Joncik91/aaOS
 After=network-online.target
 Wants=network-online.target
 
@@ -17,8 +17,14 @@ RuntimeDirectory=agentd
 RuntimeDirectoryMode=0750
 EnvironmentFile=-/etc/default/aaos
 
-# Basic hardening. Landlock/seccomp profiles come in Phase F-b.
-# ProtectSystem=full (not strict) for F-a: write-path audit deferred to F-b.
+# Hardening. Phase F-b/3 shipped Landlock + seccomp + user-namespace
+# confinement per-agent inside NamespacedBackend (see docs/architecture.md);
+# these knobs still harden the *daemon itself*. ProtectSystem=full keeps
+# /usr, /boot, /efi read-only; agentd writes only to its RuntimeDirectory
+# (/run/agentd), StateDirectory (/var/lib/aaos), and the explicit
+# operator-configured output paths under /data, /output, etc. Stricter
+# (strict) is a candidate revisit once the full daemon write-path audit
+# lands — see docs/roadmap.md Phase F-c hardening notes.
 NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=true

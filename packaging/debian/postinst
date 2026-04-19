@@ -26,6 +26,17 @@ case "$1" in
     # can drop config files in place without restarting the package.
     mkdir -p /etc/aaos
 
+    # Ensure the per-run workspace root exists. systemd's
+    # StateDirectory=aaos creates /var/lib/aaos/ 0750 aaos:aaos at
+    # service start, but the workspace/ subdirectory is only created
+    # lazily by the runtime on the first submit. After `apt purge`
+    # removes /var/lib/aaos entirely, the next install's first submit
+    # would race to create it. Creating it here (idempotent) keeps
+    # state identical after purge+install as after a fresh install.
+    mkdir -p /var/lib/aaos/workspace
+    chown -R aaos:aaos /var/lib/aaos 2>/dev/null || true
+    chmod 0750 /var/lib/aaos /var/lib/aaos/workspace 2>/dev/null || true
+
     # Lock down the env file (LLM API keys live here). systemd reads
     # EnvironmentFile= as root before de-privileging to User=aaos, so
     # 0600 root:root is enough for the service to start while denying

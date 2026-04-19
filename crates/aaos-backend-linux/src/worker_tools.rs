@@ -15,6 +15,7 @@ use aaos_tools::registry::ToolRegistry;
 /// those stay daemon-side until a follow-up sub-project adds a
 /// broker-mediated memory backend.
 pub const WORKER_SIDE_TOOLS: &[&str] = &[
+    "echo",
     "file_read",
     "file_write",
     "file_edit",
@@ -26,6 +27,7 @@ pub const WORKER_SIDE_TOOLS: &[&str] = &[
 /// Build a registry containing only the worker-safe tools.
 pub fn build_worker_registry() -> Arc<ToolRegistry> {
     let reg = ToolRegistry::new();
+    reg.register(Arc::new(aaos_tools::EchoTool));
     reg.register(Arc::new(aaos_tools::FileReadTool));
     reg.register(Arc::new(aaos_tools::FileWriteTool));
     reg.register(Arc::new(aaos_tools::FileEditTool));

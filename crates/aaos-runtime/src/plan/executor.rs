@@ -660,16 +660,24 @@ pub fn fallback_generalist_plan(goal: &str, catalog: &RoleCatalog) -> Result<Pla
             "no 'generalist' role in catalog and planner failed to match".into(),
         )));
     }
+    // Give the generalist a concrete workspace path so role capabilities
+    // that reference {workspace} resolve instead of leaking the literal
+    // template string into the rendered manifest (soak-test Bug 5).
+    // `{run}` substitution happens in the PlanExecutor before spawn,
+    // resolving to `/var/lib/aaos/workspace/<run-id>/`.
     Ok(Plan {
         subtasks: vec![Subtask {
             id: "generalist".into(),
             role: "generalist".into(),
-            params: serde_json::json!({ "task_description": goal }),
+            params: serde_json::json!({
+                "task_description": goal,
+                "workspace": "{run}/fallback-output.md",
+            }),
             depends_on: vec![],
             ttl: None,
             current_model_tier: 0,
         }],
-        final_output: "/".into(),
+        final_output: "{run}/fallback-output.md".into(),
     })
 }
 
