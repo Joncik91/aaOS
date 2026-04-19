@@ -182,6 +182,34 @@ impl CapabilityRegistry {
     pub fn token_id_of(&self, handle: CapabilityHandle) -> Option<uuid::Uuid> {
         self.table.get(&handle).map(|entry| entry.token.id)
     }
+
+    /// RUNTIME-INTERNAL. Resolve a slice of handles to their full
+    /// `CapabilityToken` structs for the given agent. Handles that are
+    /// unknown or belong to a different agent are silently skipped (fail-
+    /// closed: the caller ends up with a smaller token set, not more).
+    ///
+    /// Used by `ToolInvocation` to collect the serializable token structs
+    /// before forwarding them across the broker to a confined worker
+    /// process. The worker rebuilds a local `CapabilityRegistry` from
+    /// these structs and constructs an `InvocationContext` whose registry
+    /// can satisfy the tool's internal `permits()` call.
+    #[doc(hidden)]
+    pub fn resolve_tokens(
+        &self,
+        handles: &[CapabilityHandle],
+        agent_id: AgentId,
+    ) -> Vec<CapabilityToken> {
+        handles
+            .iter()
+            .filter_map(|h| {
+                let entry = self.table.get(h)?;
+                if entry.agent_id != agent_id {
+                    return None;
+                }
+                Some(entry.token.clone())
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]

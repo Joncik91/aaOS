@@ -17,6 +17,8 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+// CapabilityToken is serializable and forwarded to workers so they can
+// rebuild a per-call capability registry for tool internal re-checks.
 
 /// JSON-RPC 2.0 envelope identifier.
 pub const JSONRPC_VERSION: &str = "2.0";
@@ -53,7 +55,11 @@ pub mod invoke_tool_error_code {
 /// the handshake (and handled inline in `run_handshake`). `Ping` and `Poke`
 /// are broker→worker messages sent over the persistent post-handshake
 /// stream; the worker's `agent_loop` dispatches them and replies.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+// Note: PartialEq/Eq are NOT derived here because the `capability_tokens`
+// field (Vec<CapabilityToken>) cannot implement Eq — CapabilityToken
+// contains Capability::Custom { params: serde_json::Value } which has no Eq.
+// Tests that need to inspect Request values use `matches!` instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "kebab-case")]
 pub enum Request {
     /// First message after connect. Carries the worker's own pid so
@@ -76,10 +82,19 @@ pub enum Request {
     /// Broker→worker. Carries a tool call to execute in the worker's
     /// confined address space. Response is correlated via `request_id`
     /// which the broker matches to a `pending` oneshot sender.
+    ///
+    /// `capability_tokens` carries the full `CapabilityToken` structs
+    /// (serialized from the daemon's `CapabilityRegistry`) so the worker
+    /// can rebuild a minimal per-call registry and satisfy the tool's own
+    /// internal `ctx.capability_registry.permits()` check. Defaults to
+    /// empty so older workers that do not know about this field continue
+    /// to deserialize correctly.
     InvokeTool {
         tool_name: String,
         input: serde_json::Value,
         request_id: u64,
+        #[serde(default)]
+        capability_tokens: Vec<aaos_core::CapabilityToken>,
     },
 }
 
@@ -233,15 +248,81 @@ mod tests {
                 tool_name: "file_write".into(),
                 input: serde_json::json!({ "path": "/tmp/x", "content": "hi" }),
                 request_id: 99,
+                capability_tokens: vec![],
             },
         );
         let s = serde_json::to_string(&req).unwrap();
         assert!(s.contains("invoke-tool"));
         let back: WireRequest = serde_json::from_str(&s).unwrap();
         match back.request {
-            Request::InvokeTool { tool_name, request_id, .. } => {
+            Request::InvokeTool { tool_name, request_id, capability_tokens, .. } => {
                 assert_eq!(tool_name, "file_write");
                 assert_eq!(request_id, 99);
+                assert!(capability_tokens.is_empty());
+            }
+            other => panic!("wrong variant: {:?}", other),
+        }
+    }
+
+    /// Verify that `InvokeTool` with forwarded `CapabilityToken` structs
+    /// roundtrips correctly over JSON — the full token (including capability
+    /// type, constraints, timestamps) must survive a serialize/deserialize
+    /// cycle unchanged.
+    #[test]
+    fn invoke_tool_with_tokens_roundtrips() {
+        use aaos_core::{AgentId, Capability, CapabilityToken, Constraints};
+
+        let agent_id = AgentId::new();
+        let token = CapabilityToken::issue(
+            agent_id,
+            Capability::FileRead {
+                path_glob: "/lib/x86_64-linux-gnu/*".into(),
+            },
+            Constraints::default(),
+        );
+        let token_id = token.id;
+
+        let req = WireRequest::new(
+            42,
+            Request::InvokeTool {
+                tool_name: "file_read".into(),
+                input: serde_json::json!({ "path": "/lib/x86_64-linux-gnu/libc.so.6" }),
+                request_id: 42,
+                capability_tokens: vec![token],
+            },
+        );
+        let s = serde_json::to_string(&req).unwrap();
+        let back: WireRequest = serde_json::from_str(&s).unwrap();
+        match back.request {
+            Request::InvokeTool { capability_tokens, .. } => {
+                assert_eq!(capability_tokens.len(), 1);
+                let t = &capability_tokens[0];
+                assert_eq!(t.id, token_id);
+                assert_eq!(t.agent_id, agent_id);
+                assert!(matches!(
+                    &t.capability,
+                    Capability::FileRead { path_glob } if path_glob == "/lib/x86_64-linux-gnu/*"
+                ));
+            }
+            other => panic!("wrong variant: {:?}", other),
+        }
+    }
+
+    /// Verify backward-compat: an `InvokeTool` message without
+    /// `capability_tokens` (as an older broker would send) deserializes
+    /// correctly with the field defaulting to empty.
+    #[test]
+    fn invoke_tool_missing_tokens_defaults_to_empty() {
+        // Craft a JSON string that looks like what an older broker would
+        // send — no `capability_tokens` field at all.
+        let old_wire = r#"{"jsonrpc":"2.0","id":7,"method":"invoke-tool","params":{"tool_name":"echo","input":{},"request_id":7}}"#;
+        let back: WireRequest = serde_json::from_str(old_wire).unwrap();
+        match back.request {
+            Request::InvokeTool { capability_tokens, .. } => {
+                assert!(
+                    capability_tokens.is_empty(),
+                    "missing capability_tokens must default to empty vec"
+                );
             }
             other => panic!("wrong variant: {:?}", other),
         }
