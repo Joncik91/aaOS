@@ -20,10 +20,11 @@ Run once per clone:
 
 ```sh
 ./scripts/setup-hooks.sh
-export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-The key goes in your shell env, not in-repo. The hook is a no-op (with a warning) if the key is unset, so fresh clones don't break.
+S2D shells out to `claude -p` (the Claude Code CLI), which inherits whatever auth your interactive Claude Code session already uses. No separate API key, no `ANTHROPIC_API_KEY` env var, no in-repo credentials.
+
+If `claude` isn't on `$PATH` (e.g., on a bare CI runner), the hook prints a warning and skips — fresh clones don't break.
 
 ## Override paths
 
@@ -57,7 +58,7 @@ The droplet / production exercise remains the final validator. S2D just raises t
 
 ## Cost + latency
 
-One Haiku API call per commit. At Haiku pricing with typical spec + diff sizes: ~$0.001 per commit, ~3-5s latency. If this becomes a friction point, flip `S2D_DISABLE=1` in the shell or unset the API key.
+One `claude -p` invocation per commit. Uses whatever subscription / quota the Claude Code CLI is already attached to — no separate billing line, no token-math to reason about. Latency is ~30-60s per commit (CLI cold-start + one LLM round-trip; Haiku by default). Rapid-fire commits can be friction; flip `S2D_DISABLE=1` in the shell or use `--no-verify` to skip per-commit.
 
 ## Tuning
 
@@ -65,7 +66,6 @@ The hook caps diff input at 120k chars. Specs are sent in full. If your diffs ar
 
 ## Failure modes
 
-- **API down or timeout:** hook prints a warning and exits 0 — commits are never blocked by transport problems.
-- **Malformed response:** same — warning, exit 0.
-- **`jq` or `curl` missing:** warning + skip. Install: `apt install jq curl`.
-- **Spec has no requirements this diff would plausibly implement:** Haiku should reply `S2D_OK`. If it false-positives consistently on small refactor commits, either override per-commit or disable with `S2D_DISABLE=1`.
+- **`claude` CLI hangs or errors:** bounded by `S2D_TIMEOUT` (default 60s). On timeout or empty output the hook prints a warning and exits 0 — commits are never blocked by transport problems.
+- **`claude` not on PATH:** warning + skip. Install Claude Code, or set `S2D_DISABLE=1`.
+- **Spec has no requirements this diff would plausibly implement:** the reviewer should reply `S2D_OK`. If it false-positives consistently on small refactor commits, either override per-commit or disable with `S2D_DISABLE=1`.

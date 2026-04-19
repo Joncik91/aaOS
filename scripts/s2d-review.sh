@@ -2,9 +2,13 @@
 # S2D — Spec-to-Diff reviewer.
 #
 # Pipes the current staged diff + the most recently modified spec doc
-# through Claude Haiku and asks: "do the staged code changes cover every
-# requirement the spec calls out, or are any requirements missing /
-# hallucinated?"
+# through Claude Code (the `claude -p` CLI) and asks: "do the staged code
+# changes cover every requirement the spec calls out, or are any
+# requirements missing / hallucinated?"
+#
+# Uses the `claude` CLI rather than a raw Anthropic API call so it
+# inherits whatever auth the interactive Claude Code session already has.
+# No separate API key required.
 #
 # Exit codes:
 #   0  — S2D found nothing to flag OR review was skipped (missing tool /
@@ -14,14 +18,17 @@
 #        `git commit --no-verify` to override.
 #
 # Environment:
-#   ANTHROPIC_API_KEY   required to reach the API (hook exits 0 with a
-#                        warning if unset — no-op rather than hard fail).
 #   S2D_DISABLE=1       skip the check entirely (useful for docs-only
 #                        or refactor commits).
-#   S2D_MODEL           override model ID. Default claude-haiku-4-5.
+#   S2D_MODEL           override the claude CLI's --model flag.
+#                        Default: the CLI's own default (Haiku-class is
+#                        fine; specs + diffs are small).
 #   S2D_SPEC            absolute path to the spec file to review against.
 #                        If unset, auto-detect the most recently modified
 #                        file under docs/phase-*-plan.md or docs/phase-*-design.md.
+#   S2D_TIMEOUT         seconds to wait for the CLI before giving up.
+#                        Default 120. (Cold-start `claude -p` can take
+#                        ~50-60s on first invocation of a session.)
 
 set -e
 
@@ -37,10 +44,10 @@ if [ -z "$staged_rs" ]; then
     exit 0
 fi
 
-# 2. API key absent? Warn + skip (don't hard-block the commit).
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    echo "warn: ANTHROPIC_API_KEY unset — S2D spec-to-diff review skipped" >&2
-    echo "      set the key to enable, or S2D_DISABLE=1 to silence this warning" >&2
+# 2. claude CLI present?
+if ! command -v claude >/dev/null 2>&1; then
+    echo "warn: claude CLI not found on PATH — S2D spec-to-diff review skipped" >&2
+    echo "      install Claude Code, or S2D_DISABLE=1 to silence this warning" >&2
     exit 0
 fi
 
@@ -54,9 +61,9 @@ if [ -z "$spec_path" ] || [ ! -f "$spec_path" ]; then
     exit 0
 fi
 
-model="${S2D_MODEL:-claude-haiku-4-5}"
+timeout="${S2D_TIMEOUT:-120}"
 
-# 4. Build the review payload. Keep it bounded so we don't blow the context:
+# 4. Build the review payload. Bounded so the prompt fits comfortably:
 #    - spec: full file (specs are the thing we want the reviewer to read)
 #    - diff: staged diff of .rs files only, truncated at 120k chars
 diff_content=$(git diff --cached -- '*.rs')
@@ -67,39 +74,34 @@ if [ "$diff_bytes" -gt 120000 ]; then
 
 [... diff truncated at 120k chars ...]"
 fi
-
 spec_content=$(cat "$spec_path")
 
-# 5. Call the Anthropic Messages API. Pure curl + jq so there are no
-#    Python / Node deps.
-if ! command -v jq >/dev/null 2>&1; then
-    echo "warn: jq not installed — S2D review skipped" >&2
-    echo "      apt install jq" >&2
-    exit 0
-fi
-if ! command -v curl >/dev/null 2>&1; then
-    echo "warn: curl not installed — S2D review skipped" >&2
-    exit 0
-fi
-
-prompt=$(cat <<'EOF'
+prompt=$(cat <<EOF
 You are a senior code reviewer performing a Spec-to-Diff (S2D) check.
 
 You are given:
 1. A spec document — what the code was supposed to do.
 2. A git diff of the staged changes in a Rust codebase.
 
-Your job: flag REQUIREMENTS from the spec that do NOT appear to be implemented in the diff.
+Your job: flag REQUIREMENTS from the spec that do NOT appear to be
+implemented in the diff.
 
 Scope rules:
 - Only flag things the spec explicitly requires. Don't invent requirements.
-- A requirement is "covered" if the diff contains plausible markers of it (a new function, a new match arm, a new error variant, a new field, an audit event emit, a capability check, etc.). You don't need to verify correctness — just presence.
-- Don't complain about style, naming, or minor improvements. That's not your job.
-- If the diff is a small, targeted subset of the spec (e.g. one task out of 14), that is NORMAL and fine. Only flag gaps between requirements that the diff CLAIMS to implement and their actual presence.
+- A requirement is "covered" if the diff contains plausible markers of
+  it (a new function, a new match arm, a new error variant, a new field,
+  an audit event emit, a capability check, etc.). You don't need to
+  verify correctness — just presence.
+- Don't complain about style, naming, or minor improvements. That's not
+  your job.
+- If the diff is a small, targeted subset of the spec (e.g. one task
+  out of 14), that is NORMAL and fine. Only flag gaps between
+  requirements that the diff CLAIMS to implement and their actual presence.
 - If unsure whether something is in scope, err on the side of NOT flagging.
 
 Output format (strict):
-- If every spec requirement the diff claims to implement is covered, reply EXACTLY:
+- If every spec requirement the diff claims to implement is covered,
+  reply EXACTLY:
     S2D_OK
   and nothing else.
 - Otherwise, reply with a bullet list of gaps. Each bullet is ≤2 lines:
@@ -111,68 +113,37 @@ Do not restate the diff. Do not praise the code. Be terse and specific.
 
 ---
 
-SPEC (`{{SPEC_PATH}}`):
+SPEC ($spec_path):
 
-{{SPEC_CONTENT}}
+$spec_content
 
 ---
 
 DIFF (staged, .rs files):
 
-{{DIFF_CONTENT}}
+$diff_content
 EOF
 )
 
-# Substitute placeholders — use jq to build the JSON body so we don't
-# have to escape the spec / diff text manually.
-payload=$(jq -n \
-    --arg model "$model" \
-    --arg spec_path "$spec_path" \
-    --arg spec "$spec_content" \
-    --arg diff "$diff_content" \
-    --arg prompt_template "$prompt" \
-    '{
-        model: $model,
-        max_tokens: 2048,
-        messages: [
-            {
-                role: "user",
-                content: (
-                    $prompt_template
-                    | sub("\\{\\{SPEC_PATH\\}\\}"; $spec_path)
-                    | sub("\\{\\{SPEC_CONTENT\\}\\}"; $spec)
-                    | sub("\\{\\{DIFF_CONTENT\\}\\}"; $diff)
-                )
-            }
-        ]
-    }')
-
-response=$(printf '%s' "$payload" | curl --silent --show-error --max-time 30 \
-    --header "x-api-key: $ANTHROPIC_API_KEY" \
-    --header "anthropic-version: 2023-06-01" \
-    --header "content-type: application/json" \
-    --data-binary @- \
-    https://api.anthropic.com/v1/messages 2>&1 || true)
-
-if [ -z "$response" ]; then
-    echo "warn: S2D — empty API response; review skipped" >&2
-    exit 0
+# 5. Invoke claude -p. Pipe the prompt via stdin to avoid shell arg limits.
+if command -v timeout >/dev/null 2>&1; then
+    runner="timeout $timeout"
+else
+    runner=""
 fi
 
-# Extract the reviewer text. If the API returned an error, surface it
-# briefly but don't block the commit on transport failures.
-text=$(printf '%s' "$response" | jq -r '.content[0].text // empty' 2>/dev/null || true)
+claude_args="-p --model ${S2D_MODEL:-haiku}"
+
+# `claude -p` expects the prompt as either an argument or on stdin. Use
+# stdin so we never hit argv size limits on large specs.
+text=$(printf '%s' "$prompt" | $runner claude $claude_args 2>&1 || true)
+
 if [ -z "$text" ]; then
-    err=$(printf '%s' "$response" | jq -r '.error.message // empty' 2>/dev/null || true)
-    if [ -n "$err" ]; then
-        echo "warn: S2D — API error: $err (review skipped)" >&2
-    else
-        echo "warn: S2D — unparseable response (review skipped)" >&2
-    fi
+    echo "warn: S2D — empty claude CLI output; review skipped" >&2
     exit 0
 fi
 
-# 6. Decide. "S2D_OK" anywhere in the response = pass.
+# 6. Decide. "S2D_OK" anywhere on a line of its own = pass.
 if printf '%s' "$text" | grep -q '^S2D_OK'; then
     exit 0
 fi
