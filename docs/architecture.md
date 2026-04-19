@@ -50,6 +50,20 @@ Signals are scanned from the audit broadcast via `AuditLog::events_snapshot()` (
 
 **Scope:** signal-based routing only; no cost math, no classifier. `PerModelLatencyTracker` collects per-model p50/p95 into 256-sample bounded rings but is not consumed by any routing decision in v1 — future cost-aware routing can read from it.
 
+#### Worker-Side Tool Confinement (Phase F-b sub-project 3)
+
+When `AAOS_DEFAULT_BACKEND=namespaced`, agent tool invocations execute inside the worker under Landlock + seccomp — not in `agentd`'s address space. The daemon keeps policy (capability check + audit + repeat-guard); the broker stream carries each call across to the worker via `Request::InvokeTool { tool_name, input, request_id }` and returns the result through a `pending: HashMap<u64, oneshot::Sender>` demux on the existing post-handshake stream.
+
+**What runs where:**
+- **Worker-side** (confined, v1): `file_read`, `file_write`, `file_edit`, `file_list`, `file_read_many`, `grep`. Filesystem + pure-compute tools. Whitelisted explicitly in `aaos_backend_linux::worker_tools::WORKER_SIDE_TOOLS` — fail-closed on unknown names.
+- **Daemon-side** (not confined, v1): `web_fetch` (needs outbound network — seccomp allowlist has no `socket`/`connect`), `cargo_run` + `git_commit` (spawn subprocesses — seccomp kill-filter denies `execve`). Documented scope note; separate sub-projects for each.
+
+**Routing fork** lives at a single point in `aaos_tools::ToolInvocation::invoke` — after capability check + audit prefix, `route_for(tool_name, backend_kind)` returns `ToolExecutionSurface::{Daemon, Worker}`. The surface flows into the post-execution `ToolInvoked` audit event so operators can see in the CLI stream whether confinement ran (`[worker]` green) or not (`[daemon]` dim).
+
+**Landlock is the second gate, not the only gate.** Daemon-side capability grants are narrower than the worker's Landlock scope by design: a capability grant to `/data` still fails at Landlock if the worker's scratch is `/var/lib/aaos/session-<id>`. That's correct — operators see `ToolDenied { reason: "landlock: ..." }` — but it also means every worker-side tool call runs inside a *narrower* policy than the one that approved it.
+
+**Out of scope v1:** LLM loop stays daemon-side (keeps API keys out of the sandbox); per-tool Landlock scoping (all worker tools share one ruleset); mid-invoke cancellation (60s timeout + worker-kill fallback). Phase F-b/3 closes the primary capability-model hole — tool code can no longer reach outside the sandbox's filesystem/syscall boundary.
+
 ### 3. Agent Memory Layer (`aaos-memory`)
 
 Three memory tiers:
