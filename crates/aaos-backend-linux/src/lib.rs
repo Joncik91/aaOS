@@ -974,6 +974,25 @@ mod launch_impl {
         if let Some(ws) = workspace.as_ref() {
             extra_writable_roots.retain(|p| !p.starts_with(ws));
         }
+        // Filter out paths that don't exist on the host. The child runs
+        // as the aaos user inside a new user namespace; it can't mkdir
+        // arbitrary host paths like /output. Silently drop non-existent
+        // roots (Landlock + ENOENT both deny tool calls that reach those
+        // paths anyway; the bind-mount was only about visibility).
+        // Without this filter the child exits at step D2 with ENOENT and
+        // the launch fails with a 10s sandboxed-ready timeout instead of
+        // just gracefully lacking that bind-mount — soak-test Bug 10.
+        extra_writable_roots.retain(|p| {
+            let exists = p.exists();
+            if !exists {
+                tracing::debug!(
+                    path = %p.display(),
+                    "namespaced-backend: capability-declared writable root does not exist on host; \
+                     skipping bind-mount (tool calls to paths beneath will fail Landlock/ENOENT)"
+                );
+            }
+            exists
+        });
         // Dedup.
         extra_writable_roots.sort();
         extra_writable_roots.dedup();
@@ -1037,17 +1056,59 @@ mod launch_impl {
             Ok::<_, BackendError>(())
         };
 
-        match tokio::time::timeout(Duration::from_millis(timeout_ms), handshake).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => {
+        // Child-exit watchdog: if the child bails out before sandboxed-ready
+        // (e.g. a bind-mount step fails inside the namespace), waitpid()
+        // returns immediately. Waiting the full ready_timeout for a child
+        // that's already dead is wasted time AND indistinguishable from a
+        // legitimately slow launch. Poll non-blocking waitpid every 100ms
+        // and fail fast with the exit status so the operator sees
+        // "worker exited with status 42" instead of a generic ReadyTimeout.
+        let child_pid_i32 = child_pid as i32;
+        let exit_watchdog = async move {
+            use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+            use nix::unistd::Pid;
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                match waitpid(Pid::from_raw(child_pid_i32), Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::StillAlive) => continue,
+                    Ok(WaitStatus::Exited(_, code)) => {
+                        return BackendError::BrokerIoFailed(std::io::Error::other(format!(
+                            "worker exited with status {code} before sandboxed-ready \
+                             (see AAOS_NAMESPACED_CHILD_DEBUG log for the failing step)"
+                        )));
+                    }
+                    Ok(WaitStatus::Signaled(_, signal, _)) => {
+                        return BackendError::BrokerIoFailed(std::io::Error::other(format!(
+                            "worker killed by signal {signal:?} before sandboxed-ready"
+                        )));
+                    }
+                    Ok(_) => continue,
+                    Err(e) => {
+                        return BackendError::BrokerIoFailed(std::io::Error::other(format!(
+                            "waitpid on worker child failed: {e}"
+                        )));
+                    }
+                }
+            }
+        };
+
+        let outcome = tokio::select! {
+            res = tokio::time::timeout(Duration::from_millis(timeout_ms), handshake) => {
+                match res {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => Err(BackendError::ReadyTimeout { timeout_ms }),
+                }
+            }
+            early_exit = exit_watchdog => Err(early_exit),
+        };
+
+        match outcome {
+            Ok(()) => {}
+            Err(e) => {
                 let _ = std::fs::remove_file(&socket_path);
                 backend.sessions.remove(&spec.agent_id);
                 return Err(e.into());
-            }
-            Err(_) => {
-                let _ = std::fs::remove_file(&socket_path);
-                backend.sessions.remove(&spec.agent_id);
-                return Err(BackendError::ReadyTimeout { timeout_ms }.into());
             }
         }
 
