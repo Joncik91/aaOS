@@ -35,7 +35,7 @@ S2D is advisory — every override has a one-line escape hatch:
 | One-off refactor that deliberately diverges from any spec | `S2D_DISABLE=1 git commit ...` |
 | Non-code commit where S2D would waste cycles | (auto — no `.rs` files staged = skip) |
 | Reviewer is flagging a false positive and you've read + disagreed | `git commit --no-verify` |
-| Want to aim at a specific spec | `S2D_SPEC=docs/phase-f-b4-plan.md git commit ...` |
+| Want to aim at a specific spec | `S2D_SPEC=<path/to/local/plan.md> git commit ...` |
 | Want a different model | `S2D_MODEL=claude-sonnet-4-6 git commit ...` |
 
 ## What it catches (empirically)
