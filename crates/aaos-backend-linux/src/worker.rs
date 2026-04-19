@@ -205,7 +205,7 @@ mod linux_impl {
                     WireResponse::success(req.id, serde_json::json!({ "nonce": nonce }))
                 }
                 Request::Poke { op } => handle_poke_with_id(req.id, op),
-                Request::InvokeTool { tool_name, input, request_id: _ } => {
+                Request::InvokeTool { tool_name, input, request_id: _, capability_tokens } => {
                     // Look up the tool in the worker's whitelist registry.
                     // Fail-closed: if the tool is not here, return TOOL_NOT_AVAILABLE.
                     // The common writer below always sends the response — no `continue`
@@ -217,21 +217,33 @@ mod linux_impl {
                             format!("tool {tool_name} not available in worker"),
                         ),
                         Ok(tool) => {
-                            // Build a stub InvocationContext to satisfy the trait
-                            // signature.  Daemon-side `ToolInvocation` has already
-                            // done the capability check before sending `InvokeTool`;
-                            // this context exists only to satisfy the trait — no
-                            // capability re-check happens here.
+                            // Resolve the agent id from the environment (set by the
+                            // backend before execve). Fall back to a fresh id if missing
+                            // — the tool's internal capability check will then fail, which
+                            // is the correct fail-closed behaviour for a misconfigured worker.
                             let agent_id = std::env::var(ENV_AGENT_ID)
                                 .ok()
                                 .and_then(|s| s.parse::<aaos_core::AgentId>().ok())
                                 .unwrap_or_else(aaos_core::AgentId::new);
+
+                            // Rebuild a per-call CapabilityRegistry from the forwarded
+                            // tokens. The daemon resolved the handles to full CapabilityToken
+                            // structs before the send so the tool's own
+                            // `ctx.capability_registry.permits(handle, agent_id, &required)`
+                            // check succeeds here (defense-in-depth layer 1; Landlock is
+                            // layer 2). Tokens that were revoked or expired on the daemon
+                            // side carry that state — the worker registry will deny them
+                            // the same way the daemon would.
+                            let per_call_registry = aaos_core::CapabilityRegistry::new();
+                            let token_handles: Vec<aaos_core::CapabilityHandle> = capability_tokens
+                                .into_iter()
+                                .map(|t| per_call_registry.insert(agent_id, t))
+                                .collect();
+
                             let ctx = aaos_tools::context::InvocationContext {
                                 agent_id,
-                                tokens: vec![],
-                                capability_registry: std::sync::Arc::new(
-                                    aaos_core::CapabilityRegistry::new(),
-                                ),
+                                tokens: token_handles,
+                                capability_registry: std::sync::Arc::new(per_call_registry),
                             };
 
                             // Wrap with catch_unwind so a tool panic cannot kill

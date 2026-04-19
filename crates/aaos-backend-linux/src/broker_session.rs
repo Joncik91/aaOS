@@ -450,6 +450,12 @@ impl BrokerSession {
     /// gets its own `request_id` and oneshot channel, demuxed by the
     /// reader task in [`install_post_handshake_stream`].
     ///
+    /// `capability_tokens` carries the resolved `CapabilityToken` structs
+    /// for the invoking agent so the worker can rebuild a per-call
+    /// `CapabilityRegistry` and satisfy the tool's internal
+    /// `ctx.capability_registry.permits()` check. Pass an empty Vec for
+    /// callers that do not need to forward tokens (e.g. tests).
+    ///
     /// Returns `Ok(value)` on success, or an [`InvokeToolError`] variant
     /// that mirrors the wire error code sent by the worker. If the worker
     /// connection drops while the request is in-flight, returns
@@ -464,6 +470,7 @@ impl BrokerSession {
         &self,
         tool_name: &str,
         input: serde_json::Value,
+        capability_tokens: Vec<aaos_core::CapabilityToken>,
     ) -> std::result::Result<serde_json::Value, InvokeToolError> {
         let request_id = self.next_invoke_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
@@ -479,6 +486,7 @@ impl BrokerSession {
             tool_name: tool_name.to_string(),
             input,
             request_id,
+            capability_tokens,
         };
 
         // `send_request` allocates its own id from `next_request_id`; we
@@ -781,10 +789,10 @@ mod tests {
         // Fire 4 concurrent invoke_over_worker calls.
         let s = session.clone();
         let (r0, r1, r2, r3) = tokio::join!(
-            s.invoke_over_worker("tool_a", serde_json::json!({"n": 0})),
-            s.invoke_over_worker("tool_b", serde_json::json!({"n": 1})),
-            s.invoke_over_worker("tool_c", serde_json::json!({"n": 2})),
-            s.invoke_over_worker("tool_d", serde_json::json!({"n": 3})),
+            s.invoke_over_worker("tool_a", serde_json::json!({"n": 0}), vec![]),
+            s.invoke_over_worker("tool_b", serde_json::json!({"n": 1}), vec![]),
+            s.invoke_over_worker("tool_c", serde_json::json!({"n": 2}), vec![]),
+            s.invoke_over_worker("tool_d", serde_json::json!({"n": 3}), vec![]),
         );
 
         // All four must succeed and echo back their respective inputs.
@@ -838,7 +846,7 @@ mod tests {
         // the write half is still there but the worker has gone). The exact
         // error depends on OS behaviour; what matters is it doesn't hang.
         let result = session
-            .invoke_over_worker("tool_x", serde_json::json!({}))
+            .invoke_over_worker("tool_x", serde_json::json!({}), vec![])
             .await;
         // Must have errored (either Runtime from send failure or WorkerLost
         // if the reader drained it before the write).

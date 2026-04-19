@@ -1192,18 +1192,64 @@ system_prompt: "x"
             .session(&agent_id)
             .expect("backend has a broker session for this agent after launch");
 
-        // Pick the first shared-lib path — it's in the Landlock allow-list so
-        // file_read must succeed inside the worker.
-        let readable = backend
+        // Pick the first shared-lib directory from the backend config. Find a
+        // concrete UTF-8 text file inside it — file_read requires a regular
+        // file and returns text content. Walk subdirectories to find one
+        // (e.g., gconv/gconv-modules in /lib/x86_64-linux-gnu/gconv/).
+        let lib_dir = backend
             .shared_lib_paths()
             .first()
             .expect("at least one shared lib configured")
             .clone();
 
+        fn find_text_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+            let rd = std::fs::read_dir(dir).ok()?;
+            for entry in rd.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                let m = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                if m.is_file() {
+                    // Heuristic: read the first 256 bytes. Reject ELF binaries
+                    // (magic "\x7fELF") and any file with non-UTF-8 bytes.
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        if bytes.starts_with(b"\x7fELF") {
+                            continue;
+                        }
+                        let sample = &bytes[..bytes.len().min(256)];
+                        if std::str::from_utf8(sample).is_ok() && !sample.is_empty() {
+                            return Some(path);
+                        }
+                    }
+                } else if m.is_dir() {
+                    if let Some(f) = find_text_file(&path) {
+                        return Some(f);
+                    }
+                }
+            }
+            None
+        }
+
+        let readable = find_text_file(&lib_dir)
+            .unwrap_or_else(|| lib_dir.join("ld-linux-x86-64.so.2"));
+
+        // Build a FileRead token for the shared-lib directory so the tool's
+        // own capability re-check passes inside the worker.
+        let lib_prefix = lib_dir.to_string_lossy().into_owned();
+        let file_read_token = aaos_core::CapabilityToken::issue(
+            agent_id,
+            aaos_core::Capability::FileRead {
+                path_glob: format!("{lib_prefix}/*"),
+            },
+            aaos_core::Constraints::default(),
+        );
+
         let result = session
             .invoke_over_worker(
                 "file_read",
                 serde_json::json!({ "path": readable.to_string_lossy() }),
+                vec![file_read_token],
             )
             .await
             .expect("file_read over broker should succeed inside Landlock scope");
@@ -1310,10 +1356,20 @@ system_prompt: "x"
 
         // /etc/shadow is outside the worker's Landlock allow-list; the tool
         // must return an error that carries a recognisable denial string.
+        // Pass a wildcard FileRead token so the tool's own capability check
+        // passes — Landlock is the actual gate here (defense-in-depth layer 2).
+        let wildcard_token = aaos_core::CapabilityToken::issue(
+            agent_id,
+            aaos_core::Capability::FileRead {
+                path_glob: "*".into(),
+            },
+            aaos_core::Constraints::default(),
+        );
         let result = session
             .invoke_over_worker(
                 "file_read",
                 serde_json::json!({ "path": "/etc/shadow" }),
+                vec![wildcard_token],
             )
             .await;
 
