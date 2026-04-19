@@ -818,4 +818,93 @@ mod tests {
             "ToolInvoked audit event must carry execution_surface = Daemon for daemon-side tools"
         );
     }
+
+    #[tokio::test]
+    async fn no_worker_handle_stays_on_daemon() {
+        // Construct a ToolInvocation WITHOUT a worker_handle (today's default
+        // build). Every tool call must route daemon-side — no route_for
+        // consultation, no surface fork.
+        let log = Arc::new(InMemoryAuditLog::new());
+        let cap_registry = Arc::new(CapabilityRegistry::new());
+        let registry = Arc::new(ToolRegistry::new());
+        // Register EchoTool under the file_write name so the daemon path
+        // has something concrete to call.
+        registry.register_as(Arc::new(crate::tool::EchoTool), "file_write");
+
+        let agent_id = AgentId::new();
+        let token = CapabilityToken::issue(
+            agent_id,
+            Capability::ToolInvoke {
+                tool_name: "*".into(),
+            },
+            Constraints::default(),
+        );
+        let handle = cap_registry.insert(agent_id, token);
+
+        let invocation = ToolInvocation::new(registry, log.clone(), cap_registry);
+        let _ = invocation
+            .invoke(
+                agent_id,
+                "file_write",
+                serde_json::json!({"path": "/tmp/x"}),
+                &[handle],
+            )
+            .await
+            .unwrap();
+
+        let events = log.events();
+        let surface_in_audit = events.iter().find_map(|e| match &e.event {
+            AuditEventKind::ToolInvoked {
+                tool,
+                execution_surface,
+                ..
+            } if tool == "file_write" => Some(*execution_surface),
+            _ => None,
+        });
+        assert_eq!(
+            surface_in_audit,
+            Some(ToolExecutionSurface::Daemon),
+            "no worker_handle must always route daemon-side"
+        );
+    }
+
+    #[tokio::test]
+    async fn in_process_handle_routes_everything_daemon_side() {
+        // Even with a WorkerHandle present, if backend_kind = "in_process"
+        // then route_for returns Daemon for every tool — the handle must
+        // NOT be called. This guards against a regression where the
+        // handle's mere presence forced worker-side routing.
+        let (invocation, agent_id, handles, log, mock_invocations) =
+            setup_worker_harness("in_process");
+
+        let _ = invocation
+            .invoke(
+                agent_id,
+                "file_write",
+                serde_json::json!({"path": "/tmp/x"}),
+                &handles,
+            )
+            .await;
+
+        let calls = mock_invocations.lock().unwrap();
+        assert!(
+            calls.is_empty(),
+            "mock must not be called when backend_kind=in_process"
+        );
+
+        let events = log.events();
+        let surface_in_audit = events.iter().find_map(|e| match &e.event {
+            AuditEventKind::ToolInvoked {
+                tool,
+                execution_surface,
+                ..
+            } if tool == "file_write" => Some(*execution_surface),
+            _ => None,
+        });
+        assert_eq!(
+            surface_in_audit,
+            Some(ToolExecutionSurface::Daemon),
+            "in_process backend must route every tool daemon-side"
+        );
+    }
 }
