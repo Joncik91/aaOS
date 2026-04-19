@@ -30,6 +30,9 @@ pub mod landlock_compile;
 pub mod seccomp_compile;
 pub mod worker;
 
+#[cfg(target_os = "linux")]
+pub mod worker_tools;
+
 /// Detect whether the host permits the mount operations the backend
 /// needs inside an unprivileged user+mount namespace. Forks a child,
 /// unshares CLONE_NEWUSER|CLONE_NEWNS, and tries a tmpfs mount in
