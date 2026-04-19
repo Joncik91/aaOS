@@ -43,20 +43,36 @@ mod tests {
 
     #[test]
     fn in_process_always_daemon() {
-        assert_eq!(route_for("file_write", "in_process"), ToolExecutionSurface::Daemon);
-        assert_eq!(route_for("web_fetch", "in_process"), ToolExecutionSurface::Daemon);
+        assert_eq!(
+            route_for("file_write", "in_process"),
+            ToolExecutionSurface::Daemon
+        );
+        assert_eq!(
+            route_for("web_fetch", "in_process"),
+            ToolExecutionSurface::Daemon
+        );
     }
 
     #[test]
     fn namespaced_routes_most_to_worker() {
-        assert_eq!(route_for("file_write", "namespaced"), ToolExecutionSurface::Worker);
-        assert_eq!(route_for("grep", "namespaced"), ToolExecutionSurface::Worker);
+        assert_eq!(
+            route_for("file_write", "namespaced"),
+            ToolExecutionSurface::Worker
+        );
+        assert_eq!(
+            route_for("grep", "namespaced"),
+            ToolExecutionSurface::Worker
+        );
     }
 
     #[test]
     fn namespaced_keeps_daemon_side_list_on_daemon() {
         for t in DAEMON_SIDE_TOOLS {
-            assert_eq!(route_for(t, "namespaced"), ToolExecutionSurface::Daemon, "{t}");
+            assert_eq!(
+                route_for(t, "namespaced"),
+                ToolExecutionSurface::Daemon,
+                "{t}"
+            );
         }
     }
 }

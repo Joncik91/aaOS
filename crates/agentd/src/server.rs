@@ -704,18 +704,20 @@ impl Server {
         agent_id: aaos_core::AgentId,
         manifest: &aaos_core::AgentManifest,
         workspace_path: std::path::PathBuf,
-    ) -> Option<scopeguard::ScopeGuard<
-        (
-            Arc<aaos_backend_linux::NamespacedBackend>,
-            aaos_core::AgentLaunchHandle,
-        ),
-        impl FnOnce(
+    ) -> Option<
+        scopeguard::ScopeGuard<
             (
                 Arc<aaos_backend_linux::NamespacedBackend>,
                 aaos_core::AgentLaunchHandle,
             ),
-        ),
-    >> {
+            impl FnOnce(
+                (
+                    Arc<aaos_backend_linux::NamespacedBackend>,
+                    aaos_core::AgentLaunchHandle,
+                ),
+            ),
+        >,
+    > {
         let nb = self.namespaced.as_ref()?.clone();
 
         // Look up the subtask agent's capability handles so the worker
@@ -869,7 +871,9 @@ impl Server {
                 tool_registry.clone(),
                 audit_log.clone(),
                 registry.capability_registry().clone(),
-                Arc::new(BrokerWorkerHandle { backend: nb.clone() }),
+                Arc::new(BrokerWorkerHandle {
+                    backend: nb.clone(),
+                }),
             )),
             None => tool_invocation_base,
         };
@@ -1087,7 +1091,9 @@ impl Server {
                 tool_registry.clone(),
                 audit_log.clone(),
                 registry.capability_registry().clone(),
-                Arc::new(BrokerWorkerHandle { backend: nb.clone() }),
+                Arc::new(BrokerWorkerHandle {
+                    backend: nb.clone(),
+                }),
             )),
             None => tool_invocation_base,
         };
@@ -1229,7 +1235,9 @@ impl Server {
                 tool_registry.clone(),
                 audit_log.clone(),
                 registry.capability_registry().clone(),
-                Arc::new(BrokerWorkerHandle { backend: nb.clone() }),
+                Arc::new(BrokerWorkerHandle {
+                    backend: nb.clone(),
+                }),
             )),
             None => tool_invocation_base,
         };

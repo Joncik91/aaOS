@@ -142,10 +142,7 @@ fn extract_capability_roots(manifest: &AgentManifest) -> Vec<PathBuf> {
             continue;
         };
         // Filter out degenerate roots.
-        if root.as_os_str().is_empty()
-            || root == PathBuf::from("/")
-            || root == PathBuf::from(".")
-        {
+        if root.as_os_str().is_empty() || root == PathBuf::from("/") || root == PathBuf::from(".") {
             continue;
         }
         roots.push(root);
@@ -1419,8 +1416,8 @@ system_prompt: "x"
             None
         }
 
-        let readable = find_text_file(&lib_dir)
-            .unwrap_or_else(|| lib_dir.join("ld-linux-x86-64.so.2"));
+        let readable =
+            find_text_file(&lib_dir).unwrap_or_else(|| lib_dir.join("ld-linux-x86-64.so.2"));
 
         // Build a FileRead token for the shared-lib directory so the tool's
         // own capability re-check passes inside the worker.

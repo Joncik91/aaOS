@@ -253,7 +253,10 @@ impl ToolInvocation {
                                 tokens: filtered_handles.clone(),
                                 capability_registry: self.capability_registry.clone(),
                             };
-                            (ToolExecutionSurface::Daemon, tool.invoke(input.clone(), &ctx).await)
+                            (
+                                ToolExecutionSurface::Daemon,
+                                tool.invoke(input.clone(), &ctx).await,
+                            )
                         }
                         Err(e) => (
                             ToolExecutionSurface::Worker,
@@ -831,14 +834,17 @@ mod tests {
             received_tokens: received_tokens.clone(),
         });
 
-        let invocation = ToolInvocation::new_with_worker_handle(
-            registry,
-            log.clone(),
-            cap_registry,
-            mock,
-        );
+        let invocation =
+            ToolInvocation::new_with_worker_handle(registry, log.clone(), cap_registry, mock);
 
-        (invocation, agent_id, vec![handle], log, invocations, received_tokens)
+        (
+            invocation,
+            agent_id,
+            vec![handle],
+            log,
+            invocations,
+            received_tokens,
+        )
     }
 
     #[tokio::test]
@@ -867,9 +873,11 @@ mod tests {
         // Audit event carries surface = Worker
         let events = log.events();
         let surface_in_audit = events.iter().find_map(|e| match &e.event {
-            AuditEventKind::ToolInvoked { tool, execution_surface, .. } if tool == "file_write" => {
-                Some(*execution_surface)
-            }
+            AuditEventKind::ToolInvoked {
+                tool,
+                execution_surface,
+                ..
+            } if tool == "file_write" => Some(*execution_surface),
             _ => None,
         });
         assert_eq!(
@@ -905,9 +913,11 @@ mod tests {
         // Audit event carries surface = Daemon
         let events = log.events();
         let surface_in_audit = events.iter().find_map(|e| match &e.event {
-            AuditEventKind::ToolInvoked { tool, execution_surface, .. } if tool == "web_fetch" => {
-                Some(*execution_surface)
-            }
+            AuditEventKind::ToolInvoked {
+                tool,
+                execution_surface,
+                ..
+            } if tool == "web_fetch" => Some(*execution_surface),
             _ => None,
         });
         assert_eq!(

@@ -796,19 +796,20 @@ mod tests {
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter_clone = counter.clone();
-        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _overrides, _deadline, _run_root| {
-            let c = counter_clone.clone();
-            Box::pin(async move {
-                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(SubtaskResult {
-                    subtask_id: id,
-                    agent_id: AgentId::new(),
-                    response: "ok".into(),
-                    input_tokens: 10,
-                    output_tokens: 5,
+        let runner: SubtaskRunner =
+            Arc::new(move |id, _m, _msg, _overrides, _deadline, _run_root| {
+                let c = counter_clone.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(SubtaskResult {
+                        subtask_id: id,
+                        agent_id: AgentId::new(),
+                        response: "ok".into(),
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    })
                 })
-            })
-        });
+            });
         let audit_concrete = Arc::new(InMemoryAuditLog::new());
         let audit: Arc<dyn AuditLog> = audit_concrete.clone();
         let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());

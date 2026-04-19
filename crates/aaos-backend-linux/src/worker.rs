@@ -205,7 +205,12 @@ mod linux_impl {
                     WireResponse::success(req.id, serde_json::json!({ "nonce": nonce }))
                 }
                 Request::Poke { op } => handle_poke_with_id(req.id, op),
-                Request::InvokeTool { tool_name, input, request_id: _, capability_tokens } => {
+                Request::InvokeTool {
+                    tool_name,
+                    input,
+                    request_id: _,
+                    capability_tokens,
+                } => {
                     // Look up the tool in the worker's whitelist registry.
                     // Fail-closed: if the tool is not here, return TOOL_NOT_AVAILABLE.
                     // The common writer below always sends the response — no `continue`
@@ -249,8 +254,7 @@ mod linux_impl {
                             // Wrap with catch_unwind so a tool panic cannot kill
                             // the worker loop, then apply a 60-second wall-clock
                             // timeout.
-                            let fut =
-                                AssertUnwindSafe(tool.invoke(input, &ctx)).catch_unwind();
+                            let fut = AssertUnwindSafe(tool.invoke(input, &ctx)).catch_unwind();
                             match timeout(Duration::from_secs(60), fut).await {
                                 Ok(Ok(Ok(value))) => WireResponse::success(req.id, value),
                                 Ok(Ok(Err(e))) => {
@@ -260,9 +264,7 @@ mod linux_impl {
                                     let msg = panic_payload
                                         .downcast_ref::<&'static str>()
                                         .map(|s| s.to_string())
-                                        .or_else(|| {
-                                            panic_payload.downcast_ref::<String>().cloned()
-                                        })
+                                        .or_else(|| panic_payload.downcast_ref::<String>().cloned())
                                         .unwrap_or_else(|| "<panic payload>".into());
                                     WireResponse::error(req.id, TOOL_PANICKED, msg)
                                 }

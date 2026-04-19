@@ -275,7 +275,12 @@ mod tests {
         assert!(s.contains("invoke-tool"));
         let back: WireRequest = serde_json::from_str(&s).unwrap();
         match back.request {
-            Request::InvokeTool { tool_name, request_id, capability_tokens, .. } => {
+            Request::InvokeTool {
+                tool_name,
+                request_id,
+                capability_tokens,
+                ..
+            } => {
                 assert_eq!(tool_name, "file_write");
                 assert_eq!(request_id, 99);
                 assert!(capability_tokens.is_empty());
@@ -314,7 +319,9 @@ mod tests {
         let s = serde_json::to_string(&req).unwrap();
         let back: WireRequest = serde_json::from_str(&s).unwrap();
         match back.request {
-            Request::InvokeTool { capability_tokens, .. } => {
+            Request::InvokeTool {
+                capability_tokens, ..
+            } => {
                 assert_eq!(capability_tokens.len(), 1);
                 let t = &capability_tokens[0];
                 assert_eq!(t.id, token_id);
@@ -338,7 +345,9 @@ mod tests {
         let old_wire = r#"{"jsonrpc":"2.0","id":7,"method":"invoke-tool","params":{"tool_name":"echo","input":{},"request_id":7}}"#;
         let back: WireRequest = serde_json::from_str(old_wire).unwrap();
         match back.request {
-            Request::InvokeTool { capability_tokens, .. } => {
+            Request::InvokeTool {
+                capability_tokens, ..
+            } => {
                 assert!(
                     capability_tokens.is_empty(),
                     "missing capability_tokens must default to empty vec"

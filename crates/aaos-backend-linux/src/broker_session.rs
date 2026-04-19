@@ -59,8 +59,9 @@ pub enum InvokeToolError {
 
 /// Pending in-flight `InvokeTool` requests awaiting structured responses.
 /// Uses a *sync* mutex — the map is never held across `.await` points.
-type InvokePending =
-    StdMutex<HashMap<u64, oneshot::Sender<std::result::Result<serde_json::Value, InvokeToolError>>>>;
+type InvokePending = StdMutex<
+    HashMap<u64, oneshot::Sender<std::result::Result<serde_json::Value, InvokeToolError>>>,
+>;
 
 /// Errors raised when sending a request to a worker over the persistent
 /// post-handshake stream.
@@ -295,9 +296,7 @@ impl BrokerSession {
                     let payload = if let Some(err) = resp.error {
                         Err(match err.code {
                             TOOL_NOT_AVAILABLE => InvokeToolError::NotAvailable(err.message),
-                            TOOL_PANICKED => {
-                                InvokeToolError::Panicked(String::new(), err.message)
-                            }
+                            TOOL_PANICKED => InvokeToolError::Panicked(String::new(), err.message),
                             TOOL_TIMEOUT => InvokeToolError::Timeout(err.message),
                             TOOL_DENIED => InvokeToolError::Denied(err.message),
                             _ => InvokeToolError::Runtime(err.message),
@@ -774,9 +773,7 @@ mod tests {
                     Err(_) => continue,
                 };
                 let resp = match req.request {
-                    Request::InvokeTool { input, .. } => {
-                        WireResponse::success(req.id, input)
-                    }
+                    Request::InvokeTool { input, .. } => WireResponse::success(req.id, input),
                     _ => WireResponse::success(req.id, serde_json::Value::Null),
                 };
                 let mut buf = serde_json::to_vec(&resp).unwrap();
@@ -804,19 +801,20 @@ mod tests {
             .iter()
             .map(|r| {
                 let v = r.as_ref().expect("invoke must succeed");
-                v.get("n").and_then(|x| x.as_u64()).expect("result must have n")
+                v.get("n")
+                    .and_then(|x| x.as_u64())
+                    .expect("result must have n")
             })
             .collect();
         got_ns.sort_unstable();
         assert_eq!(got_ns, expected_ns, "all 4 inputs must be echoed back");
 
         // Pending map must be empty — no ghost waiters.
-        let map_len = session
-            .invoke_pending
-            .lock()
-            .expect("poisoned")
-            .len();
-        assert_eq!(map_len, 0, "invoke_pending must be empty after all responses resolved");
+        let map_len = session.invoke_pending.lock().expect("poisoned").len();
+        assert_eq!(
+            map_len, 0,
+            "invoke_pending must be empty after all responses resolved"
+        );
     }
 
     /// Verify that when the worker closes the connection, in-flight

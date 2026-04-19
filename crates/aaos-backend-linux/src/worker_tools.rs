@@ -45,8 +45,17 @@ mod tests {
         for name in WORKER_SIDE_TOOLS {
             assert!(reg.get(name).is_ok(), "missing tool: {name}");
         }
-        assert!(reg.get("web_fetch").is_err(), "web_fetch must not be worker-side");
-        assert!(reg.get("cargo_run").is_err(), "cargo_run must not be worker-side");
-        assert!(reg.get("git_commit").is_err(), "git_commit must not be worker-side");
+        assert!(
+            reg.get("web_fetch").is_err(),
+            "web_fetch must not be worker-side"
+        );
+        assert!(
+            reg.get("cargo_run").is_err(),
+            "cargo_run must not be worker-side"
+        );
+        assert!(
+            reg.get("git_commit").is_err(),
+            "git_commit must not be worker-side"
+        );
     }
 }

@@ -423,10 +423,22 @@ mod tests {
             execution_surface: aaos_core::ToolExecutionSurface::Worker,
         });
         let colored = format_operator_line(&e, "x", true);
-        assert!(colored.contains("[worker]"), "missing [worker] tag: {}", colored);
-        assert!(colored.contains("\x1b[32m"), "expected green for worker: {}", colored);
+        assert!(
+            colored.contains("[worker]"),
+            "missing [worker] tag: {}",
+            colored
+        );
+        assert!(
+            colored.contains("\x1b[32m"),
+            "expected green for worker: {}",
+            colored
+        );
         let plain = format_operator_line(&e, "x", false);
-        assert!(plain.contains("[worker]"), "plain missing [worker] tag: {}", plain);
+        assert!(
+            plain.contains("[worker]"),
+            "plain missing [worker] tag: {}",
+            plain
+        );
     }
 
     #[test]
@@ -438,7 +450,11 @@ mod tests {
             execution_surface: aaos_core::ToolExecutionSurface::Daemon,
         });
         let plain = format_operator_line(&e, "x", false);
-        assert!(plain.contains("[daemon]"), "missing [daemon] tag: {}", plain);
+        assert!(
+            plain.contains("[daemon]"),
+            "missing [daemon] tag: {}",
+            plain
+        );
     }
 
     #[test]
