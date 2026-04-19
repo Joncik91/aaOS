@@ -559,3 +559,30 @@ entry; every surfaced bug is expected, not embarrassing.
 
 Derived from the 2026-04-18 Phase F-b sub-project 1 e2e QA — see
 `docs/reflection/2026-04-18-f-b1-e2e-qa.md`.
+
+## Test the path the canonical goal actually uses
+
+Integration tests can pass while the feature is non-functional for
+real users — if the tests exercise a path the canonical benchmark
+does not. Sub-project 3's integration tests verified worker-side
+tool execution using agents launched via `backend.launch`. Both
+passed. The canonical "fetch HN and lobsters" benchmark runs
+through the plan executor, which spawns subtask agents **inline**
+via `execute_agent_for_subtask` — a path that does not call
+`backend.launch` and has no broker session. Every tool call from
+those subtasks therefore routed daemon-side, not worker-side.
+Confinement worked for explicit `spawn_agent` children; confinement
+did NOT activate for plan-executor subtasks. The integration tests
+missed it because they exercised the `backend.launch` path
+exclusively.
+
+**Rule.** Definition of Done for a confinement / isolation feature
+must include: run the canonical benchmark goal and observe at
+least one production-traffic tool call carrying the confined-
+surface tag in the operator CLI. The tag is the right signal
+because it's the same signal an operator would see — if the tag
+never appears on the benchmark, the feature is non-functional on
+the path that matters.
+
+Derived from the 2026-04-19 Phase F-b sub-project 3 e2e QA — see
+`docs/reflection/2026-04-19-f-b3-e2e-qa.md`.
