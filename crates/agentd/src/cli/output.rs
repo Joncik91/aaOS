@@ -9,7 +9,7 @@
 //! This module exposes the filter predicate, the formatter, and a tty check
 //! for choosing colors.
 
-use aaos_core::{AuditEvent, AuditEventKind};
+use aaos_core::{AuditEvent, AuditEventKind, ToolExecutionSurface};
 
 pub fn is_operator_visible(event: &AuditEvent) -> bool {
     match &event.event {
@@ -42,16 +42,28 @@ pub fn format_operator_line(event: &AuditEvent, agent_name: &str, colorize: bool
             format!("spawned {}", manifest_name)
         }
         AuditEventKind::ToolInvoked {
-            tool, args_preview, ..
+            tool,
+            args_preview,
+            execution_surface,
+            ..
         } => {
             let tool_col = if colorize {
                 format!("\x1b[36m{}\x1b[0m", tool)
             } else {
                 tool.clone()
             };
+            let surface_tag = if colorize {
+                match execution_surface {
+                    ToolExecutionSurface::Worker => "\x1b[32m[worker]\x1b[0m",
+                    ToolExecutionSurface::Daemon => "\x1b[2m[daemon]\x1b[0m",
+                }
+                .to_string()
+            } else {
+                format!("[{}]", execution_surface.as_str())
+            };
             match args_preview {
-                Some(a) if !a.is_empty() => format!("tool: {} {}", tool_col, a),
-                _ => format!("tool: {}", tool_col),
+                Some(a) if !a.is_empty() => format!("tool: {} {} {}", tool_col, surface_tag, a),
+                _ => format!("tool: {} {}", tool_col, surface_tag),
             }
         }
         AuditEventKind::ToolResult {
@@ -400,6 +412,33 @@ mod tests {
         });
         let s = format_operator_line(&e, "x", true);
         assert!(s.contains("\x1b[36m"), "expected cyan for tool: {}", s);
+    }
+
+    #[test]
+    fn tool_invoked_shows_worker_tag_when_surface_is_worker() {
+        let e = evt(AuditEventKind::ToolInvoked {
+            tool: "file_write".into(),
+            input_hash: "h".into(),
+            args_preview: None,
+            execution_surface: aaos_core::ToolExecutionSurface::Worker,
+        });
+        let colored = format_operator_line(&e, "x", true);
+        assert!(colored.contains("[worker]"), "missing [worker] tag: {}", colored);
+        assert!(colored.contains("\x1b[32m"), "expected green for worker: {}", colored);
+        let plain = format_operator_line(&e, "x", false);
+        assert!(plain.contains("[worker]"), "plain missing [worker] tag: {}", plain);
+    }
+
+    #[test]
+    fn tool_invoked_shows_daemon_tag_when_surface_is_daemon() {
+        let e = evt(AuditEventKind::ToolInvoked {
+            tool: "web_fetch".into(),
+            input_hash: "h".into(),
+            args_preview: None,
+            execution_surface: aaos_core::ToolExecutionSurface::Daemon,
+        });
+        let plain = format_operator_line(&e, "x", false);
+        assert!(plain.contains("[daemon]"), "missing [daemon] tag: {}", plain);
     }
 
     #[test]
