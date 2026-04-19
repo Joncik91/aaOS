@@ -60,9 +60,15 @@ pub struct Server {
     pub embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
     pub skill_registry: Arc<aaos_tools::SkillRegistry>,
     /// Substrate that actually launches agent processes. Today always
-    /// `InProcessBackend`; a later commit introduces
+    /// `InProcessBackend`; when `AAOS_DEFAULT_BACKEND=namespaced` and
+    /// the `namespaced-agents` feature is compiled in, this is a
     /// `NamespacedBackend` behind the same trait.
     pub backend: Arc<dyn AgentBackend>,
+    /// Concrete `NamespacedBackend` arc — present only when the namespaced
+    /// backend was successfully activated. Held so `BrokerWorkerHandle`
+    /// can call `.session(&agent_id)` without downcasting the trait object.
+    #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+    pub(crate) namespaced: Option<Arc<aaos_backend_linux::NamespacedBackend>>,
     /// Reasoning-slot scheduler. Awards inference slots with TTL-aware
     /// priority. One per server. Replaces the role that
     /// `aaos_llm::ScheduledLlmClient` played before Phase F-b — that
@@ -77,6 +83,50 @@ pub struct Server {
     /// `CompositeLatencyTracker` alongside `latency_tracker`. Used by
     /// the router/introspection path; not consulted for TTL.
     pub(crate) per_model_latency: Arc<aaos_runtime::scheduler::PerModelLatencyTracker>,
+}
+
+/// Return type of `maybe_swap_for_namespaced` / `build_in_process_backend`.
+/// Bundles the trait-object backend with an optional concrete
+/// `NamespacedBackend` arc so callers can construct `BrokerWorkerHandle`
+/// without needing to downcast.
+struct SelectedBackend {
+    backend: Arc<dyn AgentBackend>,
+    /// Present only when the namespaced backend was activated; absent on
+    /// in-process path or non-linux / feature-off builds.
+    #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+    namespaced: Option<Arc<aaos_backend_linux::NamespacedBackend>>,
+}
+
+/// Adapter that implements `aaos_tools::WorkerHandle` by delegating to
+/// a `BrokerSession` looked up from the `NamespacedBackend`. One instance
+/// per `ToolInvocation`; agent sessions are resolved on each call.
+#[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+struct BrokerWorkerHandle {
+    backend: Arc<aaos_backend_linux::NamespacedBackend>,
+}
+
+#[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+#[async_trait::async_trait]
+impl aaos_tools::WorkerHandle for BrokerWorkerHandle {
+    fn backend_kind(&self) -> &'static str {
+        "namespaced"
+    }
+
+    async fn invoke_over_worker(
+        &self,
+        agent_id: aaos_core::AgentId,
+        tool_name: &str,
+        input: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String> {
+        let session = self
+            .backend
+            .session(&agent_id)
+            .ok_or_else(|| format!("no broker session for agent {agent_id}"))?;
+        session
+            .invoke_over_worker(tool_name, input)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 impl Server {
@@ -97,7 +147,7 @@ impl Server {
         tool_registry: Arc<ToolRegistry>,
         approval_queue: Arc<crate::approval::ApprovalQueue>,
         llm_client: Option<Arc<dyn LlmClient>>,
-    ) -> Arc<dyn AgentBackend> {
+    ) -> SelectedBackend {
         let registry_b = registry.clone();
         let tool_invocation_b = tool_invocation.clone();
         let tool_registry_b = tool_registry.clone();
@@ -149,14 +199,17 @@ impl Server {
     ///   which we respect here; the env-var selector is operator
     ///   intent, not policy.
     #[allow(unused_variables, unused_mut)]
-    fn maybe_swap_for_namespaced(in_process: Arc<dyn AgentBackend>) -> Arc<dyn AgentBackend> {
+    fn maybe_swap_for_namespaced(in_process: Arc<dyn AgentBackend>) -> SelectedBackend {
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
         {
             let requested = std::env::var("AAOS_DEFAULT_BACKEND")
                 .map(|s| s.eq_ignore_ascii_case("namespaced"))
                 .unwrap_or(false);
             if !requested {
-                return in_process;
+                return SelectedBackend {
+                    backend: in_process,
+                    namespaced: None,
+                };
             }
             match aaos_backend_linux::NamespacedBackend::new(
                 aaos_backend_linux::NamespacedBackendConfig::default(),
@@ -165,7 +218,11 @@ impl Server {
                     tracing::info!(
                         "agentd: AAOS_DEFAULT_BACKEND=namespaced — using NamespacedBackend"
                     );
-                    return Arc::new(backend);
+                    let nb = Arc::new(backend);
+                    return SelectedBackend {
+                        backend: nb.clone() as Arc<dyn AgentBackend>,
+                        namespaced: Some(nb),
+                    };
                 }
                 Err(e) => {
                     tracing::error!(
@@ -174,13 +231,18 @@ impl Server {
                          NamespacedBackend::new failed; falling back to \
                          InProcessBackend"
                     );
-                    return in_process;
+                    return SelectedBackend {
+                        backend: in_process,
+                        namespaced: None,
+                    };
                 }
             }
         }
         #[cfg(not(all(target_os = "linux", feature = "namespaced-agents")))]
         {
-            in_process
+            SelectedBackend {
+                backend: in_process,
+            }
         }
     }
 
@@ -643,7 +705,11 @@ impl Server {
             audit_log.clone(),
         )));
 
-        let tool_invocation = Arc::new(ToolInvocation::new(
+        // Build a base ToolInvocation (no WorkerHandle yet) to pass into the
+        // InProcessAgentServices closure inside the backend builder. A second
+        // ToolInvocation wired with the BrokerWorkerHandle is constructed below
+        // after we know which backend was selected.
+        let tool_invocation_base = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
             registry.capability_registry().clone(),
@@ -666,16 +732,30 @@ impl Server {
         let session_store: Arc<dyn aaos_runtime::SessionStore> =
             Arc::new(aaos_runtime::InMemorySessionStore::new());
 
-        let backend = Self::build_in_process_backend(
+        let selected = Self::build_in_process_backend(
             registry.clone(),
             session_store.clone(),
             router.clone(),
             audit_log.clone(),
-            tool_invocation.clone(),
+            tool_invocation_base.clone(),
             tool_registry.clone(),
             approval_queue.clone(),
             None,
         );
+
+        // Build the real ToolInvocation: wire BrokerWorkerHandle when namespaced.
+        #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+        let tool_invocation = match &selected.namespaced {
+            Some(nb) => Arc::new(ToolInvocation::new_with_worker_handle(
+                tool_registry.clone(),
+                audit_log.clone(),
+                registry.capability_registry().clone(),
+                Arc::new(BrokerWorkerHandle { backend: nb.clone() }),
+            )),
+            None => tool_invocation_base,
+        };
+        #[cfg(not(all(target_os = "linux", feature = "namespaced-agents")))]
+        let tool_invocation = tool_invocation_base;
 
         // Phase F-b sub-project 1: reasoning-slot scheduler + latency tracker.
         // Slot count honors AAOS_MAX_CONCURRENT_INFERENCE (existing env var;
@@ -701,7 +781,9 @@ impl Server {
             memory_store,
             embedding_source,
             skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
-            backend,
+            backend: selected.backend,
+            #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+            namespaced: selected.namespaced,
             reasoning_scheduler,
             latency_tracker,
             per_model_latency,
@@ -737,7 +819,7 @@ impl Server {
         server.planner = planner;
         // Rebuild the backend with the LLM client so persistent
         // agents can launch through it.
-        server.backend = Self::build_in_process_backend(
+        let selected = Self::build_in_process_backend(
             server.registry.clone(),
             server.session_store.clone(),
             server.router.clone(),
@@ -747,6 +829,23 @@ impl Server {
             server.approval_queue.clone(),
             Some(llm_client),
         );
+        server.backend = selected.backend;
+        #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+        {
+            if selected.namespaced.is_some() {
+                // Rebuild tool_invocation with the BrokerWorkerHandle now that
+                // namespaced is confirmed active.
+                server.tool_invocation = Arc::new(ToolInvocation::new_with_worker_handle(
+                    server.tool_registry.clone(),
+                    server.audit_log.clone(),
+                    server.registry.capability_registry().clone(),
+                    Arc::new(BrokerWorkerHandle {
+                        backend: selected.namespaced.clone().unwrap(),
+                    }),
+                ));
+            }
+            server.namespaced = selected.namespaced;
+        }
         let server = Arc::new(server);
         server.install_plan_executor_runner();
         server
@@ -804,7 +903,8 @@ impl Server {
             audit_log.clone(),
         )));
 
-        let tool_invocation = Arc::new(ToolInvocation::new(
+        // Build base ToolInvocation (no WorkerHandle) for the InProcessAgentServices closure.
+        let tool_invocation_base = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
             registry.capability_registry().clone(),
@@ -838,7 +938,7 @@ impl Server {
             llm_client.clone(),
             registry.clone(),
             tool_registry.clone(),
-            tool_invocation.clone(),
+            tool_invocation_base.clone(),
             audit_log.clone(),
             router.clone(),
             approval_queue.clone() as Arc<dyn ApprovalService>,
@@ -850,16 +950,30 @@ impl Server {
             registry.clone(),
         )));
 
-        let backend = Self::build_in_process_backend(
+        let selected = Self::build_in_process_backend(
             registry.clone(),
             session_store.clone(),
             router.clone(),
             audit_log.clone(),
-            tool_invocation.clone(),
+            tool_invocation_base.clone(),
             tool_registry.clone(),
             approval_queue.clone(),
             Some(llm_client.clone()),
         );
+
+        // Build the real ToolInvocation: wire BrokerWorkerHandle when namespaced.
+        #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+        let tool_invocation = match &selected.namespaced {
+            Some(nb) => Arc::new(ToolInvocation::new_with_worker_handle(
+                tool_registry.clone(),
+                audit_log.clone(),
+                registry.capability_registry().clone(),
+                Arc::new(BrokerWorkerHandle { backend: nb.clone() }),
+            )),
+            None => tool_invocation_base,
+        };
+        #[cfg(not(all(target_os = "linux", feature = "namespaced-agents")))]
+        let tool_invocation = tool_invocation_base;
 
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
@@ -885,7 +999,9 @@ impl Server {
             memory_store,
             embedding_source,
             skill_registry,
-            backend,
+            backend: selected.backend,
+            #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+            namespaced: selected.namespaced,
             reasoning_scheduler,
             latency_tracker,
             per_model_latency,
@@ -938,7 +1054,8 @@ impl Server {
             audit_log.clone(),
         )));
 
-        let tool_invocation = Arc::new(ToolInvocation::new(
+        // Build base ToolInvocation (no WorkerHandle) for the InProcessAgentServices closure.
+        let tool_invocation_base = Arc::new(ToolInvocation::new(
             tool_registry.clone(),
             audit_log.clone(),
             registry.capability_registry().clone(),
@@ -963,7 +1080,7 @@ impl Server {
             llm_client.clone(),
             registry.clone(),
             tool_registry.clone(),
-            tool_invocation.clone(),
+            tool_invocation_base.clone(),
             audit_log.clone(),
             router.clone(),
             approval_queue.clone() as Arc<dyn ApprovalService>,
@@ -975,16 +1092,30 @@ impl Server {
             registry.clone(),
         )));
 
-        let backend = Self::build_in_process_backend(
+        let selected = Self::build_in_process_backend(
             registry.clone(),
             session_store.clone(),
             router.clone(),
             audit_log.clone(),
-            tool_invocation.clone(),
+            tool_invocation_base.clone(),
             tool_registry.clone(),
             approval_queue.clone(),
             Some(llm_client.clone()),
         );
+
+        // Build the real ToolInvocation: wire BrokerWorkerHandle when namespaced.
+        #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+        let tool_invocation = match &selected.namespaced {
+            Some(nb) => Arc::new(ToolInvocation::new_with_worker_handle(
+                tool_registry.clone(),
+                audit_log.clone(),
+                registry.capability_registry().clone(),
+                Arc::new(BrokerWorkerHandle { backend: nb.clone() }),
+            )),
+            None => tool_invocation_base,
+        };
+        #[cfg(not(all(target_os = "linux", feature = "namespaced-agents")))]
+        let tool_invocation = tool_invocation_base;
 
         let (role_catalog, planner) = Self::load_role_catalog(&llm_client);
 
@@ -1010,7 +1141,9 @@ impl Server {
             memory_store,
             embedding_source,
             skill_registry: Arc::new(aaos_tools::SkillRegistry::new(vec![])),
-            backend,
+            backend: selected.backend,
+            #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+            namespaced: selected.namespaced,
             reasoning_scheduler,
             latency_tracker,
             per_model_latency,
