@@ -1100,4 +1100,234 @@ system_prompt: "x"
         );
         backend.stop(&handle).await.expect("stop should succeed");
     }
+
+    /// Invoke `file_read` on one of the backend's shared-lib paths (which is
+    /// inside the worker's Landlock allow-list) and assert it succeeds.
+    ///
+    /// Gated `#[ignore]` — same prerequisites as `namespaced_backend_end_to_end`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
+    async fn invoke_tool_file_read_roundtrips() {
+        if !landlock_compile::is_supported() {
+            eprintln!("SKIP: Landlock not supported on this kernel");
+            return;
+        }
+        if !super::probe_mount_capable() {
+            eprintln!(
+                "SKIP: host forbids mount operations inside user namespaces \
+                 (likely GitHub Actions or other LSM-restricted CI). \
+                 Run this test on a real Linux host (dev box or DO droplet)."
+            );
+            return;
+        }
+        use aaos_core::{AgentId, AgentManifest};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = NamespacedBackendConfig::default();
+        cfg.session_dir = tmp.path().join("sessions");
+        let manifest_dir =
+            std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
+        let workspace_root = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        cfg.worker_binary = workspace_root.join("target/debug/aaos-agent-worker");
+        assert!(
+            cfg.worker_binary.is_absolute(),
+            "worker_binary must be absolute for bind-mount, got: {}",
+            cfg.worker_binary.display()
+        );
+        assert!(
+            cfg.worker_binary.exists(),
+            "worker binary missing — run `cargo build -p aaos-backend-linux --bin aaos-agent-worker` first: {}",
+            cfg.worker_binary.display()
+        );
+
+        let child_log = tmp.path().join("child-steps.log");
+        let worker_stderr = tmp.path().join("worker-stderr.log");
+        unsafe {
+            std::env::set_var("AAOS_NAMESPACED_CHILD_DEBUG", &child_log);
+            std::env::set_var("AAOS_NAMESPACED_WORKER_STDERR", &worker_stderr);
+        }
+
+        let backend = NamespacedBackend::new(cfg).expect("Landlock supported");
+        let agent_id = AgentId::new();
+        let spec = AgentLaunchSpec {
+            agent_id: agent_id.clone(),
+            manifest: AgentManifest::from_yaml(
+                r#"
+name: e2e-file-read
+model: claude-haiku-4-5-20251001
+system_prompt: "x"
+"#,
+            )
+            .unwrap(),
+            capability_handles: vec![],
+            workspace_path: PathBuf::new(),
+            budget_config: None,
+        };
+        let handle = match backend.launch(spec).await {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("=== namespaced launch failed: {e} ===");
+                eprintln!("--- child-steps.log ---");
+                eprintln!(
+                    "{}",
+                    std::fs::read_to_string(&child_log)
+                        .unwrap_or_else(|_| "(no child step log — child never ran)".into())
+                );
+                eprintln!("--- worker-stderr.log ---");
+                eprintln!(
+                    "{}",
+                    std::fs::read_to_string(&worker_stderr)
+                        .unwrap_or_else(|_| "(no worker stderr — worker never reached exec)".into())
+                );
+                panic!("namespaced launch should succeed on a capable host: {e}");
+            }
+        };
+
+        let session = backend
+            .session(&agent_id)
+            .expect("backend has a broker session for this agent after launch");
+
+        // Pick the first shared-lib path — it's in the Landlock allow-list so
+        // file_read must succeed inside the worker.
+        let readable = backend
+            .shared_lib_paths()
+            .first()
+            .expect("at least one shared lib configured")
+            .clone();
+
+        let result = session
+            .invoke_over_worker(
+                "file_read",
+                serde_json::json!({ "path": readable.to_string_lossy() }),
+            )
+            .await
+            .expect("file_read over broker should succeed inside Landlock scope");
+
+        assert!(
+            result.is_object() || result.is_string(),
+            "file_read result should be an object or string, got: {result:?}"
+        );
+
+        backend.stop(&handle).await.expect("stop should succeed");
+    }
+
+    /// Invoke `file_read` on `/etc/shadow` — a path outside the worker's
+    /// Landlock allow-list — and assert the call comes back as an error that
+    /// surfaces the denial.
+    ///
+    /// Gated `#[ignore]` — same prerequisites as `namespaced_backend_end_to_end`.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires Linux 5.13+ with unprivileged user namespaces and the worker binary built; run manually"]
+    async fn invoke_tool_landlock_denial() {
+        if !landlock_compile::is_supported() {
+            eprintln!("SKIP: Landlock not supported on this kernel");
+            return;
+        }
+        if !super::probe_mount_capable() {
+            eprintln!(
+                "SKIP: host forbids mount operations inside user namespaces \
+                 (likely GitHub Actions or other LSM-restricted CI). \
+                 Run this test on a real Linux host (dev box or DO droplet)."
+            );
+            return;
+        }
+        use aaos_core::{AgentId, AgentManifest};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = NamespacedBackendConfig::default();
+        cfg.session_dir = tmp.path().join("sessions");
+        let manifest_dir =
+            std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo test");
+        let workspace_root = std::path::Path::new(&manifest_dir)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        cfg.worker_binary = workspace_root.join("target/debug/aaos-agent-worker");
+        assert!(
+            cfg.worker_binary.is_absolute(),
+            "worker_binary must be absolute for bind-mount, got: {}",
+            cfg.worker_binary.display()
+        );
+        assert!(
+            cfg.worker_binary.exists(),
+            "worker binary missing — run `cargo build -p aaos-backend-linux --bin aaos-agent-worker` first: {}",
+            cfg.worker_binary.display()
+        );
+
+        let child_log = tmp.path().join("child-steps.log");
+        let worker_stderr = tmp.path().join("worker-stderr.log");
+        unsafe {
+            std::env::set_var("AAOS_NAMESPACED_CHILD_DEBUG", &child_log);
+            std::env::set_var("AAOS_NAMESPACED_WORKER_STDERR", &worker_stderr);
+        }
+
+        let backend = NamespacedBackend::new(cfg).expect("Landlock supported");
+        let agent_id = AgentId::new();
+        let spec = AgentLaunchSpec {
+            agent_id: agent_id.clone(),
+            manifest: AgentManifest::from_yaml(
+                r#"
+name: e2e-landlock-denial
+model: claude-haiku-4-5-20251001
+system_prompt: "x"
+"#,
+            )
+            .unwrap(),
+            capability_handles: vec![],
+            workspace_path: PathBuf::new(),
+            budget_config: None,
+        };
+        let handle = match backend.launch(spec).await {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("=== namespaced launch failed: {e} ===");
+                eprintln!("--- child-steps.log ---");
+                eprintln!(
+                    "{}",
+                    std::fs::read_to_string(&child_log)
+                        .unwrap_or_else(|_| "(no child step log — child never ran)".into())
+                );
+                eprintln!("--- worker-stderr.log ---");
+                eprintln!(
+                    "{}",
+                    std::fs::read_to_string(&worker_stderr)
+                        .unwrap_or_else(|_| "(no worker stderr — worker never reached exec)".into())
+                );
+                panic!("namespaced launch should succeed on a capable host: {e}");
+            }
+        };
+
+        let session = backend
+            .session(&agent_id)
+            .expect("backend has a broker session for this agent after launch");
+
+        // /etc/shadow is outside the worker's Landlock allow-list; the tool
+        // must return an error that carries a recognisable denial string.
+        let result = session
+            .invoke_over_worker(
+                "file_read",
+                serde_json::json!({ "path": "/etc/shadow" }),
+            )
+            .await;
+
+        let err = result.expect_err("reading /etc/shadow must fail inside Landlock");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("denied")
+                || msg.contains("eacces")
+                || msg.contains("permission")
+                || msg.contains("not permitted")
+                || msg.contains("tool error"),
+            "error must surface landlock denial, got: {err:?}",
+        );
+
+        backend.stop(&handle).await.expect("stop should succeed");
+    }
 }
