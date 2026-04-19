@@ -531,6 +531,26 @@ impl Server {
             let _ = cleanup_registry.stop_sync(aid);
         });
 
+        // Phase F-b/3b: when a NamespacedBackend is active, launch a
+        // worker session for this subtask agent so tool calls route
+        // worker-side (real confinement), not daemon-side (NoSession
+        // fallback). `execute_agent_for_subtask` runs the LLM loop in
+        // the daemon; only the tool calls cross to the worker. Opt-out
+        // via AAOS_INLINE_SUBTASKS_DAEMON_SIDE=1 for latency-sensitive
+        // workloads that explicitly want the daemon-side path.
+        #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+        let _namespaced_guard = {
+            let skip = std::env::var("AAOS_INLINE_SUBTASKS_DAEMON_SIDE")
+                .map(|v| v == "1")
+                .unwrap_or(false);
+            if !skip {
+                self.launch_worker_session_for_subtask(agent_id, &manifest)
+                    .await
+            } else {
+                None
+            }
+        };
+
         // Run the LLM execution loop for this agent. Overrides carry the
         // role's budget (max_output_tokens) + retry (max_iterations) so
         // the per-role YAML actually constrains the LLM call.
@@ -638,6 +658,79 @@ impl Server {
         ));
 
         Ok(result.response)
+    }
+
+    /// Launch a per-subtask worker session on the namespaced backend so
+    /// tool calls emitted by this subtask's LLM loop route worker-side
+    /// (confined under Landlock + seccomp) instead of falling back to
+    /// daemon-side via `WorkerInvokeError::NoSession`.
+    ///
+    /// Returns a scopeguard that stops the worker on drop. `None` if
+    /// the namespaced backend isn't in use (feature off, env not set,
+    /// or NamespacedBackend::new failed at startup) — in that case the
+    /// subtask runs daemon-side as before.
+    ///
+    /// The LLM loop itself stays in the daemon; only tool invocations
+    /// cross the broker. That's the whole point of sub-project 3 —
+    /// the daemon keeps provider clients + API keys out of the
+    /// sandbox while tool code runs under confinement.
+    #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+    async fn launch_worker_session_for_subtask(
+        self: &Arc<Self>,
+        agent_id: aaos_core::AgentId,
+        manifest: &aaos_core::AgentManifest,
+    ) -> Option<scopeguard::ScopeGuard<
+        (
+            Arc<aaos_backend_linux::NamespacedBackend>,
+            aaos_core::AgentLaunchHandle,
+        ),
+        impl FnOnce(
+            (
+                Arc<aaos_backend_linux::NamespacedBackend>,
+                aaos_core::AgentLaunchHandle,
+            ),
+        ),
+    >> {
+        let nb = self.namespaced.as_ref()?.clone();
+
+        // Look up the subtask agent's capability handles so the worker
+        // can receive them in the launch spec. If the lookup fails
+        // (agent stopped between spawn and here) treat as "no session";
+        // the tool routing code will fall back daemon-side.
+        let caps = self.registry.get_token_handles(agent_id).ok()?;
+
+        let spec = aaos_core::AgentLaunchSpec {
+            agent_id,
+            manifest: manifest.clone(),
+            capability_handles: caps,
+            workspace_path: std::path::PathBuf::new(),
+            budget_config: manifest.budget_config,
+        };
+
+        match nb.launch(spec).await {
+            Ok(handle) => {
+                tracing::debug!(%agent_id, "subtask worker launched under NamespacedBackend");
+                Some(scopeguard::guard((nb, handle), |(nb, handle)| {
+                    // Best-effort cleanup; block briefly to tear the
+                    // worker down. If we can't reach the tokio runtime,
+                    // the backend will reap the worker when agentd
+                    // exits.
+                    let rt = tokio::runtime::Handle::try_current();
+                    if let Ok(handle_rt) = rt {
+                        handle_rt.spawn(async move {
+                            let _ = nb.stop(&handle).await;
+                        });
+                    }
+                }))
+            }
+            Err(e) => {
+                tracing::warn!(
+                    %agent_id, error = %e,
+                    "subtask worker launch failed; falling back to daemon-side tool execution"
+                );
+                None
+            }
+        }
     }
 
     /// Build the reasoning-slot scheduler + latency tracker used by
