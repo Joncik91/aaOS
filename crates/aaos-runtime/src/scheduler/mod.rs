@@ -73,7 +73,7 @@ impl Scheduler for RoundRobinScheduler {
         let mut queue = self.queue.lock().unwrap();
         queue.push(entry);
         // Sort by priority (highest first)
-        queue.sort_by(|a, b| b.priority.cmp(&a.priority));
+        queue.sort_by_key(|e| std::cmp::Reverse(e.priority));
     }
 
     fn dequeue(&self, agent_id: &AgentId) {

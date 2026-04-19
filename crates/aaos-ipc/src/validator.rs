@@ -60,20 +60,14 @@ impl SchemaValidator {
                     }
                 }
             }
-            Some("array") => {
-                if !payload.is_array() {
-                    return Err(CoreError::SchemaValidation("expected array".into()));
-                }
+            Some("array") if !payload.is_array() => {
+                return Err(CoreError::SchemaValidation("expected array".into()));
             }
-            Some("string") => {
-                if !payload.is_string() {
-                    return Err(CoreError::SchemaValidation("expected string".into()));
-                }
+            Some("string") if !payload.is_string() => {
+                return Err(CoreError::SchemaValidation("expected string".into()));
             }
-            Some("number") | Some("integer") => {
-                if !payload.is_number() {
-                    return Err(CoreError::SchemaValidation("expected number".into()));
-                }
+            Some("number" | "integer") if !payload.is_number() => {
+                return Err(CoreError::SchemaValidation("expected number".into()));
             }
             _ => {} // No type constraint or unknown type = accept
         }

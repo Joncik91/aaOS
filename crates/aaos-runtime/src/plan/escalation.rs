@@ -128,24 +128,21 @@ pub fn signals_for_subtask(
             AuditEventKind::SubtaskCompleted {
                 subtask_id: sid,
                 success: false,
-            } if sid == subtask_id => {
-                if !out.contains(&EscalationSignal::ReplanRetry) {
-                    out.push(EscalationSignal::ReplanRetry);
-                }
+            } if sid == subtask_id && !out.contains(&EscalationSignal::ReplanRetry) => {
+                out.push(EscalationSignal::ReplanRetry);
             }
             AuditEventKind::ToolRepeatGuardFired { agent_id, .. }
-                if subtask_agent_ids.contains(agent_id) =>
+                if subtask_agent_ids.contains(agent_id)
+                    && !out.contains(&EscalationSignal::ToolRepeatGuard) =>
             {
-                if !out.contains(&EscalationSignal::ToolRepeatGuard) {
-                    out.push(EscalationSignal::ToolRepeatGuard);
-                }
+                out.push(EscalationSignal::ToolRepeatGuard);
             }
             AuditEventKind::AgentExecutionCompleted { stop_reason, .. }
-                if stop_reason == "MaxTokens" && subtask_agent_ids.contains(&ev.agent_id) =>
+                if stop_reason == "MaxTokens"
+                    && subtask_agent_ids.contains(&ev.agent_id)
+                    && !out.contains(&EscalationSignal::MaxTokens) =>
             {
-                if !out.contains(&EscalationSignal::MaxTokens) {
-                    out.push(EscalationSignal::MaxTokens);
-                }
+                out.push(EscalationSignal::MaxTokens);
             }
             _ => {}
         }
