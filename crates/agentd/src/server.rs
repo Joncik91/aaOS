@@ -2384,9 +2384,23 @@ async fn write_ndjson<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// Discover skills from standard AgentSkills paths + AAOS_SKILLS_DIR env var.
+///
+/// Checks three locations in order:
+///   1. `/usr/share/aaos/skills/` — bundled with the `.deb`, read-only, FHS-correct
+///      location for vendor-supplied read-only data (21 skills from
+///      addyosmani/agent-skills ship here).
+///   2. `/etc/aaos/skills/` — operator-installed skills (conffile-style).
+///   3. `/var/lib/aaos/skills/` — runtime-installed or agent-authored skills.
+///
+/// Plus any colon-separated paths in `AAOS_SKILLS_DIR` (appended last so
+/// operator overrides can shadow bundled skills by same-name).
 fn discover_all_skills() -> Vec<aaos_core::Skill> {
     let mut all_skills = Vec::new();
-    for skills_dir in &["/etc/aaos/skills", "/var/lib/aaos/skills"] {
+    for skills_dir in &[
+        "/usr/share/aaos/skills",
+        "/etc/aaos/skills",
+        "/var/lib/aaos/skills",
+    ] {
         let path = std::path::Path::new(skills_dir);
         if path.is_dir() {
             all_skills.extend(aaos_core::discover_skills(path));

@@ -89,6 +89,11 @@ assets = [
   # mcp-servers.yaml) so the daemon's MCP subsystems stay off-by-default
   # on install; an operator copies-and-uncomments to opt in.
   ["../../packaging/mcp-servers.yaml.example", "etc/aaos/", "644"],
+  # AgentSkills catalog — 21 skills from addyosmani/agent-skills. Shipped
+  # under /usr/share/aaos/skills/ so agents declaring skill-using
+  # capabilities find a populated catalog on first boot. Glob recurses
+  # into each skill's sub-tree (SKILL.md + reference files).
+  ["../../.agents/skills/**/*", "usr/share/aaos/skills/", "644"],
 ]
 conf-files = [
   "/etc/aaos/manifests/bootstrap.yaml",
