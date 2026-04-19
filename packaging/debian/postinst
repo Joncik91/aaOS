@@ -37,6 +37,17 @@ case "$1" in
     chown -R aaos:aaos /var/lib/aaos 2>/dev/null || true
     chmod 0750 /var/lib/aaos /var/lib/aaos/workspace 2>/dev/null || true
 
+    # Ensure /var/log/agentd exists with aaos-writable perms. Used as
+    # the default target for AAOS_NAMESPACED_CHILD_DEBUG and
+    # AAOS_NAMESPACED_WORKER_STDERR diagnostic files, which the child
+    # process (running as aaos) needs to write from inside its mount
+    # namespace. systemd's PrivateTmp=true isolates /tmp from the host
+    # so /tmp-based debug paths aren't visible post-hoc; /var/log is
+    # unaffected.
+    mkdir -p /var/log/agentd
+    chown aaos:aaos /var/log/agentd 2>/dev/null || true
+    chmod 0750 /var/log/agentd 2>/dev/null || true
+
     # Lock down the env file (LLM API keys live here). systemd reads
     # EnvironmentFile= as root before de-privileging to User=aaos, so
     # 0600 root:root is enough for the service to start while denying

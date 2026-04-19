@@ -203,10 +203,16 @@ pub struct NamespacedBackendConfig {
 
 impl Default for NamespacedBackendConfig {
     fn default() -> Self {
+        // 10s default. Prior 5s was tight under load: soak-test Bug 6
+        // (2026-04-19) saw 5-way concurrent launches all exceed 5s and
+        // even 15s on the then-uncapped parallelism. With the launch
+        // semaphore now serializing kernel-level setup at
+        // AAOS_NAMESPACED_CONCURRENT_LAUNCHES (default 2), single-flow
+        // cold starts comfortably fit under 10s on DO droplet hardware.
         let ready_timeout_ms = std::env::var("AAOS_NAMESPACED_READY_TIMEOUT_MS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(5000);
+            .unwrap_or(10_000);
         // Default session_dir inside agentd's own RuntimeDirectory so
         // the daemon-as-aaos-user can create it without needing to
         // chown /var/run/aaos/. systemd gives us /run/agentd owned by
@@ -274,6 +280,16 @@ impl From<BackendError> for CoreError {
 pub struct NamespacedBackend {
     config: NamespacedBackendConfig,
     sessions: Arc<SessionMap>,
+    /// Back-pressure on concurrent worker launches. `clone(CLONE_NEWUSER |
+    /// CLONE_NEWNS)` + uid/gid map writes + pivot_root + bind-mounts hit
+    /// a per-process kernel bottleneck that serializes across concurrent
+    /// callers. Under 5-way parallel load (Phase F-b/3b soak-test Bug 6),
+    /// individual launches exceeded the 5s / 15s ready-timeout even though
+    /// single-flow launches finish in <500ms. This semaphore caps
+    /// in-flight launches; the default (2) is conservative enough to
+    /// avoid the saturation without serializing single-digit workloads
+    /// into a single lane. Override via `AAOS_NAMESPACED_CONCURRENT_LAUNCHES`.
+    launch_sem: Arc<tokio::sync::Semaphore>,
 }
 
 /// State kept in [`AgentLaunchHandle`] for agents launched by this backend.
@@ -287,9 +303,15 @@ impl NamespacedBackend {
         if !landlock_compile::is_supported() {
             return Err(BackendError::LandlockUnsupported);
         }
+        let permits = std::env::var("AAOS_NAMESPACED_CONCURRENT_LAUNCHES")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(2);
         Ok(Self {
             config,
             sessions: Arc::new(SessionMap::new()),
+            launch_sem: Arc::new(tokio::sync::Semaphore::new(permits)),
         })
     }
 
@@ -904,6 +926,22 @@ mod launch_impl {
         backend: &NamespacedBackend,
         spec: AgentLaunchSpec,
     ) -> Result<AgentLaunchHandle> {
+        // Back-pressure: cap concurrent worker launches to
+        // AAOS_NAMESPACED_CONCURRENT_LAUNCHES (default 2). See the field
+        // doc on NamespacedBackend.launch_sem for rationale.
+        //
+        // Holding the permit across the entire launch (clone + handshake +
+        // sandboxed-ready) means queued launches wait for in-flight ones
+        // to reach sandboxed-ready before their own kernel-level setup
+        // begins. That's intentional — the bottleneck is the parent's
+        // synchronous clone/mount pipeline, and letting it serialize
+        // avoids the cascade-timeout failure mode.
+        let _launch_permit = backend
+            .launch_sem
+            .acquire()
+            .await
+            .map_err(|_| CoreError::Ipc("launch semaphore closed".into()))?;
+
         ensure_session_dir(&backend.config.session_dir)?;
 
         let (listener, socket_path) =
@@ -1102,7 +1140,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(cfg.ready_timeout_ms, 5000);
+        assert_eq!(cfg.ready_timeout_ms, 10_000);
     }
 
     #[test]
@@ -1116,6 +1154,37 @@ mod tests {
                 "new() must fail closed when Landlock unavailable"
             );
         }
+    }
+
+    #[test]
+    fn backend_launch_sem_respects_env_override() {
+        // Skip entirely on hosts without Landlock — new() would fail
+        // before we get to check the semaphore.
+        if !landlock_compile::is_supported() {
+            return;
+        }
+        // Verify default permits = 2.
+        std::env::remove_var("AAOS_NAMESPACED_CONCURRENT_LAUNCHES");
+        let backend = NamespacedBackend::new(NamespacedBackendConfig::default()).unwrap();
+        assert_eq!(backend.launch_sem.available_permits(), 2);
+
+        // Valid override.
+        std::env::set_var("AAOS_NAMESPACED_CONCURRENT_LAUNCHES", "4");
+        let backend = NamespacedBackend::new(NamespacedBackendConfig::default()).unwrap();
+        assert_eq!(backend.launch_sem.available_permits(), 4);
+
+        // Zero should fall back to default (division-by-zero style
+        // guard — a zero-permit semaphore would deadlock all launches).
+        std::env::set_var("AAOS_NAMESPACED_CONCURRENT_LAUNCHES", "0");
+        let backend = NamespacedBackend::new(NamespacedBackendConfig::default()).unwrap();
+        assert_eq!(backend.launch_sem.available_permits(), 2);
+
+        // Garbage falls back to default too.
+        std::env::set_var("AAOS_NAMESPACED_CONCURRENT_LAUNCHES", "not-a-number");
+        let backend = NamespacedBackend::new(NamespacedBackendConfig::default()).unwrap();
+        assert_eq!(backend.launch_sem.available_permits(), 2);
+
+        std::env::remove_var("AAOS_NAMESPACED_CONCURRENT_LAUNCHES");
     }
 
     #[test]
