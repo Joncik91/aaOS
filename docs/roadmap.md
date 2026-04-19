@@ -170,7 +170,21 @@ The 2026-04-19 `.deb` audit found that the package installed green but a fresh o
 - **Kernel-probe-driven backend default** (`9f18848`). `packaging/debian/postinst` now probes `/sys/kernel/security/lsm` for `landlock` + `/proc/sys/kernel/unprivileged_userns_clone` and generates `/etc/default/aaos.example` with `AAOS_DEFAULT_BACKEND=namespaced` + `AAOS_CONFINE_SUBTASKS=1` uncommented when both pass. Falls back to commented-out defaults with inline reason on older kernels.
 - **`agentd configure` subcommand** (`4bb5e38`). Interactive first-boot setup: prompts for a DeepSeek or Anthropic API key, atomically writes `/etc/default/aaos` mode 0600 root:root (tempfile + fsync + rename — no window at looser mode), runs `systemctl daemon-reload && restart agentd`. Non-interactive mode via `--key-from-env VAR`. Daemon's missing-key startup log now points at the command instead of a dead-end "unavailable" message. 5 new tests (107 agentd-lib tests total).
 
-**Deliverable met.** `apt install ./aaos_0.0.1-1_amd64.deb` followed by one `sudo agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from the installed template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
+**Deliverable met.** `apt install ./aaos_0.0.2-1_amd64.deb` followed by one `sudo agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from the installed template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
+
+### 16. v0.0.2 release — droplet QA + six bug fixes
+*complete 2026-04-19*
+
+Fresh-droplet QA of the v0.0.1 `.deb` (see [`reflection/2026-04-19-v0.0.1-droplet-qa.md`](reflection/2026-04-19-v0.0.1-droplet-qa.md)) surfaced six bugs. v0.0.2 closes all six.
+
+- **Bug 1 (critical)** — `.deb` shipped without `--features namespaced-agents`, so `AAOS_DEFAULT_BACKEND=namespaced` silently fell through to `InProcessBackend` and every tool call audit-tagged `[daemon]`. Fixed in `packaging/build-deb.sh` (`160861f`): default `AAOS_BUILD_FEATURES` now `mcp,namespaced-agents`. Confinement verified on droplet: writer agent's `file_read`/`file_write` audit-tag `[worker]` as designed; fetcher scaffold correctly stays `[daemon]`.
+- **Bug 2** — zombie `aaos-agent-worker` processes after every run. `NamespacedBackend::stop` sent SIGTERM but never `waitpid`-reaped. Fixed: SIGTERM → 500ms WNOHANG polling → SIGKILL + blocking reap escalation.
+- **Bug 3** — invalid API key produced `bootstrap failed (0k in / 0k out, 0s)` with zero log context. Fixed: `agentd submit` CLI now renders the `error` field from the streaming `end` frame; daemon emits a structured `tracing::error!` with `run_id` so `journalctl -u agentd` carries the long form.
+- **Bug 4** — MCP subsystem completely silent (no startup log lines even with configured servers). Fixed: INFO lines for attempt/registered/listener-bind; no-config case now prints `"no /etc/aaos/mcp-servers.yaml — MCP disabled (copy .example to enable)"`.
+- **Bug 5** — "using NamespacedBackend" printed twice per startup (both `Server::new()` and `Server::with_llm_client()` built a backend). Fixed: `OnceLock` guard.
+- **Bug 6** — 11 lintian errors. Fixed via `packaging/debian/{copyright,changelog,lintian-overrides}`, merged-usr systemd path (`usr/lib/systemd/`), and explicit `strip` in `build-deb.sh`. **Final lintian: 0 errors, 0 warnings.** `.deb` shrinks 4.92 MB → 4.29 MB from stripping.
+
+All six fixes verified on the same droplet after rebuild + reinstall. Tagged as `v0.0.2` (`d1cbe8c` + release workflow run 24638517499). Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0.2 — `aaos_0.0.2-1_amd64.deb`, 4.29 MB.
 
 ---
 

@@ -4,7 +4,7 @@
 
 **An agent-first runtime where AI agents are native processes, capabilities replace permissions, and the system is designed for autonomy — not human interaction.**
 
-A working agent runtime on Linux that can read and modify source code — including its own. 9 Rust crates, ~37,000 lines, 619 tests (600 + 19 `#[ignore]`-gated on host prereqs such as ripgrep, git, Linux kernel primitives, or a child toolchain — exercised on CI, optional locally). Ships as a Debian `.deb` with an operator CLI. Orchestration is two-phase: a cheap-LLM **Planner** emits a structured Plan; a deterministic Rust **PlanExecutor** walks the DAG, running independent subtasks in parallel. The capability model, audit trail, and substrate-agnostic ABI have survived 39 self-reflection runs of the system reading its own code, plus a full soak-test battery on a fresh DigitalOcean droplet (see [`docs/reflection/`](docs/reflection/README.md)).
+A working agent runtime on Linux that can read and modify source code — including its own. 9 Rust crates, ~37,600 lines, 624 tests (605 + 19 `#[ignore]`-gated on host prereqs such as ripgrep, git, Linux kernel primitives, or a child toolchain — exercised on CI, optional locally). Ships as a Debian `.deb` with an operator CLI; current release `v0.0.2` is built inside a `debian:13` container with `mcp,namespaced-agents` features baked in and attached at [Releases](https://github.com/Joncik91/aaOS/releases). Orchestration is two-phase: a cheap-LLM **Planner** emits a structured Plan; a deterministic Rust **PlanExecutor** walks the DAG, running independent subtasks in parallel. The capability model, audit trail, and substrate-agnostic ABI have survived 41 self-reflection runs plus two full fresh-droplet QA passes (see [`docs/reflection/`](docs/reflection/README.md)).
 
 The long-term target is a **Debian derivative** where aaOS runs as the system orchestrator (Home Assistant OS for agents), with Landlock + seccomp enforcing capability tokens at the kernel layer. Runtime-side tool confinement already shipped via a `NamespacedBackend`: agent tool calls execute inside a per-agent Linux user/mount namespace with Landlock + seccomp active and capability tokens forwarded across a broker stream. The `AgentServices` trait remains a substrate-agnostic ABI — process-backed today, MicroVM-per-agent later, microkernel only if a customer demands formally-verified boundaries. The programming model is the product; the substrate is replaceable.
 
@@ -22,25 +22,24 @@ sudo apt install ./aaos_0.0.2-1_amd64.deb
 #    Log out and back in for group membership to take effect.
 sudo adduser $USER aaos
 
-# 3. Configure an LLM provider. DEEPSEEK_API_KEY preferred; ANTHROPIC_API_KEY works as fallback.
-echo 'DEEPSEEK_API_KEY=sk-...' | sudo tee /etc/default/aaos > /dev/null
-sudo chmod 600 /etc/default/aaos
+# 3. Configure an LLM provider. Interactive; writes /etc/default/aaos
+#    mode 0600 root:root and restarts the daemon.
+sudo agentd configure                  # or: --provider anthropic
+# Non-interactive alternative (Ansible/cloud-init):
+#   sudo agentd configure --key-from-env DEEPSEEK_API_KEY
 
-# 4. Start the daemon and send a goal.
-sudo systemctl enable --now agentd
+# 4. Send a goal.  systemd already started agentd during step 1.
 agentd submit "fetch HN top 5 stories and write a summary"
 ```
 
-The CLI streams audit events live as the Planner decomposes the goal and the PlanExecutor walks the resulting DAG — fetchers run in parallel, writers read their outputs. `agentd list|status|stop|logs|roles` cover the rest of the operator surface. `man agentd` for the full reference.
+The CLI streams audit events live as the Planner decomposes the goal and the PlanExecutor walks the resulting DAG — fetchers run in parallel, writers read their outputs. `agentd list|status|stop|logs|roles|configure` cover the operator surface. `man agentd` for the full reference.
 
 **Building the `.deb` from source** (Debian 13 host with `cargo`, `cargo-deb`, and `pandoc`):
 
 ```bash
 ./scripts/setup-hooks.sh          # activate in-tree git hooks (once per clone)
-cargo build --release -p agentd --bin agentd
-cargo build --release -p aaos-backend-linux --bin aaos-agent-worker
-./packaging/build-man-page.sh
-cargo deb -p agentd --no-build
+./packaging/build-man-page.sh     # agentd(1) man page via pandoc
+./packaging/build-deb.sh          # builds both binaries, strips, packs with --features mcp,namespaced-agents
 # target/debian/aaos_*.deb is the installable artifact.
 ```
 
@@ -60,14 +59,15 @@ The launcher starts the container with a live dashboard. Cross-run memory, alter
 
 - **Computed orchestration** — Planner + PlanExecutor walks a role-based subtask DAG, running independents in parallel. Bootstrap Agent path (single-LLM orchestrator) available as fallback.
 - **Capability-based security** — Runtime-issued handle-opaque tokens. Zero-capability default. Path canonicalization (including symlinks). Narrowable-only on delegation. [Details](docs/architecture.md#capability-security-model).
-- **Pluggable agent backend** — `InProcessBackend` default; opt-in `NamespacedBackend` with Linux user/mount/IPC namespaces + Landlock + seccomp. Under `AAOS_DEFAULT_BACKEND=namespaced` + `AAOS_CONFINE_SUBTASKS=1`, every plan-executor subtask's filesystem + compute tools execute inside the worker with capability tokens forwarded across the broker stream. Verified under 5-way concurrent load on Debian 13 / kernel 6.12.43. Network + subprocess tools stay daemon-side by design (see [architecture](docs/architecture.md#worker-side-tool-confinement)).
+- **Pluggable agent backend** — `InProcessBackend` for trusted hosts; `NamespacedBackend` with Linux user/mount/IPC namespaces + Landlock + seccomp. The shipped `.deb` (v0.0.2+) enables namespaced-by-default when the `postinst` probe detects Landlock in `/sys/kernel/security/lsm` + unprivileged user namespaces — Debian 13 stock kernel (6.12+) has both. Under namespaced, every plan-executor subtask's filesystem + compute tools execute inside the worker with capability tokens forwarded across the broker stream. Verified under 5-way concurrent load and fresh-droplet QA. Network + subprocess tools stay daemon-side by design (see [architecture](docs/architecture.md#worker-side-tool-confinement)).
 - **Coding surface** — `file_read(offset, limit)`, `file_edit`, `file_list`, `grep` (ripgrep-backed), `cargo_run` (subcommand-allowlisted), `git_commit` (subcommand-allowlisted). Matches the Claude Code / Cursor working subset.
 - **Managed context + episodic memory** — Transparent summarization when context fills; per-agent semantic memory (cosine over embeddings) with SQLite persistence.
 - **Observability** — 31 audit event kinds. Streamed to stdout (Docker) / journald (.deb) / any NDJSON subscriber via `BroadcastAuditLog`. CLI shows `[worker]` / `[daemon]` tag per tool line so confinement is visible in-situ.
 - **Multi-provider LLM** — DeepSeek, Anthropic, any OpenAI-compatible API. Concurrency-limited and budget-tracked.
-- **AgentSkills support** — The [open standard](https://agentskills.io) by Anthropic: folders with `SKILL.md`, progressive disclosure via `skill_read`. 21 bundled skills from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills); drop your own into `.agents/skills/` or set `AAOS_SKILLS_DIR`.
-- **Bidirectional MCP** — Behind `--features mcp`. **Client:** external MCP servers configured in `/etc/aaos/mcp-servers.yaml` (stdio or HTTP) register their tools into the runtime as `mcp.<server>.<tool>`, governed by the same capability model as built-ins. **Server:** a loopback-only HTTP+SSE listener on `127.0.0.1:3781` exposes `submit_goal`, `get_agent_status`, `cancel_agent` so Claude Code, Cursor, or any MCP client can delegate goals to aaOS.
-- **Operator ergonomics** — Workspace GC (`AAOS_WORKSPACE_TTL_DAYS`, default 7) prunes per-run scratch dirs automatically. Broken role YAMLs surface as ERROR-level logs at startup naming the exact file + parse column. Worker-launch back-pressure (`AAOS_NAMESPACED_CONCURRENT_LAUNCHES`, default 2) keeps confinement active under bursty load.
+- **AgentSkills support** — The [open standard](https://agentskills.io) by Anthropic: folders with `SKILL.md`, progressive disclosure via `skill_read`. 21 bundled skills from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) ship at `/usr/share/aaos/skills/` in the `.deb`; operator skills go in `/etc/aaos/skills/`; `AAOS_SKILLS_DIR` appends additional roots.
+- **Bidirectional MCP** — Built into the shipped `.deb` by default (v0.0.2+). **Client:** external MCP servers configured in `/etc/aaos/mcp-servers.yaml` (stdio or HTTP; a starter template lives at `/etc/aaos/mcp-servers.yaml.example`) register their tools into the runtime as `mcp.<server>.<tool>`, governed by the same capability model as built-ins. **Server:** a loopback-only HTTP+SSE listener on `127.0.0.1:3781` exposes `submit_goal`, `get_agent_status`, `cancel_agent` so Claude Code, Cursor, or any MCP client can delegate goals to aaOS.
+- **First-boot UX** — `sudo agentd configure` prompts for a DeepSeek or Anthropic API key, atomically writes `/etc/default/aaos` mode 0600 root:root, and restarts the daemon. Non-interactive mode via `--key-from-env VAR` for Ansible / cloud-init. Daemon's startup log points at the command when keys are missing.
+- **Operator ergonomics** — Workspace GC (`AAOS_WORKSPACE_TTL_DAYS`, default 7) prunes per-run scratch dirs automatically. Broken role YAMLs surface as ERROR-level logs at startup naming the exact file + parse column. Worker-launch back-pressure (`AAOS_NAMESPACED_CONCURRENT_LAUNCHES`, default 2) keeps confinement active under bursty load. Invalid LLM keys fail fast with a named error, not a silent hang.
 
 A full feature list lives in [`docs/architecture.md`](docs/architecture.md); the tool surface is cataloged at [`docs/tools.md`](docs/tools.md).
 

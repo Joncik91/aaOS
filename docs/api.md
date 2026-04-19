@@ -46,9 +46,9 @@ echo '{"jsonrpc":"2.0","id":1,"method":"agent.run","params":{
   s.sendall((sys.stdin.read()+'\n').encode()); print(s.recv(4096).decode())"
 ```
 
-## MCP Server API (loopback only, `--features mcp`)
+## MCP Server API (loopback only)
 
-When `agentd` is built with `--features mcp` and `/etc/aaos/mcp-servers.yaml` has `server.enabled: true`, an HTTP+SSE listener binds `127.0.0.1:3781`. The endpoint speaks [Model Context Protocol](https://modelcontextprotocol.io) (2024-11 spec) so external MCP clients (Claude Code, Cursor, other agents) can delegate goals into aaOS.
+The shipped `.deb` (v0.0.2+) is built with `--features mcp` by default; source builds need the flag explicitly. When `/etc/aaos/mcp-servers.yaml` has `server.enabled: true`, an HTTP+SSE listener binds `127.0.0.1:3781`. The endpoint speaks [Model Context Protocol](https://modelcontextprotocol.io) (2024-11 spec) so external MCP clients (Claude Code, Cursor, other agents) can delegate goals into aaOS.
 
 Three tools are exposed via the standard MCP `tools/call` method:
 
