@@ -56,7 +56,7 @@ When `AAOS_DEFAULT_BACKEND=namespaced`, agent tool invocations execute inside th
 
 **What runs where:**
 - **Worker-side** (confined, v1): `file_read`, `file_write`, `file_edit`, `file_list`, `file_read_many`, `grep`. Filesystem + pure-compute tools. Whitelisted explicitly in `aaos_backend_linux::worker_tools::WORKER_SIDE_TOOLS` — fail-closed on unknown names.
-- **Daemon-side** (not confined, v1): `web_fetch` (needs outbound network — seccomp allowlist has no `socket`/`connect`), `cargo_run` + `git_commit` (spawn subprocesses — seccomp kill-filter denies `execve`). Documented scope note; separate sub-projects for each.
+- **Daemon-side permanently**: `web_fetch` (outbound network), `cargo_run` + `git_commit` (subprocess execution). The worker's seccomp allowlist has no `socket`/`connect` and the kill-filter denies `execve` — both by design. Routing these tools through the worker would require a broker-mediated network proxy or a broker-mediated subprocess runner; in both cases the daemon would still be the component doing the actual network/subprocess work, so the round-trip would move no security line. Better to name the split clearly: filesystem + compute tools run under confinement; network + subprocess tools do not. Operators see the distinction in the CLI via the `[worker]`/`[daemon]` tag. Not a scope note — a stable design choice.
 
 **Routing fork** lives at a single point in `aaos_tools::ToolInvocation::invoke` — after capability check + audit prefix, `route_for(tool_name, backend_kind)` returns `ToolExecutionSurface::{Daemon, Worker}`. The surface flows into the post-execution `ToolInvoked` audit event so operators can see in the CLI stream whether confinement ran (`[worker]` green) or not (`[daemon]` dim).
 
