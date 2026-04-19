@@ -138,7 +138,7 @@ The `.deb` itself — installable on any Debian 13 host.
 
 **Bidirectional MCP integration (2026-04-18).** New `aaos-mcp` crate, wired into `agentd` behind `--features mcp`. **Client:** for each entry in `/etc/aaos/mcp-servers.yaml` the runtime opens a stdio or HTTP session, runs the MCP `initialize` + `tools/list` handshake, and registers every remote tool into the existing `ToolRegistry` as `mcp.<server>.<tool>`. Remote tools invoke through the same capability-check/audit/narrow boundary as built-ins; no new `Capability` variants. Per-session reconnect loop with exponential backoff. **Server:** axum HTTP+SSE listener on `127.0.0.1:3781` (loopback only — no auth built in; operator's job to expose via SSH tunnel or Tailscale if needed). Exposes `submit_goal`, `get_agent_status`, `cancel_agent` as MCP tools so Claude Code, Cursor, or any other MCP client can delegate goals to aaOS. SSE stream at `GET /mcp/events?run_id=<id>` bridges audit events per run. Fifteen commits across 14 subagent-driven tasks, spec + quality review gated between each; integration tests plus an ignored stdio echo-server e2e. End-to-end verified on an ephemeral DigitalOcean droplet: `tools/call` for `submit_goal` spawns the bootstrap agent, routes the goal through the real DeepSeek LLM + tool path, and the capability system denies cross-trust writes as expected.
 
-### Phase F-b: Standard-spec completion *(next)*
+### Phase F-b: Standard-spec completion *(complete)*
 
 The rubber-duck design for an Agentic OS names a Standard tier with five Agent-Kernel primitives: a **Collaborative Framework** — task scheduler, semantic memory, standardized IAC, resource monitoring, abstracted filesystem. aaOS ships most of them today (see the audit in [architecture.md](architecture.md)). Phase F-b closes the four named gaps so a reader of "Agentic OS" finds the words map to shipped code, not to deferred entries in `ideas.md`.
 
@@ -154,20 +154,40 @@ Scope-bounded; each gap is tracked in `ideas.md` with a linked design note and i
 
 **What this phase does not do.** No new isolation tier (that's Phase G). No distributed runtime (deferred in ideas.md). No cryptographic identity (deferred in ideas.md). No Agent Market or Natural Language Dashboard (those are Advanced spec, not Standard). No new kernel-level security primitive — Landlock + seccomp + namespaces stay the backstop.
 
-### Phase F-c: Debian-derivative reference image
+### Phase F-c: Agentic-by-default `.deb` + Debian-derivative image
+
+Phase F-c splits into two milestones: **F-c/1** closes the "agentic runtime vs agentic appliance" gap at the `.deb` level — the audit on 2026-04-19 found that the package installs green but a fresh operator still has to paste an API key, know about `--features mcp`, and discover `AAOS_SKILLS_DIR` before any agent does anything useful. **F-c/2** then bakes a Debian-derivative image with the F-c/1 `.deb` preinstalled and kernel-level defaults flipped on.
+
+#### Phase F-c/1: Agentic-by-default `.deb` *(next)*
+
+What the audit (see this roadmap's "How agentic is the .deb" section, 2026-04-19) surfaced: the package ships the runtime but not the workloads. These are `.deb`-level changes — no image work, ships via the existing release workflow, should land before F-c/2 starts.
+
+**F-c/1 scope.**
+- **MCP enabled in the release build.** `packaging/build-deb.sh` and `.github/workflows/release.yml` build with `--features mcp` so the MCP client (external tools register as `mcp.<server>.<tool>`) and the loopback server (`127.0.0.1:3781` — Claude Code, Cursor, any MCP client can delegate goals) are on by default. No operator rebuild needed to get either direction.
+- **Skills catalog bundled.** Ship the 21 bundled skills from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) under `/usr/share/aaos/skills/` as a deb asset. Set `AAOS_SKILLS_DIR=/usr/share/aaos/skills` as a default in `/etc/default/aaos.example` (the template operators copy to `/etc/default/aaos`). Agents that declare skill-using capabilities get a populated catalog on first boot instead of an empty one.
+- **Confinement-by-default on capable kernels.** `packaging/debian/postinst` probes Landlock + unprivileged user namespaces; if both are present, the generated `/etc/default/aaos.example` sets `AAOS_DEFAULT_BACKEND=namespaced` and `AAOS_CONFINE_SUBTASKS=1`. Falls back to `inprocess` on older kernels with a logged-at-startup notice explaining why.
+- **First-boot key UX.** The `.deb` cannot ship an LLM API key, so the bootstrap can't be zero-step — but it can be one-step. `agentd submit` (and the daemon itself) detects a missing `DEEPSEEK_API_KEY`/`ANTHROPIC_API_KEY` in `/etc/default/aaos` and prints a single actionable line pointing at `agentd configure` (new subcommand) — which prompts for a key, writes `/etc/default/aaos` mode 0600 root:root, and `systemctl restart agentd`. No free-form config editing unless the operator wants it.
+- **MCP server YAML template.** Drop an `/etc/aaos/mcp-servers.yaml.example` with a commented-out GitHub MCP + filesystem MCP so an operator copying-and-uncommenting has external tool sources in one minute, not one hour of schema reading.
+
+**What stays out of F-c/1.** No Packer image work. No new runtime features (no self-evolution tool authoring — that's its own sub-project when a workload asks). No web UI. No Agent Market — AgentSkills is the Market story and it's already the standard.
+
+**Deliverable.** An `apt install ./aaos_0.X.Y-1_amd64.deb` followed by one `agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from a template the operator uncomments, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query. That's "first-class agentic citizen" — on a stock Debian box, in under two minutes.
+
+#### Phase F-c/2: Debian-derivative reference image
 
 A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the aaOS `.deb`, enables the service, and bakes opinionated defaults.
 
 **Deliverable.** Bootable ISO + cloud snapshots (Debian publishes official images on AWS, DigitalOcean, Hetzner — our derivative ships on the same targets).
 
 **Opinionated defaults baked into the image.**
-- `AAOS_DEFAULT_BACKEND=namespaced` when the host kernel supports unprivileged user namespaces + Landlock (Linux 5.13+).
+- `AAOS_DEFAULT_BACKEND=namespaced` on by default (the F-c/1 probe is no longer needed — the image guarantees a capable kernel).
 - `NamespacedBackend` Landlock-backed by default, seccomp stacked on top, cgroups v2 quotas per agent.
 - Desktop meta-packages stripped (no X11, no Wayland, no LibreOffice — headless appliance).
 - Custom motd pointing at the socket, the journal, and the docs URL.
 - journald as the default audit sink.
+- Key provisioning via cloud-init user-data (cloud snapshots) or first-boot prompt (ISO). `agentd configure` from F-c/1 remains the fallback for every path.
 
-**What the derivative does not do.** We do not maintain our own apt repos. We do not track CVEs. We do not maintain the kernel. We do not run a release-engineering cadence. Upstream Debian does all of that; the derivative pulls from `deb.debian.org` like every other Debian install. Our work is confined to the `.deb` (Phase F-a) and the Packer pipeline + default config (Phase F-c).
+**What the derivative does not do.** We do not maintain our own apt repos. We do not track CVEs. We do not maintain the kernel. We do not run a release-engineering cadence. Upstream Debian does all of that; the derivative pulls from `deb.debian.org` like every other Debian install. Our work is confined to the `.deb` (F-a + F-c/1) and the Packer pipeline + default config (F-c/2).
 
 **Isolation layers used by the derivative.**
 - **Namespaces** for per-agent isolation (mount, pid, net, user, cgroup).
@@ -201,9 +221,11 @@ namespaces and the worker binary built):
 
 Phase F-a shipped 2026-04-15: `.deb` build reproducible via `cargo deb -p agentd`, installs cleanly on Debian 13, service starts, socket live at `/run/agentd/agentd.sock`, purge cleans state + user. `NamespacedBackend` available under the `namespaced-agents` feature but default stays `InProcessBackend` on the package install until there's CI coverage of the feature-on build on Debian 13.
 
-Phase F-b complete 2026-04-19. Three sub-projects: Sub-project 1 (Gaps 1 + 4 — reasoning-slot scheduler + per-task TTL/latency) shipped across commits `c2b56de`..`9b8e15a`; Sub-project 2 (Gap 2 — dynamic model routing) shipped across commits `cd55c8c`..`68c9112`; Sub-project 3 (Gap 3 — runtime-side tool confinement on `NamespacedBackend`) shipped across commits `0a47bb3`..`7adc147`. Sub-project 3 also closed two mid-run findings (Gap A: inline subtasks routed through `backend.launch`; Gap B: capability tokens forwarded across the broker) and one post-run finding (Gap C: workspace + declared-output bind-mounts). After F-b: network + subprocess tools permanently daemon-side (design choice, not deferral — see Gap 3 paragraph above); the legacy `ScheduledLlmClient` stays in place for planner + Bootstrap paths (deferred until a workload asks for per-plan scheduler policies, which none do today). Phase F-c (Packer pipeline + derivative image) is next.
+Phase F-b complete 2026-04-19. Three sub-projects: Sub-project 1 (Gaps 1 + 4 — reasoning-slot scheduler + per-task TTL/latency) shipped across commits `c2b56de`..`9b8e15a`; Sub-project 2 (Gap 2 — dynamic model routing) shipped across commits `cd55c8c`..`68c9112`; Sub-project 3 (Gap 3 — runtime-side tool confinement on `NamespacedBackend`) shipped across commits `0a47bb3`..`7adc147`. Sub-project 3 also closed two mid-run findings (Gap A: inline subtasks routed through `backend.launch`; Gap B: capability tokens forwarded across the broker) and one post-run finding (Gap C: workspace + declared-output bind-mounts). After F-b: network + subprocess tools permanently daemon-side (design choice, not deferral — see Gap 3 paragraph above); the legacy `ScheduledLlmClient` stays in place for planner + Bootstrap paths (deferred until a workload asks for per-plan scheduler policies, which none do today).
 
-After Phase F-b closes, Phase F-c: Packer pipeline producing a Debian-derivative image with the `.deb` preinstalled, `namespaced` backend as default, desktop meta-packages stripped, opinionated motd/config. First cloud target + bootable ISO.
+First tagged release cut 2026-04-19: `v0.0.1` with a CI-built `.deb` attached via `.github/workflows/release.yml`. Four CI edges closed alongside: `namespaced-agents` feature-on compile check in the fast job (`801c08d`), clippy flipped to `-D warnings` after fixing 57 latent lints (`d1c4274`), release workflow on `v*` tag push (`1ae9432` + `f61a967`), crate versions bumped (`779dd62`).
+
+Phase F-c is next and splits in two. **F-c/1 (Agentic-by-default `.deb`)** closes gaps the 2026-04-19 `.deb` audit exposed: `--features mcp` baked into the CI release build, skills catalog bundled under `/usr/share/aaos/skills/`, confinement flipped on by default when the kernel supports it, `agentd configure` subcommand for one-step key bootstrap, `/etc/aaos/mcp-servers.yaml.example` template. Ships via the existing release workflow. **F-c/2 (Debian-derivative image)** is the original Packer scope: bootable ISO + cloud snapshots with the F-c/1 `.deb` preinstalled.
 
 ## Phase G: Isolation Ladder *(research branch)*
 
