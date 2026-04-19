@@ -27,6 +27,24 @@ pub mod method {
     pub const READY: &str = "ready";
     pub const SANDBOXED_READY: &str = "sandboxed-ready";
     pub const POKE: &str = "poke";
+    pub const INVOKE_TOOL: &str = "invoke-tool";
+    pub const INVOKE_TOOL_OK: &str = "invoke-tool-ok";
+    pub const INVOKE_TOOL_ERR: &str = "invoke-tool-err";
+}
+
+/// Error codes for `InvokeTool` failures. Extend JSON-RPC 2.0's reserved range
+/// (-32768..-32000) with AgentSkills-specific codes.
+pub mod invoke_tool_error_code {
+    /// Tool is not available in the worker's capability set.
+    pub const TOOL_NOT_AVAILABLE: i64 = -32100;
+    /// Tool executed but panicked or returned an abort-level error.
+    pub const TOOL_PANICKED: i64 = -32101;
+    /// Tool did not complete before the worker's timeout.
+    pub const TOOL_TIMEOUT: i64 = -32102;
+    /// Landlock, seccomp, or capability check denied the tool's access.
+    pub const TOOL_DENIED: i64 = -32103;
+    /// Tool encountered an unrecoverable error (e.g. OOM, internal worker corruption).
+    pub const TOOL_RUNTIME: i64 = -32104;
 }
 
 /// Requests that cross the broker↔worker channel.
@@ -55,6 +73,14 @@ pub enum Request {
     /// a specific operation (e.g. try `execve`) so tests can observe
     /// the sandbox's response. Not part of production traffic.
     Poke { op: PokeOp },
+    /// Broker→worker. Carries a tool call to execute in the worker's
+    /// confined address space. Response is correlated via `request_id`
+    /// which the broker matches to a `pending` oneshot sender.
+    InvokeTool {
+        tool_name: String,
+        input: serde_json::Value,
+        request_id: u64,
+    },
 }
 
 /// Integration-test-only operations the worker can be asked to try
@@ -197,5 +223,27 @@ mod tests {
         // test should force them to read the plan's round-3 #4.
         assert!(!s.contains("bpf"));
         assert!(!s.contains("ruleset_fd"));
+    }
+
+    #[test]
+    fn invoke_tool_roundtrip() {
+        let req = WireRequest::new(
+            99,
+            Request::InvokeTool {
+                tool_name: "file_write".into(),
+                input: serde_json::json!({ "path": "/tmp/x", "content": "hi" }),
+                request_id: 99,
+            },
+        );
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(s.contains("invoke-tool"));
+        let back: WireRequest = serde_json::from_str(&s).unwrap();
+        match back.request {
+            Request::InvokeTool { tool_name, request_id, .. } => {
+                assert_eq!(tool_name, "file_write");
+                assert_eq!(request_id, 99);
+            }
+            other => panic!("wrong variant: {:?}", other),
+        }
     }
 }
