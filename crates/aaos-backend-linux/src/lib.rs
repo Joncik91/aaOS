@@ -557,6 +557,41 @@ mod launch_impl {
                 }
             }
 
+            // Step D2: bind-mount the per-agent workspace (read-write)
+            // at the same absolute path so tool calls using host paths
+            // (e.g. /var/lib/aaos/workspace/<run-id>/hn.html) resolve
+            // inside the worker. Only when policy.workspace.is_some().
+            if let Some(ws) = policy_clone.workspace.as_ref() {
+                let ws_rel = ws.strip_prefix("/").unwrap_or(ws);
+                let inside_ws = new_root.join(ws_rel);
+                if let Err(e) = std::fs::create_dir_all(&inside_ws) {
+                    log_step("D2-mkdir-workspace", Some(&e.to_string()));
+                    return 41;
+                }
+                // The host-side workspace dir must exist (executor
+                // creates /var/lib/aaos/workspace/<run-id>/ before
+                // spawning subtasks). If it doesn't, create it — the
+                // worker's writes to the bind-mount will reach the
+                // host filesystem directly.
+                let _ = std::fs::create_dir_all(ws);
+                match nix::mount::mount::<std::path::Path, std::path::Path, str, str>(
+                    Some(ws),
+                    &inside_ws,
+                    None,
+                    nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
+                    None,
+                ) {
+                    Ok(_) => log_step(&format!("D2-bind-workspace-{}", ws.display()), None),
+                    Err(e) => {
+                        log_step(
+                            &format!("D2-bind-workspace-{}", ws.display()),
+                            Some(&e.to_string()),
+                        );
+                        return 42;
+                    }
+                }
+            }
+
             // Step E: bind-mount shared-lib paths read-only. Tolerate
             // remount-ro failure on odd filesystems — bind still limits
             // the inside-the-ns reach to the same paths.
@@ -764,10 +799,22 @@ mod launch_impl {
         let (listener, socket_path) =
             bind_session_socket(&backend.config.session_dir, &spec.agent_id)?;
 
+        // Phase F-b/3b: thread the per-agent workspace path into the
+        // policy. Non-empty → bind-mounted at the same absolute path
+        // inside the worker's mount ns + added to the Landlock rw
+        // allow-list so plan-executor subtasks (analyzer/writer/etc.)
+        // can actually read + write the shared workspace. Empty
+        // PathBuf = None = no workspace visibility (pure compute).
+        let workspace = if spec.workspace_path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(spec.workspace_path.clone())
+        };
         let policy = PolicyDescription {
             scratch: PathBuf::from("/scratch"),
             shared_libs: backend.config.shared_lib_paths.clone(),
             broker_socket: socket_path.clone(),
+            workspace,
         };
 
         let my_uid = nix::unistd::getuid().as_raw();

@@ -54,6 +54,11 @@ impl Default for SubtaskExecutorOverrides {
 /// Closure that spawns a child from a rendered manifest + message, runs it
 /// to completion, and returns the SubtaskResult. Provided by the server so
 /// the executor doesn't have to re-wire services.
+///
+/// `run_root` is the per-run workspace directory (e.g.
+/// `/var/lib/aaos/workspace/<run-id>/`). Used by the namespaced backend
+/// to bind-mount the workspace into the worker's mount namespace so
+/// tool calls using absolute workspace paths resolve correctly.
 pub type SubtaskRunner = Arc<
     dyn Fn(
             String,                   // subtask_id (for audit correlation)
@@ -61,6 +66,7 @@ pub type SubtaskRunner = Arc<
             String,                   // first message for the child
             SubtaskExecutorOverrides, // per-role budget + iteration caps
             Option<Instant>,          // wall-clock deadline (None = no wall-clock bound)
+            PathBuf,                  // run_root for workspace bind-mount
         ) -> Pin<Box<dyn Future<Output = Result<SubtaskResult, CoreError>> + Send>>
         + Send
         + Sync,
@@ -514,6 +520,7 @@ impl PlanExecutor {
             message,
             overrides,
             wall_clock_deadline,
+            subs.run_root.clone(),
         );
         let raced = race_deadline(fut, wall_clock_deadline).await;
 
@@ -720,7 +727,7 @@ mod tests {
     }
 
     fn stub_runner() -> SubtaskRunner {
-        Arc::new(|id, _manifest, _msg, _overrides, _deadline| {
+        Arc::new(|id, _manifest, _msg, _overrides, _deadline, _run_root| {
             Box::pin(async move {
                 Ok(SubtaskResult {
                     subtask_id: id,
@@ -789,7 +796,7 @@ mod tests {
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter_clone = counter.clone();
-        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _overrides, _deadline| {
+        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _overrides, _deadline, _run_root| {
             let c = counter_clone.clone();
             Box::pin(async move {
                 c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -965,7 +972,7 @@ mod tests {
         let cat = Arc::new(fetcher_catalog());
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
         // Runner that always fails — simulates a fetch that blew up.
-        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o, _deadline| {
+        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o, _deadline, _run_root| {
             Box::pin(async move { Err(CoreError::Ipc("HTTP 404".into())) })
         });
         let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
@@ -1099,7 +1106,7 @@ mod tests {
     async fn failed_subtask_emits_subtask_completed_success_false() {
         let cat = Arc::new(fetcher_catalog());
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
-        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o, _deadline| {
+        let runner: SubtaskRunner = Arc::new(|_id, _m, _msg, _o, _deadline, _run_root| {
             Box::pin(async move { Err(CoreError::Ipc("boom".into())) })
         });
         let audit_concrete = Arc::new(InMemoryAuditLog::new());
@@ -1144,7 +1151,7 @@ mod tests {
         // and the failing one must produce SubtaskCompleted{success:false}.
         let cat = Arc::new(fetcher_catalog());
         let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
-        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline| {
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline, _run_root| {
             Box::pin(async move {
                 if id == "bad" {
                     Err(CoreError::Ipc("HTTP 500".into()))
@@ -1222,7 +1229,7 @@ mod tests {
         let scripted = Arc::new(ScriptedLlm::new(vec![plan_try1.into(), plan_try2.into()]));
         let planner = Arc::new(Planner::new(scripted, "deepseek-chat".into()));
 
-        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline| {
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline, _run_root| {
             Box::pin(async move {
                 if id == "try1" {
                     Err(CoreError::Ipc("HTTP 404".into()))
@@ -1446,7 +1453,7 @@ mod tests {
         let wc = was_cancelled.clone();
 
         // Slow stub: sleeps 5s, observes its own cancellation via Drop side effect.
-        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _o, _deadline| {
+        let runner: SubtaskRunner = Arc::new(move |id, _m, _msg, _o, _deadline, _run_root| {
             let wc = wc.clone();
             Box::pin(async move {
                 struct DropFlag(StdArc<AtomicBool>);
@@ -1519,7 +1526,7 @@ mod tests {
         use aaos_core::{AuditEventKind, TaskTtl};
         use std::time::Duration as StdDuration;
 
-        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline| {
+        let runner: SubtaskRunner = Arc::new(|id, _m, _msg, _o, _deadline, _run_root| {
             Box::pin(async move {
                 if id == "slow" {
                     tokio::time::sleep(StdDuration::from_secs(5)).await;
@@ -1597,7 +1604,7 @@ mod tests {
         let attempt_counter = Arc::new(AtomicU32::new(0));
         let counter_inner = attempt_counter.clone();
 
-        let runner: SubtaskRunner = Arc::new(move |id, manifest_yaml, _m, _o, _d| {
+        let runner: SubtaskRunner = Arc::new(move |id, manifest_yaml, _m, _o, _d, _run_root| {
             let counter = counter_inner.clone();
             Box::pin(async move {
                 let attempt = counter.fetch_add(1, Ordering::SeqCst);
@@ -1803,7 +1810,7 @@ mod tests {
 
         let attempt_counter = Arc::new(AtomicU32::new(0));
         let counter_inner = attempt_counter.clone();
-        let runner: SubtaskRunner = Arc::new(move |_id, manifest_yaml, _, _, _| {
+        let runner: SubtaskRunner = Arc::new(move |_id, manifest_yaml, _, _, _, _run_root| {
             let counter = counter_inner.clone();
             Box::pin(async move {
                 let attempt = counter.fetch_add(1, Ordering::SeqCst);
@@ -1870,7 +1877,7 @@ mod tests {
 
         let attempt_counter = Arc::new(AtomicU32::new(0));
         let counter_inner = attempt_counter.clone();
-        let runner: SubtaskRunner = Arc::new(move |_id, _m, _msg, _o, _d| {
+        let runner: SubtaskRunner = Arc::new(move |_id, _m, _msg, _o, _d, _run_root| {
             let counter = counter_inner.clone();
             Box::pin(async move {
                 let _ = counter.fetch_add(1, Ordering::SeqCst);

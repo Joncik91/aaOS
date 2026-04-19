@@ -117,6 +117,30 @@ mod linux_impl {
                 })?;
         }
 
+        // Per-agent workspace, read + write (narrow scope — one path
+        // per agent, bind-mounted at the same absolute path inside the
+        // worker's mount ns). Capability tokens still gate which paths
+        // within the workspace each tool call may touch.
+        if let Some(ws) = policy.workspace.as_ref() {
+            if ws.exists() {
+                let fd = PathFd::new(ws).map_err(|e| LandlockCompileError::RuleAddFailed {
+                    path: ws.clone(),
+                    reason: e.to_string(),
+                })?;
+                ruleset = ruleset
+                    .add_rule(PathBeneath::new(fd, read_write))
+                    .map_err(|e| LandlockCompileError::RuleAddFailed {
+                        path: ws.clone(),
+                        reason: e.to_string(),
+                    })?;
+            } else {
+                tracing::warn!(
+                    path = %ws.display(),
+                    "landlock: workspace path does not exist, skipping rule"
+                );
+            }
+        }
+
         Ok(ruleset)
     }
 
@@ -153,6 +177,7 @@ mod linux_impl {
                     PathBuf::from("/usr/lib/x86_64-linux-gnu"),
                 ],
                 broker_socket: PathBuf::from("/nonexistent.sock"),
+                workspace: None,
             }
         }
 

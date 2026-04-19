@@ -154,6 +154,15 @@ pub struct PolicyDescription {
     /// Landlock does not restrict `connect(AF_UNIX)` — this is a hint
     /// for documentation / diagnostic logging in the worker.
     pub broker_socket: PathBuf,
+    /// Optional workspace path bind-mounted from the host into the
+    /// worker at the same absolute path (preserved, so tool calls
+    /// using absolute workspace paths resolve identically daemon-side
+    /// vs worker-side). None = no workspace visibility (pure compute
+    /// under /scratch only). Added to the Landlock rw allow-list so
+    /// file_read/file_write to these paths can succeed under capability
+    /// grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<PathBuf>,
 }
 
 /// Generic JSON-RPC response envelope.
@@ -228,6 +237,7 @@ mod tests {
                     PathBuf::from("/lib64"),
                 ],
                 broker_socket: PathBuf::from("/var/run/aaos/sessions/x.sock"),
+                workspace: None,
             },
         };
         let s = serde_json::to_string(&ack).unwrap();

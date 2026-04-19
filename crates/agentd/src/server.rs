@@ -303,11 +303,18 @@ impl Server {
         };
         let server_weak = self.clone();
         let runner: SubtaskRunner = Arc::new(
-            move |subtask_id, manifest_yaml, message, overrides, deadline| {
+            move |subtask_id, manifest_yaml, message, overrides, deadline, run_root| {
                 let s = server_weak.clone();
                 Box::pin(async move {
-                    s.run_subtask_inline(&subtask_id, &manifest_yaml, &message, overrides, deadline)
-                        .await
+                    s.run_subtask_inline(
+                        &subtask_id,
+                        &manifest_yaml,
+                        &message,
+                        overrides,
+                        deadline,
+                        run_root,
+                    )
+                    .await
                 })
             },
         );
@@ -524,6 +531,7 @@ impl Server {
         message: &str,
         overrides: SubtaskExecutorOverrides,
         deadline: Option<std::time::Instant>,
+        run_root: std::path::PathBuf,
     ) -> Result<SubtaskResult, aaos_core::CoreError> {
         // Parse the rendered manifest.
         let manifest = aaos_core::AgentManifest::from_yaml(manifest_yaml)
@@ -541,33 +549,31 @@ impl Server {
             let _ = cleanup_registry.stop_sync(aid);
         });
 
-        // Phase F-b/3b: when a NamespacedBackend is active AND the
-        // operator has explicitly opted in via AAOS_CONFINE_SUBTASKS=1,
-        // launch a worker session for this subtask agent so tool calls
-        // route worker-side (real confinement).
+        // Phase F-b/3b+3c: when a NamespacedBackend is active, launch a
+        // worker session for this subtask agent so tool calls route
+        // worker-side under Landlock + seccomp. `run_root` is the
+        // per-run workspace (/var/lib/aaos/workspace/<run-id>/) —
+        // bind-mounted into the worker's mount ns at the same absolute
+        // path so tools using workspace paths resolve identically
+        // daemon-side vs worker-side.
         //
-        // Opt-in, not opt-out, because today's workers cannot access
-        // /var/lib/aaos/workspace/ (the mount namespace exposes only
-        // /scratch + shared_libs per PolicyDescription). The canonical
-        // goal — fetcher → workspace → analyzer → writer — depends on
-        // workspace access; confining subtasks without workspace
-        // bind-mounts breaks that flow with ENOENT from inside the
-        // worker. Flag stays off until workspace-mount design lands
-        // (tracked for a follow-up sub-project). Confinement still
-        // activates for `spawn_agent`-launched children, which are
-        // the intended target of sub-project 3 today.
+        // Default ON now that Gap C (workspace bind-mount) is fixed.
+        // Opt out via AAOS_CONFINE_SUBTASKS=0 to force the legacy
+        // daemon-side path (e.g. for latency debugging).
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
         let _namespaced_guard = {
             let confine = std::env::var("AAOS_CONFINE_SUBTASKS")
-                .map(|v| v == "1")
-                .unwrap_or(false);
+                .map(|v| v != "0")
+                .unwrap_or(true);
             if confine {
-                self.launch_worker_session_for_subtask(agent_id, &manifest)
+                self.launch_worker_session_for_subtask(agent_id, &manifest, run_root.clone())
                     .await
             } else {
                 None
             }
         };
+        #[cfg(not(all(target_os = "linux", feature = "namespaced-agents")))]
+        let _ = &run_root;
 
         // Run the LLM execution loop for this agent. Overrides carry the
         // role's budget (max_output_tokens) + retry (max_iterations) so
@@ -697,6 +703,7 @@ impl Server {
         self: &Arc<Self>,
         agent_id: aaos_core::AgentId,
         manifest: &aaos_core::AgentManifest,
+        workspace_path: std::path::PathBuf,
     ) -> Option<scopeguard::ScopeGuard<
         (
             Arc<aaos_backend_linux::NamespacedBackend>,
@@ -721,7 +728,7 @@ impl Server {
             agent_id,
             manifest: manifest.clone(),
             capability_handles: caps,
-            workspace_path: std::path::PathBuf::new(),
+            workspace_path,
             budget_config: manifest.budget_config,
         };
 
@@ -3013,6 +3020,7 @@ system_prompt: "test subtask"
                 "hello",
                 SubtaskExecutorOverrides::default(),
                 None,
+                std::path::PathBuf::from("/tmp/test-run-root"),
             )
             .await
             .expect("subtask should run to completion");
