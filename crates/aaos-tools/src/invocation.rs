@@ -11,6 +11,36 @@ use crate::context::InvocationContext;
 use crate::registry::ToolRegistry;
 
 /// Thin trait implemented by the broker-session adapter in `agentd`.
+/// Structured error returned by `WorkerHandle::invoke_over_worker`.
+///
+/// `NoSession` is a distinguishable "this agent has no worker process"
+/// condition — i.e., the agent was spawned via an inline path that
+/// skipped `AgentBackend::launch`. `ToolInvocation::invoke` catches this
+/// variant and falls back to daemon-side execution with the audit event
+/// reporting `ToolExecutionSurface::Daemon` so operators see honestly
+/// that the call was not confined. Other errors (`Transport`) are real
+/// broker failures and propagate as `CoreError::Ipc`.
+#[derive(Debug, Clone)]
+pub enum WorkerInvokeError {
+    /// No broker session exists for this agent. Legitimate when the
+    /// agent was spawned via `run_subtask_inline` (does not go through
+    /// `backend.launch`). Fall back to daemon-side execution.
+    NoSession,
+    /// Any other broker-side failure — timeout, transport error,
+    /// worker panic, Landlock denial, etc. Caller converts to
+    /// `CoreError::Ipc`.
+    Transport(String),
+}
+
+impl std::fmt::Display for WorkerInvokeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorkerInvokeError::NoSession => write!(f, "no broker session for agent"),
+            WorkerInvokeError::Transport(m) => write!(f, "{m}"),
+        }
+    }
+}
+
 /// `ToolInvocation` holds an optional `Arc<dyn WorkerHandle>` and uses
 /// it to forward invocations to the confined worker process when the
 /// routing table says `ToolExecutionSurface::Worker`.
@@ -24,7 +54,7 @@ pub trait WorkerHandle: Send + Sync {
         agent_id: AgentId,
         tool_name: &str,
         input: serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String>;
+    ) -> std::result::Result<serde_json::Value, WorkerInvokeError>;
 }
 
 /// Handles tool invocations with capability enforcement and audit logging.
@@ -110,9 +140,13 @@ impl ToolInvocation {
             });
         }
 
-        // Determine execution surface BEFORE the audit event so we emit
-        // the correct surface tag. No worker_handle → always Daemon.
-        let surface: ToolExecutionSurface = self
+        // Determine the INTENDED execution surface. Actual surface may
+        // downgrade to Daemon if the agent has no broker session —
+        // legitimate when the agent was spawned via an inline path
+        // (e.g., `run_subtask_inline`) that skipped `backend.launch`.
+        // The actual surface is resolved after the call and recorded on
+        // the audit event so operators see the honest truth.
+        let intended_surface: ToolExecutionSurface = self
             .worker_handle
             .as_ref()
             .map(|h| crate::routing::route_for(tool_name, h.backend_kind()))
@@ -160,16 +194,6 @@ impl ToolInvocation {
             ));
         }
 
-        self.audit_log.record(AuditEvent::new(
-            agent_id,
-            AuditEventKind::ToolInvoked {
-                tool: tool_name.to_string(),
-                input_hash,
-                args_preview: Some(args_preview),
-                execution_surface: surface,
-            },
-        ));
-
         // Filter handles relevant to this tool
         let filtered_handles: Vec<CapabilityHandle> = token_handles
             .iter()
@@ -189,29 +213,65 @@ impl ToolInvocation {
             .collect();
 
         // Fork: Worker-routed calls go over the broker; Daemon calls go to
-        // the local registry. The capability check and audit prefix above
-        // are surface-agnostic and always run in the daemon.
-        let mut result: Result<Value> = match surface {
-            ToolExecutionSurface::Worker => {
-                let handle = self
-                    .worker_handle
-                    .as_ref()
-                    .expect("surface=Worker implies handle is Some");
-                handle
-                    .invoke_over_worker(agent_id, tool_name, input.clone())
-                    .await
-                    .map_err(|reason| CoreError::Ipc(reason))
-            }
-            ToolExecutionSurface::Daemon => {
-                let tool = self.registry.get(tool_name)?;
-                let ctx = InvocationContext {
-                    agent_id,
-                    tokens: filtered_handles,
-                    capability_registry: self.capability_registry.clone(),
-                };
-                tool.invoke(input, &ctx).await
-            }
-        };
+        // the local registry. The capability check above is surface-agnostic
+        // and always runs in the daemon.
+        //
+        // Worker → NoSession downgrade: an agent spawned inline (e.g. via
+        // run_subtask_inline) has no broker session. Fall back to daemon-
+        // side execution and record the actual surface (Daemon) in the
+        // audit event so operators see honestly that the call was not
+        // confined. Any other worker error propagates as CoreError::Ipc.
+        let (actual_surface, mut result): (ToolExecutionSurface, Result<Value>) =
+            match intended_surface {
+                ToolExecutionSurface::Worker => {
+                    let handle = self
+                        .worker_handle
+                        .as_ref()
+                        .expect("intended_surface=Worker implies handle is Some");
+                    match handle
+                        .invoke_over_worker(agent_id, tool_name, input.clone())
+                        .await
+                    {
+                        Ok(v) => (ToolExecutionSurface::Worker, Ok(v)),
+                        Err(WorkerInvokeError::NoSession) => {
+                            let tool = self.registry.get(tool_name)?;
+                            let ctx = InvocationContext {
+                                agent_id,
+                                tokens: filtered_handles.clone(),
+                                capability_registry: self.capability_registry.clone(),
+                            };
+                            (ToolExecutionSurface::Daemon, tool.invoke(input.clone(), &ctx).await)
+                        }
+                        Err(e) => (
+                            ToolExecutionSurface::Worker,
+                            Err(CoreError::Ipc(e.to_string())),
+                        ),
+                    }
+                }
+                ToolExecutionSurface::Daemon => {
+                    let tool = self.registry.get(tool_name)?;
+                    let ctx = InvocationContext {
+                        agent_id,
+                        tokens: filtered_handles,
+                        capability_registry: self.capability_registry.clone(),
+                    };
+                    (ToolExecutionSurface::Daemon, tool.invoke(input, &ctx).await)
+                }
+            };
+
+        // Emit the ToolInvoked audit event AFTER the call so the
+        // execution_surface field reflects what actually ran, not the
+        // intent — important when Worker was intended but downgraded to
+        // Daemon via the NoSession fallback above.
+        self.audit_log.record(AuditEvent::new(
+            agent_id,
+            AuditEventKind::ToolInvoked {
+                tool: tool_name.to_string(),
+                input_hash,
+                args_preview: Some(args_preview),
+                execution_surface: actual_surface,
+            },
+        ));
 
         // Log result (with a bounded preview for operator observability).
         let result_preview = match &result {
@@ -688,7 +748,7 @@ mod tests {
             agent_id: AgentId,
             tool_name: &str,
             input: serde_json::Value,
-        ) -> std::result::Result<serde_json::Value, String> {
+        ) -> std::result::Result<serde_json::Value, WorkerInvokeError> {
             self.invocations
                 .lock()
                 .unwrap()
@@ -816,6 +876,78 @@ mod tests {
             surface_in_audit,
             Some(ToolExecutionSurface::Daemon),
             "ToolInvoked audit event must carry execution_surface = Daemon for daemon-side tools"
+        );
+    }
+
+    /// When the worker handle returns `NoSession` (agent spawned via an
+    /// inline path with no broker session), ToolInvocation must fall back
+    /// to daemon-side execution AND the audit event must carry
+    /// `execution_surface: Daemon` so operators see the honest truth.
+    #[tokio::test]
+    async fn worker_no_session_falls_back_to_daemon() {
+        struct NoSessionHandle;
+
+        #[async_trait::async_trait]
+        impl WorkerHandle for NoSessionHandle {
+            fn backend_kind(&self) -> &'static str {
+                "namespaced"
+            }
+            async fn invoke_over_worker(
+                &self,
+                _agent_id: AgentId,
+                _tool_name: &str,
+                _input: serde_json::Value,
+            ) -> std::result::Result<serde_json::Value, WorkerInvokeError> {
+                Err(WorkerInvokeError::NoSession)
+            }
+        }
+
+        let log = Arc::new(InMemoryAuditLog::new());
+        let cap_registry = Arc::new(CapabilityRegistry::new());
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register_as(Arc::new(crate::tool::EchoTool), "file_write");
+
+        let agent_id = AgentId::new();
+        let token = CapabilityToken::issue(
+            agent_id,
+            Capability::ToolInvoke {
+                tool_name: "*".into(),
+            },
+            Constraints::default(),
+        );
+        let handle = cap_registry.insert(agent_id, token);
+
+        let invocation = ToolInvocation::new_with_worker_handle(
+            registry,
+            log.clone(),
+            cap_registry,
+            Arc::new(NoSessionHandle),
+        );
+
+        let result = invocation
+            .invoke(
+                agent_id,
+                "file_write",
+                serde_json::json!({"message": "hi"}),
+                &[handle],
+            )
+            .await
+            .expect("NoSession must fall back, not fail");
+        assert_eq!(result, serde_json::json!({"message": "hi"}));
+
+        let events = log.events();
+        let surface_in_audit = events.iter().find_map(|e| match &e.event {
+            AuditEventKind::ToolInvoked {
+                tool,
+                execution_surface,
+                ..
+            } if tool == "file_write" => Some(*execution_surface),
+            _ => None,
+        });
+        assert_eq!(
+            surface_in_audit,
+            Some(ToolExecutionSurface::Daemon),
+            "NoSession fallback must record actual surface = Daemon in audit"
         );
     }
 

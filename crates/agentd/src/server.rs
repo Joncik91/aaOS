@@ -117,15 +117,15 @@ impl aaos_tools::WorkerHandle for BrokerWorkerHandle {
         agent_id: aaos_core::AgentId,
         tool_name: &str,
         input: serde_json::Value,
-    ) -> std::result::Result<serde_json::Value, String> {
+    ) -> std::result::Result<serde_json::Value, aaos_tools::WorkerInvokeError> {
         let session = self
             .backend
             .session(&agent_id)
-            .ok_or_else(|| format!("no broker session for agent {agent_id}"))?;
+            .ok_or(aaos_tools::WorkerInvokeError::NoSession)?;
         session
             .invoke_over_worker(tool_name, input)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| aaos_tools::WorkerInvokeError::Transport(e.to_string()))
     }
 }
 
