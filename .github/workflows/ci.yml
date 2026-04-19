@@ -50,6 +50,14 @@ jobs:
       - name: cargo check --features mcp
         run: cargo check -p agentd --features mcp
 
+      # Feature-on compile check for the namespaced backend. The full
+      # integration tests need kernel primitives (user namespaces,
+      # Landlock) and run in test-ignored; a plain `cargo check` here
+      # catches compile-time regressions on the feature-on path without
+      # needing the runtime surface.
+      - name: cargo check --features namespaced-agents
+        run: cargo check -p agentd --features namespaced-agents
+
       - name: gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
