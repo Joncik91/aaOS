@@ -12,6 +12,8 @@ Plus two ongoing strands — **AgentSkills** and **Self-reflection runs** — th
 
 Where an old label (e.g. "Phase F-b/3" or "C2") appears in reflection logs, commit messages, or external notes, the `ex-<old label>` line under each heading below preserves the mapping.
 
+For a release-by-release summary (what landed in `v0.0.1` vs `v0.0.2` and the pre-tagged `0.0.0` body of work), see [`CHANGELOG.md`](../CHANGELOG.md).
+
 ---
 
 ## Build history

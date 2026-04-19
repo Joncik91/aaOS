@@ -21,6 +21,45 @@ aaos (0.0.2-1) trixie; urgency=medium
 
 aaos (0.0.1-1) trixie; urgency=medium
 
-  * Initial release.
+  * First tagged .deb release.  CI-built on v* tag push via
+    .github/workflows/release.yml; builds inside a debian:13 container so
+    cargo-deb encodes Debian's libc/systemd minimums.
+  * Agentic-by-default .deb surface: --features mcp enabled by default;
+    21 AgentSkills bundled under /usr/share/aaos/skills/; postinst
+    probes Landlock + unprivileged userns and generates
+    /etc/default/aaos.example; new `agentd configure` subcommand for
+    one-step API key setup; /etc/aaos/mcp-servers.yaml.example template.
+  * Clippy gate flipped to -D warnings after fixing 57 latent lints.
 
  -- Jounes <jounes.ds@gmail.com>  Sat, 19 Apr 2026 19:00:00 +0000
+
+aaos (0.0.0-1) trixie; urgency=medium
+
+  * No installable artifact — this stanza records the pre-v0.0.1
+    development history in dpkg-changelog form.  See CHANGELOG.md at
+    the repo root for the full human-readable record.
+  * Runtime foundation: capability-based security, two-level tool
+    enforcement, AgentServices + Tool traits, LLM execution loop, MCP
+    message routing, human-in-the-loop approval.
+  * Persistent agents + request-response IPC; managed context windows
+    with transparent summarization; episodic memory store with cosine
+    similarity over embeddings.
+  * Self-bootstrapping swarm (Docker PID 1 + Bootstrap Agent).
+  * Multi-provider LLM (DeepSeek, Anthropic, OpenAI-compatible);
+    per-agent token budgets; semaphore-bounded inference scheduler.
+  * Computed orchestration: Planner + deterministic PlanExecutor DAG
+    walk; role catalog at /etc/aaos/roles/; four bundled roles.
+  * Agent-kernel primitives: reasoning-slot scheduler; per-task TTL +
+    latency tracking; dynamic model routing via role.model_ladder +
+    escalation signals; runtime-side tool confinement on
+    NamespacedBackend (Landlock + seccomp + user/mount/pid namespaces).
+  * Bidirectional MCP integration (aaos-mcp crate, --features mcp).
+  * Operator CLI (submit/list/status/stop/logs/roles) + NDJSON
+    streaming + BroadcastAuditLog + agentd(1) man page + aaos
+    system group.
+  * Debian packaging (2026-04-15, commits 5717906 + 8d45691): .deb
+    buildable via cargo-deb; postinst creates aaos user + group;
+    systemd StateDirectory/RuntimeDirectory own dir creation; socket
+    at /run/agentd/agentd.sock mode 0660; purge cleans state + user.
+
+ -- Jounes <jounes.ds@gmail.com>  Sat, 29 Mar 2026 00:00:00 +0000

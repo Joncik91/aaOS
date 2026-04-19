@@ -106,11 +106,12 @@ budget_config:
 
 ## Documentation
 
+- [Changelog](CHANGELOG.md) — Per-release summary of what changed, with the pre-v0.0.1 history captured under `[0.0.0]`
 - [Architecture](docs/architecture.md) — Stack, capability model, agent backends, audit trail
 - [Tools](docs/tools.md) — Built-in tool catalog with capability requirements
 - [API](docs/api.md) — JSON-RPC method reference
 - [Docker deployment](docs/docker.md) — Container path, persistent memory, multi-goal sessions
-- [Roadmap](docs/roadmap.md) — Phase-by-phase path from runtime to real kernel
+- [Roadmap](docs/roadmap.md) — Shipped history + active milestones + research branch
 - [Reflection log](docs/reflection/README.md) — Runs where aaOS reads its own code and proposes changes
 - [Patterns](docs/patterns.md) — Cross-cutting lessons distilled from the log
 - [Ideas](docs/ideas.md) — Deferred work, with the signals that would prompt reconsideration
