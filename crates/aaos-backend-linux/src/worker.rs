@@ -22,10 +22,13 @@ pub use stub_impl::*;
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use std::io;
+    use std::panic::AssertUnwindSafe;
     use std::path::PathBuf;
 
+    use futures_util::future::FutureExt;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
+    use tokio::time::{timeout, Duration};
 
     use crate::broker_protocol::{ReadyAck, Request, WireRequest, WireResponse};
     use crate::landlock_compile;
@@ -166,14 +169,22 @@ mod linux_impl {
         Ok(())
     }
 
-    /// The minimal agent loop: read poke commands (integration tests)
-    /// and otherwise sleep. For production this becomes the message
-    /// dispatch loop for brokered tool calls.
+    /// Dispatch loop for brokered tool calls.
+    ///
+    /// Handles `InvokeTool` requests from the broker by running each tool
+    /// inside the already-applied Landlock + seccomp sandbox.  Every branch
+    /// of the match produces a `WireResponse` that is written back before the
+    /// next iteration — the loop never silently drops a request.
     async fn agent_loop(
         mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
         mut write_half: tokio::net::unix::OwnedWriteHalf,
     ) -> Result<(), WorkerError> {
-        let mut next_id: u64 = 3;
+        use crate::broker_protocol::invoke_tool_error_code::*;
+
+        // Build the worker tool registry once — it does not change for the
+        // lifetime of this worker process.
+        let worker_registry = crate::worker_tools::build_worker_registry();
+
         let mut line = String::new();
         loop {
             line.clear();
@@ -194,6 +205,64 @@ mod linux_impl {
                     WireResponse::success(req.id, serde_json::json!({ "nonce": nonce }))
                 }
                 Request::Poke { op } => handle_poke_with_id(req.id, op),
+                Request::InvokeTool { tool_name, input, request_id: _ } => {
+                    // Look up the tool in the worker's whitelist registry.
+                    // Fail-closed: if the tool is not here, return TOOL_NOT_AVAILABLE.
+                    // The common writer below always sends the response — no `continue`
+                    // that would skip the write.
+                    match worker_registry.get(&tool_name) {
+                        Err(_) => WireResponse::error(
+                            req.id,
+                            TOOL_NOT_AVAILABLE,
+                            format!("tool {tool_name} not available in worker"),
+                        ),
+                        Ok(tool) => {
+                            // Build a stub InvocationContext to satisfy the trait
+                            // signature.  Daemon-side `ToolInvocation` has already
+                            // done the capability check before sending `InvokeTool`;
+                            // this context exists only to satisfy the trait — no
+                            // capability re-check happens here.
+                            let agent_id = std::env::var(ENV_AGENT_ID)
+                                .ok()
+                                .and_then(|s| s.parse::<aaos_core::AgentId>().ok())
+                                .unwrap_or_else(aaos_core::AgentId::new);
+                            let ctx = aaos_tools::context::InvocationContext {
+                                agent_id,
+                                tokens: vec![],
+                                capability_registry: std::sync::Arc::new(
+                                    aaos_core::CapabilityRegistry::new(),
+                                ),
+                            };
+
+                            // Wrap with catch_unwind so a tool panic cannot kill
+                            // the worker loop, then apply a 60-second wall-clock
+                            // timeout.
+                            let fut =
+                                AssertUnwindSafe(tool.invoke(input, &ctx)).catch_unwind();
+                            match timeout(Duration::from_secs(60), fut).await {
+                                Ok(Ok(Ok(value))) => WireResponse::success(req.id, value),
+                                Ok(Ok(Err(e))) => {
+                                    WireResponse::error(req.id, TOOL_RUNTIME, e.to_string())
+                                }
+                                Ok(Err(panic_payload)) => {
+                                    let msg = panic_payload
+                                        .downcast_ref::<&'static str>()
+                                        .map(|s| s.to_string())
+                                        .or_else(|| {
+                                            panic_payload.downcast_ref::<String>().cloned()
+                                        })
+                                        .unwrap_or_else(|| "<panic payload>".into());
+                                    WireResponse::error(req.id, TOOL_PANICKED, msg)
+                                }
+                                Err(_) => WireResponse::error(
+                                    req.id,
+                                    TOOL_TIMEOUT,
+                                    format!("tool {tool_name} exceeded 60s timeout"),
+                                ),
+                            }
+                        }
+                    }
+                }
                 _ => WireResponse::error(req.id, -32601, "worker: unsupported request"),
             };
             let mut buf = serde_json::to_vec(&resp)
@@ -201,8 +270,6 @@ mod linux_impl {
             buf.push(b'\n');
             write_half.write_all(&buf).await?;
             write_half.flush().await?;
-            next_id += 1;
-            let _ = next_id;
         }
     }
 
