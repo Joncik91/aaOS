@@ -20,3 +20,11 @@ if ! command -v gitleaks >/dev/null 2>&1; then
 fi
 
 gitleaks protect --staged --redact --config .gitleaks.toml
+
+# S2D — spec-to-diff reviewer (blocks if spec requirements appear
+# unimplemented in the staged diff). No-op if ANTHROPIC_API_KEY is
+# unset, if no candidate spec exists, or if S2D_DISABLE=1. See
+# scripts/s2d-review.sh for full details.
+if [ -x scripts/s2d-review.sh ]; then
+    scripts/s2d-review.sh
+fi
