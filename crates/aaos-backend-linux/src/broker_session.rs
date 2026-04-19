@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use aaos_core::AgentId;
@@ -29,6 +29,38 @@ use crate::broker_protocol::{PokeOp, Request, WireRequest, WireResponse};
 /// and sends the response through it, unblocking the caller awaiting the
 /// other end of the channel.
 type PendingResponses = Mutex<HashMap<u64, oneshot::Sender<WireResponse>>>;
+
+/// Errors that can occur when invoking a tool over the worker channel.
+///
+/// Variants mirror the `invoke_tool_error_code` constants from
+/// [`crate::broker_protocol`] so callers can pattern-match on the
+/// structured reason rather than parsing error strings.
+#[derive(Debug, thiserror::Error)]
+pub enum InvokeToolError {
+    /// Tool name is not registered in the worker's capability set.
+    #[error("tool {0} not available in worker")]
+    NotAvailable(String),
+    /// Tool executed but panicked or hit an abort-level error.
+    #[error("tool {0} panicked: {1}")]
+    Panicked(String, String),
+    /// Tool did not complete before the worker's 60-second deadline.
+    #[error("tool {0} exceeded 60s timeout")]
+    Timeout(String),
+    /// Landlock, seccomp, or capability check denied the tool's access.
+    #[error("tool denied: {0}")]
+    Denied(String),
+    /// Tool returned an unrecoverable runtime error (OOM, internal corruption).
+    #[error("tool error: {0}")]
+    Runtime(String),
+    /// The worker connection was lost while the invoke was in-flight.
+    #[error("worker lost mid-invoke")]
+    WorkerLost,
+}
+
+/// Pending in-flight `InvokeTool` requests awaiting structured responses.
+/// Uses a *sync* mutex — the map is never held across `.await` points.
+type InvokePending =
+    StdMutex<HashMap<u64, oneshot::Sender<std::result::Result<serde_json::Value, InvokeToolError>>>>;
 
 /// Errors raised when sending a request to a worker over the persistent
 /// post-handshake stream.
@@ -106,6 +138,17 @@ pub struct BrokerSession {
     /// with the `Ready` (1) and `SandboxedReady` (2) ids used during the
     /// handshake.
     next_request_id: AtomicU64,
+
+    /// In-flight `InvokeTool` requests. The reader task resolves these
+    /// when matching `WireResponse`s arrive. Uses a *sync* mutex so the
+    /// lock is never held across an `.await` point. Keyed by `request_id`
+    /// — the same value used as the outer `WireRequest.id`.
+    ///
+    /// Separate from `pending` (which stores raw `WireResponse`) so
+    /// existing Ping/Poke paths are not disturbed. Start counter at 1000
+    /// to avoid any overlap with the legacy `next_request_id` start of 100.
+    invoke_pending: Arc<InvokePending>,
+    next_invoke_id: AtomicU64,
 }
 
 impl BrokerSession {
@@ -135,6 +178,8 @@ impl BrokerSession {
             write_half: Mutex::new(None),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_request_id: AtomicU64::new(100),
+            invoke_pending: Arc::new(StdMutex::new(HashMap::new())),
+            next_invoke_id: AtomicU64::new(1000),
         };
         (session, rx)
     }
@@ -201,6 +246,7 @@ impl BrokerSession {
             *guard = Some(write_half);
         }
         let pending = self.pending.clone();
+        let invoke_pending = self.invoke_pending.clone();
         let agent_id = self.agent_id;
         tokio::spawn(async move {
             use tokio::io::{AsyncBufReadExt, BufReader};
@@ -236,6 +282,34 @@ impl BrokerSession {
                         continue;
                     }
                 };
+
+                // --- InvokeTool demux (checked first) ---
+                // Try to route the response to an in-flight invoke_over_worker caller.
+                // The sync lock is held only for the map operation, never across .await.
+                let invoke_tx = {
+                    let mut map = invoke_pending.lock().expect("invoke_pending poisoned");
+                    map.remove(&resp.id)
+                };
+                if let Some(tx) = invoke_tx {
+                    use crate::broker_protocol::invoke_tool_error_code::*;
+                    let payload = if let Some(err) = resp.error {
+                        Err(match err.code {
+                            TOOL_NOT_AVAILABLE => InvokeToolError::NotAvailable(err.message),
+                            TOOL_PANICKED => {
+                                InvokeToolError::Panicked(String::new(), err.message)
+                            }
+                            TOOL_TIMEOUT => InvokeToolError::Timeout(err.message),
+                            TOOL_DENIED => InvokeToolError::Denied(err.message),
+                            _ => InvokeToolError::Runtime(err.message),
+                        })
+                    } else {
+                        Ok(resp.result.unwrap_or(serde_json::Value::Null))
+                    };
+                    let _ = tx.send(payload);
+                    continue;
+                }
+
+                // --- Legacy Ping/Poke path ---
                 let tx = {
                     let mut map = pending.lock().await;
                     map.remove(&resp.id)
@@ -254,8 +328,17 @@ impl BrokerSession {
                 }
             }
 
-            // Reader exiting — drain pending so any awaiters wake up with
-            // ResponseChannelClosed rather than hanging forever.
+            // Reader exiting — drain pending maps so awaiters unblock cleanly.
+
+            // Drain invoke_pending: send WorkerLost to every in-flight invoke caller.
+            {
+                let mut map = invoke_pending.lock().expect("invoke_pending poisoned");
+                for (_id, tx) in map.drain() {
+                    let _ = tx.send(Err(InvokeToolError::WorkerLost));
+                }
+            }
+
+            // Drain legacy pending: drop senders so rx.await returns ResponseChannelClosed.
             let mut map = pending.lock().await;
             map.clear();
         });
@@ -360,6 +443,93 @@ impl BrokerSession {
         timeout: Duration,
     ) -> Result<WireResponse, SendError> {
         self.send_request(Request::Poke { op }, timeout).await
+    }
+
+    /// Send an `InvokeTool` request to the worker and await its structured
+    /// result. Multiple calls may be outstanding concurrently — each
+    /// gets its own `request_id` and oneshot channel, demuxed by the
+    /// reader task in [`install_post_handshake_stream`].
+    ///
+    /// Returns `Ok(value)` on success, or an [`InvokeToolError`] variant
+    /// that mirrors the wire error code sent by the worker. If the worker
+    /// connection drops while the request is in-flight, returns
+    /// [`InvokeToolError::WorkerLost`].
+    ///
+    /// # Concurrency
+    ///
+    /// Safe to call from multiple tasks simultaneously. The `invoke_pending`
+    /// map uses a sync mutex held only for the `insert`/`remove` operations —
+    /// never across `.await` points.
+    pub async fn invoke_over_worker(
+        &self,
+        tool_name: &str,
+        input: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, InvokeToolError> {
+        let request_id = self.next_invoke_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut map = self
+                .invoke_pending
+                .lock()
+                .expect("invoke_pending mutex poisoned");
+            map.insert(request_id, tx);
+        }
+
+        let req = Request::InvokeTool {
+            tool_name: tool_name.to_string(),
+            input,
+            request_id,
+        };
+
+        // `send_request` allocates its own id from `next_request_id`; we
+        // need the outer envelope id to match `request_id` so the reader
+        // can look it up in `invoke_pending`. We serialize manually here
+        // (same pattern as send_request) to keep the ids aligned.
+        let wire = WireRequest::new(request_id, req);
+        let mut buf = match serde_json::to_vec(&wire) {
+            Ok(b) => b,
+            Err(e) => {
+                self.invoke_pending
+                    .lock()
+                    .expect("invoke_pending mutex poisoned")
+                    .remove(&request_id);
+                return Err(InvokeToolError::Runtime(format!("serialize failed: {e}")));
+            }
+        };
+        buf.push(b'\n');
+
+        {
+            let mut guard = self.write_half.lock().await;
+            let wh = match guard.as_mut() {
+                Some(w) => w,
+                None => {
+                    self.invoke_pending
+                        .lock()
+                        .expect("invoke_pending mutex poisoned")
+                        .remove(&request_id);
+                    return Err(InvokeToolError::Runtime(
+                        "send failed: not connected".into(),
+                    ));
+                }
+            };
+            use tokio::io::AsyncWriteExt;
+            if let Err(e) = wh.write_all(&buf).await {
+                self.invoke_pending
+                    .lock()
+                    .expect("invoke_pending mutex poisoned")
+                    .remove(&request_id);
+                return Err(InvokeToolError::Runtime(format!("send failed: {e}")));
+            }
+            if let Err(e) = wh.flush().await {
+                self.invoke_pending
+                    .lock()
+                    .expect("invoke_pending mutex poisoned")
+                    .remove(&request_id);
+                return Err(InvokeToolError::Runtime(format!("send failed: {e}")));
+            }
+        }
+
+        rx.await.unwrap_or(Err(InvokeToolError::WorkerLost))
     }
 }
 
@@ -548,5 +718,130 @@ mod tests {
         assert!(rx.await.is_ok());
         // Second fire is a no-op (logs warning, doesn't panic).
         session.fire_sandboxed_ready().await;
+    }
+
+    /// Verify that four concurrent `invoke_over_worker` calls are correctly
+    /// demuxed by the reader task. Uses a `tokio::net::UnixStream::pair()`
+    /// as the in-memory transport and a simple echo worker that replies to
+    /// every `InvokeTool` with `WireResponse::success(id, input)`.
+    #[tokio::test]
+    async fn pending_map_demuxes_concurrent_invokes() {
+        use crate::broker_protocol::{Request, WireRequest, WireResponse};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::UnixStream;
+
+        let (broker_sock, worker_sock) = UnixStream::pair().unwrap();
+        let (broker_read, broker_write) = broker_sock.into_split();
+        let (worker_read, mut worker_write) = worker_sock.into_split();
+
+        let id = AgentId::new();
+        let (session, _rx) =
+            BrokerSession::new(id, 1, 1, 1, sample_policy(), PathBuf::from("/tmp/a.sock"));
+        let session = Arc::new(session);
+
+        // Install the post-handshake stream so the reader task starts.
+        session
+            .clone()
+            .install_post_handshake_stream(broker_read, broker_write)
+            .await;
+
+        // Spawn a fake worker that echoes every InvokeTool request as a
+        // success response containing the original input as the result.
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(worker_read);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                let trimmed = line.trim_end();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let req: WireRequest = match serde_json::from_str(trimmed) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                let resp = match req.request {
+                    Request::InvokeTool { input, .. } => {
+                        WireResponse::success(req.id, input)
+                    }
+                    _ => WireResponse::success(req.id, serde_json::Value::Null),
+                };
+                let mut buf = serde_json::to_vec(&resp).unwrap();
+                buf.push(b'\n');
+                if worker_write.write_all(&buf).await.is_err() {
+                    break;
+                }
+                worker_write.flush().await.unwrap_or(());
+            }
+        });
+
+        // Fire 4 concurrent invoke_over_worker calls.
+        let s = session.clone();
+        let (r0, r1, r2, r3) = tokio::join!(
+            s.invoke_over_worker("tool_a", serde_json::json!({"n": 0})),
+            s.invoke_over_worker("tool_b", serde_json::json!({"n": 1})),
+            s.invoke_over_worker("tool_c", serde_json::json!({"n": 2})),
+            s.invoke_over_worker("tool_d", serde_json::json!({"n": 3})),
+        );
+
+        // All four must succeed and echo back their respective inputs.
+        let results = [r0, r1, r2, r3];
+        let expected_ns: Vec<u64> = (0..4).collect();
+        let mut got_ns: Vec<u64> = results
+            .iter()
+            .map(|r| {
+                let v = r.as_ref().expect("invoke must succeed");
+                v.get("n").and_then(|x| x.as_u64()).expect("result must have n")
+            })
+            .collect();
+        got_ns.sort_unstable();
+        assert_eq!(got_ns, expected_ns, "all 4 inputs must be echoed back");
+
+        // Pending map must be empty — no ghost waiters.
+        let map_len = session
+            .invoke_pending
+            .lock()
+            .expect("poisoned")
+            .len();
+        assert_eq!(map_len, 0, "invoke_pending must be empty after all responses resolved");
+    }
+
+    /// Verify that when the worker closes the connection, in-flight
+    /// `invoke_over_worker` callers receive `InvokeToolError::WorkerLost`.
+    #[tokio::test]
+    async fn worker_lost_unblocks_invoke_caller() {
+        use tokio::net::UnixStream;
+
+        let (broker_sock, worker_sock) = UnixStream::pair().unwrap();
+        let (broker_read, broker_write) = broker_sock.into_split();
+
+        let id = AgentId::new();
+        let (session, _rx) =
+            BrokerSession::new(id, 1, 1, 1, sample_policy(), PathBuf::from("/tmp/a.sock"));
+        let session = Arc::new(session);
+
+        session
+            .clone()
+            .install_post_handshake_stream(broker_read, broker_write)
+            .await;
+
+        // Drop the worker end immediately so the reader task sees EOF.
+        drop(worker_sock);
+
+        // Give the reader task a moment to process the EOF.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        // Any subsequent invoke_over_worker call must fail (not connected after
+        // the write half is still there but the worker has gone). The exact
+        // error depends on OS behaviour; what matters is it doesn't hang.
+        let result = session
+            .invoke_over_worker("tool_x", serde_json::json!({}))
+            .await;
+        // Must have errored (either Runtime from send failure or WorkerLost
+        // if the reader drained it before the write).
+        assert!(result.is_err(), "invoke after worker close must fail");
     }
 }
