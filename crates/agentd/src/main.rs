@@ -75,20 +75,39 @@ async fn main() -> anyhow::Result<()> {
                 use aaos_mcp::config::McpConfig;
                 match McpConfig::load() {
                     Ok(Some(mcp_cfg)) => {
+                        let client_count = mcp_cfg.client.servers.len();
+                        if client_count > 0 {
+                            tracing::info!(
+                                servers = client_count,
+                                "MCP client: attempting to connect to {} configured server(s)",
+                                client_count
+                            );
+                        }
                         // The McpClient value is dropped here intentionally. Sessions stay alive because:
                         // - McpToolProxy instances in tool_registry hold Arc<McpSession> clones
                         // - spawn_reconnect_loop tasks hold their own Arc<McpSession> clones
                         // Dropping McpClient only drops the Vec<Arc<McpSession>> in its sessions() field.
-                        let _ = aaos_mcp::client::McpClient::connect_and_register(
+                        let mcp_client = aaos_mcp::client::McpClient::connect_and_register(
                             &mcp_cfg.client,
                             &server.tool_registry,
                         )
                         .await;
+                        if client_count > 0 {
+                            let registered = mcp_client.sessions().len();
+                            tracing::info!(
+                                registered,
+                                attempted = client_count,
+                                "MCP client: {} of {} server(s) registered (others retrying in background)",
+                                registered,
+                                client_count
+                            );
+                        }
 
                         if mcp_cfg.server.enabled {
                             let backend: std::sync::Arc<dyn aaos_mcp::server::McpServerBackend> =
                                 server.clone();
                             let bind = mcp_cfg.server.bind.clone();
+                            tracing::info!(bind = %bind, "MCP server: starting loopback listener");
                             tokio::spawn(async move {
                                 let mcp_server = aaos_mcp::server::McpServer::new(backend, bind);
                                 if let Err(e) = mcp_server.start().await {
@@ -98,10 +117,14 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     Ok(None) => {
-                        tracing::debug!("no /etc/aaos/mcp-servers.yaml — MCP disabled");
+                        tracing::info!(
+                            "no /etc/aaos/mcp-servers.yaml — MCP disabled (copy /etc/aaos/mcp-servers.yaml.example to enable)"
+                        );
                     }
                     Err(e) => {
-                        tracing::warn!("failed to load MCP config: {e} — MCP disabled");
+                        tracing::warn!(
+                            "failed to load /etc/aaos/mcp-servers.yaml: {e} — MCP disabled"
+                        );
                     }
                 }
             }

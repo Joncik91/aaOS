@@ -1145,7 +1145,32 @@ impl AgentBackend for NamespacedBackend {
             {
                 if let Some(state) = handle.state::<NamespacedState>() {
                     let pid = nix::unistd::Pid::from_raw(state.pid as i32);
+                    // SIGTERM first (graceful); give the child up to 500ms
+                    // to exit on its own. If it's still running after that,
+                    // SIGKILL. Either way, reap — an unreaped child becomes
+                    // a zombie for the life of agentd.
                     let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+                    // Non-blocking poll for up to ~500ms, then escalate.
+                    use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+                    let mut reaped = false;
+                    for _ in 0..10 {
+                        match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                            Ok(WaitStatus::StillAlive) => {
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            Ok(_) | Err(nix::Error::ECHILD) => {
+                                reaped = true;
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    if !reaped {
+                        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                        // Blocking reap — SIGKILL-to-exit is nearly
+                        // instant and we must not leave a zombie.
+                        let _ = waitpid(pid, None);
+                    }
                 }
             }
         }

@@ -1,9 +1,9 @@
 [package]
 name = "agentd"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 license = "Apache-2.0"
-description = "aaOS agent daemon — manages agent lifecycles"
+description = "Agent-first runtime daemon — manages agent lifecycles (aaOS)"
 
 [lib]
 name = "agentd"
@@ -60,15 +60,17 @@ mcp = ["dep:aaos-mcp"]
 name = "aaos"
 maintainer = "Jounes <jounes.ds@gmail.com>"
 copyright = "2026, Jounes <jounes.ds@gmail.com>"
-license-file = ["../../LICENSE", "0"]
 extended-description = """
-aaOS is a capability-enforced agent runtime. agentd manages agent lifecycles,
-enforces capability tokens at tool-invocation boundaries, and routes IPC between
-agents. This package installs the daemon plus the default bootstrap manifest.
+Agent-first runtime where AI agents are native processes.  Manages agent
+lifecycles, enforces capability tokens at tool-invocation boundaries, and
+routes IPC between agents.  This package installs the daemon plus the
+default bootstrap manifest.
 """
 depends = "$auto, systemd, ca-certificates, ripgrep"
 section = "admin"
 priority = "optional"
+# Binary stripping happens in packaging/build-deb.sh via `cargo deb --strip`.
+# Setting it here via cargo-deb's Cargo.toml fields doesn't work reliably.
 # cargo-deb (tested through v3.6.3) does not expose a pre-build hook in the
 # [package.metadata.deb] table. The `aaos-agent-worker` binary is shipped as
 # an asset below but `cargo deb -p agentd` alone does not build it. Use the
@@ -78,7 +80,7 @@ assets = [
   ["../../target/release/agentd", "usr/bin/", "755"],
   ["../../target/release/aaos-agent-worker", "usr/bin/", "755"],
   ["../../manifests/bootstrap.yaml", "etc/aaos/manifests/", "644"],
-  ["../../packaging/agentd.service", "lib/systemd/system/", "644"],
+  ["../../packaging/agentd.service", "usr/lib/systemd/system/", "644"],
   ["../../README.md", "usr/share/doc/aaos/", "644"],
   ["../../packaging/agentd.1.gz", "usr/share/man/man1/", "644"],
   ["../../packaging/roles/fetcher.yaml", "etc/aaos/roles/", "644"],
@@ -94,6 +96,18 @@ assets = [
   # capabilities find a populated catalog on first boot. Glob recurses
   # into each skill's sub-tree (SKILL.md + reference files).
   ["../../.agents/skills/**/*", "usr/share/aaos/skills/", "644"],
+  # Debian-Policy-12.5-compliant copyright file. References
+  # /usr/share/common-licenses/Apache-2.0 instead of inlining the full
+  # license text. Overrides cargo-deb's auto-generated copyright.
+  ["../../packaging/debian/copyright", "usr/share/doc/aaos/copyright", "644"],
+  # Non-native-package changelog per Debian Policy 12.7.  The .gz is
+  # produced by packaging/build-deb.sh (cargo-deb has no auto-gzip).
+  ["../../packaging/debian/changelog.Debian.gz", "usr/share/doc/aaos/changelog.Debian.gz", "644"],
+  # Lintian overrides for warnings lintian raises that are either
+  # upstream-lintian bugs (sha256sums), intentional design choices
+  # (static libyaml, skills with 644), or operational realities
+  # (systemctl from maintainer scripts when systemd-units is also set).
+  ["../../packaging/debian/lintian-overrides", "usr/share/lintian/overrides/aaos", "644"],
 ]
 conf-files = [
   "/etc/aaos/manifests/bootstrap.yaml",

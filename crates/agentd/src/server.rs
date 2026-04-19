@@ -217,9 +217,15 @@ impl Server {
                 aaos_backend_linux::NamespacedBackendConfig::default(),
             ) {
                 Ok(backend) => {
-                    tracing::info!(
-                        "agentd: AAOS_DEFAULT_BACKEND=namespaced — using NamespacedBackend"
-                    );
+                    // Log once per process using a OnceLock; Server::new() +
+                    // Server::with_llm_client() both build a backend, which
+                    // would otherwise double-log this line.
+                    static LOGGED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                    if LOGGED.set(()).is_ok() {
+                        tracing::info!(
+                            "agentd: AAOS_DEFAULT_BACKEND=namespaced — using NamespacedBackend"
+                        );
+                    }
                     let nb = Arc::new(backend);
                     return SelectedBackend {
                         backend: nb.clone() as Arc<dyn AgentBackend>,
@@ -227,12 +233,15 @@ impl Server {
                     };
                 }
                 Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "AAOS_DEFAULT_BACKEND=namespaced requested but \
-                         NamespacedBackend::new failed; falling back to \
-                         InProcessBackend"
-                    );
+                    static LOGGED_ERR: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+                    if LOGGED_ERR.set(()).is_ok() {
+                        tracing::error!(
+                            error = %e,
+                            "AAOS_DEFAULT_BACKEND=namespaced requested but \
+                             NamespacedBackend::new failed; falling back to \
+                             InProcessBackend"
+                        );
+                    }
                     return SelectedBackend {
                         backend: in_process,
                         namespaced: None,
@@ -1906,6 +1915,13 @@ impl Server {
                                 let _ = write_ndjson(writer, &end).await;
                             }
                             Ok(Err(e)) => {
+                                // Log to journald so operators reading
+                                // `journalctl -u agentd` after a failed
+                                // submit can see *why* the plan failed (e.g.
+                                // bad LLM key → Planner failed first call).
+                                // The CLI also prints the error but stays
+                                // short; journald carries the long form.
+                                tracing::error!(error = %e, run_id = %run_id, "plan execution failed");
                                 let frame = json!({
                                     "kind": "end",
                                     "exit_code": 1,
@@ -1917,6 +1933,7 @@ impl Server {
                                 let _ = write_ndjson(writer, &frame).await;
                             }
                             Err(e) => {
+                                tracing::error!(error = %e, run_id = %run_id, "plan executor task panicked");
                                 let frame = json!({
                                     "kind": "end",
                                     "exit_code": 1,

@@ -36,3 +36,5 @@ docs/security-gaps.md
 # commit messages plus docs are the durable record.
 /plans/
 __pycache__/
+packaging/debian/changelog.Debian.gz
+packaging/agentd.1.gz

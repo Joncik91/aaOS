@@ -38,15 +38,34 @@ cd "$(dirname "$0")/.."
 
 : "${AAOS_BUILD_FEATURES:=mcp,namespaced-agents}"
 
+echo "[build-deb] gzipping debian/changelog (cargo-deb has no auto-gzip)..."
+# Produce packaging/debian/changelog.Debian.gz via `gzip -9 -n` (no
+# timestamp) so the .deb build is reproducible.  The plain `changelog`
+# remains in the repo as the source; only the `.gz` ships in the .deb.
+rm -f packaging/debian/changelog.Debian.gz
+gzip -9 -n -c packaging/debian/changelog > packaging/debian/changelog.Debian.gz
+
 echo "[build-deb] building aaos-agent-worker (release)..."
 cargo build --release -p aaos-backend-linux --bin aaos-agent-worker
 
+# Build agentd ahead of cargo-deb so we can strip both binaries before
+# cargo-deb packs them.  `cargo deb --strip` exists but only runs
+# reliably when it invokes the build itself; when cargo-deb finds a
+# pre-built binary (as it must here, since the worker is a sibling
+# crate) the strip step is skipped.  Strip explicitly instead.
 if [ -n "$AAOS_BUILD_FEATURES" ]; then
-  echo "[build-deb] running cargo deb -p agentd --features '$AAOS_BUILD_FEATURES' $*..."
-  cargo deb -p agentd -- --features "$AAOS_BUILD_FEATURES" "$@"
+  cargo build --release -p agentd --bin agentd --features "$AAOS_BUILD_FEATURES"
 else
-  echo "[build-deb] running cargo deb -p agentd (no features) $*..."
-  cargo deb -p agentd -- "$@"
+  cargo build --release -p agentd --bin agentd
+fi
+strip --strip-unneeded target/release/agentd target/release/aaos-agent-worker
+
+if [ -n "$AAOS_BUILD_FEATURES" ]; then
+  echo "[build-deb] running cargo deb --no-build -p agentd --features '$AAOS_BUILD_FEATURES' $*..."
+  cargo deb --no-build -p agentd -- --features "$AAOS_BUILD_FEATURES" "$@"
+else
+  echo "[build-deb] running cargo deb --no-build -p agentd (no features) $*..."
+  cargo deb --no-build -p agentd -- "$@"
 fi
 
 echo "[build-deb] done:"

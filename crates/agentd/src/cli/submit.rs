@@ -84,6 +84,28 @@ pub async fn run(goal: String, verbose: bool, socket: PathBuf) -> anyhow::Result
                         let input_tokens = frame.get("input_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
                         let output_tokens = frame.get("output_tokens").and_then(|t| t.as_u64()).unwrap_or(0);
                         let elapsed_ms = frame.get("elapsed_ms").and_then(|e| e.as_u64()).unwrap_or(0);
+                        let error_msg = frame.get("error").and_then(|e| e.as_str());
+
+                        // Surface the daemon's error message on non-zero exit.
+                        // Without this an operator sees only `bootstrap failed
+                        // (0k in / 0k out, 0s)` and has no hint about a
+                        // mistyped API key, provider rate-limit, or other
+                        // provider-side failure.  The structured frame from
+                        // the daemon already carries the message; just print
+                        // it.
+                        if exit != 0 {
+                            if let Some(msg) = error_msg {
+                                let prefix = if colorize {
+                                    "\x1b[31merror:\x1b[0m"
+                                } else {
+                                    "error:"
+                                };
+                                eprintln!("{} {}", prefix, msg);
+                                eprintln!(
+                                    "(journalctl -u agentd --since \"1 minute ago\" for more context)"
+                                );
+                            }
+                        }
 
                         let ts = chrono::Local::now().format("%H:%M:%S");
                         let name_col = format!("{:<12}", "bootstrap");

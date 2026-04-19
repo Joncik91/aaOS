@@ -1,0 +1,32 @@
+# Lintian overrides for aaos.  Simple tag-only form: lintian matches
+# each line's tag against the finding, ignoring path details.
+
+# Rust binaries statically link vendored crates by design; no system
+# libyaml exists on Linux.  Standard for Rust packages in Debian.
+aaos: embedded-library
+
+# cargo-deb v3.6 requires manual systemctl calls in postinst/prerm when
+# maintainer-scripts is also set (the two config fields are mutually
+# exclusive in that version).
+aaos: maintainer-script-calls-systemctl
+
+# addgroup/adduser used in postinst; adduser is Priority: important in
+# Debian Trixie so always present.  Adding it to Depends is a no-op.
+aaos: maintainer-script-needs-depends-on-adduser
+
+# Bundled upstream AgentSkills catalog ships scripts at 0644.  Agents
+# invoke via `bash <path>`, never direct exec.  Leaving upstream
+# permissions unchanged.
+aaos: script-not-executable
+
+# aaos-agent-worker is exec'd by agentd inside a user namespace, never
+# by the operator.  Exposing a manpage would be misleading.
+aaos: no-manual-page
+
+# cargo-deb emits sha256sums in the control archive; dpkg-deb recognizes
+# it but lintian has no rule for it.  Upstream lintian bug.
+aaos: unknown-control-file
+
+# `chown -R aaos:aaos /var/lib/aaos` in postinst is bounded and
+# intentional — any attacker with write access there is already root.
+aaos: recursive-privilege-change

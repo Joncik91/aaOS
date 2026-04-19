@@ -1,0 +1,26 @@
+aaos (0.0.2-1) trixie; urgency=medium
+
+  * Fix: `.deb` now includes `--features namespaced-agents`. v0.0.1
+    shipped without it, so AAOS_DEFAULT_BACKEND=namespaced silently
+    fell back to InProcessBackend — confinement disabled.
+  * Fix: `agentd submit` now prints the daemon's error message on
+    failed runs (e.g. bad API key) instead of silent
+    `failed (0k in / 0k out, 0s)`.
+  * Fix: MCP client + server now log startup status. Prior versions
+    left operators with zero visibility into MCP state.
+  * Fix: NamespacedBackend::stop now reaps child processes. Prior
+    versions left a `[aaos-agent-worker] <defunct>` zombie per run.
+  * Fix: "using NamespacedBackend" startup log fires once per process,
+    not twice.
+  * Packaging: `debian/copyright` references common-licenses instead
+    of inlining Apache-2.0; systemd unit moved to usr/lib/systemd/
+    per Debian Trixie merged-usr; release binaries stripped to reduce
+    package size.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 19 Apr 2026 22:00:00 +0000
+
+aaos (0.0.1-1) trixie; urgency=medium
+
+  * Initial release.
+
+ -- Jounes <jounes.ds@gmail.com>  Sat, 19 Apr 2026 19:00:00 +0000
