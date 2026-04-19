@@ -60,6 +60,89 @@ case "$1" in
       chmod 0600 /etc/default/aaos || true
     fi
 
+    # Generate /etc/default/aaos.example with kernel-probe-sensitive
+    # defaults. Operators copy this to /etc/default/aaos (the env file
+    # systemd reads) after filling in their LLM API key, or let
+    # `agentd configure` do it for them.
+    #
+    # Probes:
+    #   * Landlock — /sys/kernel/security/lsm lists the active LSM stack.
+    #     Look for "landlock" there.  Debian 13's stock kernel (6.12+)
+    #     ships it enabled; a custom kernel might not.
+    #   * Unprivileged user namespaces — either kernel.unprivileged_userns_clone=1,
+    #     or the sysctl no longer exists (newer kernels drop the knob
+    #     and it's unconditionally on).  Debian 13 has both.
+    #
+    # When both are available, the .example enables the namespaced
+    # backend and worker-side tool confinement.  Otherwise it falls
+    # back to the in-process backend with an explanation comment
+    # pointing at the failing probe.
+    landlock_ok=0
+    userns_ok=0
+    if [ -r /sys/kernel/security/lsm ]; then
+      case ",$(cat /sys/kernel/security/lsm 2>/dev/null)," in
+        *,landlock,*) landlock_ok=1 ;;
+      esac
+    fi
+    if [ -r /proc/sys/kernel/unprivileged_userns_clone ]; then
+      [ "$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null)" = "1" ] && userns_ok=1
+    else
+      # Newer kernels no longer expose the sysctl; userns is on unconditionally.
+      # AppArmor policies can still restrict it, but the sysctl's absence
+      # alone is not a negative signal.
+      userns_ok=1
+    fi
+
+    confine_comment=""
+    if [ "$landlock_ok" = "1" ] && [ "$userns_ok" = "1" ]; then
+      backend_line="AAOS_DEFAULT_BACKEND=namespaced"
+      confine_line="AAOS_CONFINE_SUBTASKS=1"
+      confine_comment="# Kernel probes passed (Landlock + userns both available)."
+    else
+      backend_line="# AAOS_DEFAULT_BACKEND=namespaced  # disabled: kernel probe failed"
+      confine_line="# AAOS_CONFINE_SUBTASKS=1          # disabled: kernel probe failed"
+      confine_comment="# Kernel probes failed (landlock_ok=$landlock_ok userns_ok=$userns_ok)."
+      confine_comment="$confine_comment
+# Check Debian 13+ kernel with CONFIG_SECURITY_LANDLOCK=y and enabled via lsm= boot param."
+    fi
+
+    cat > /etc/default/aaos.example <<EOF
+# aaOS daemon environment — template.
+#
+# Copy to /etc/default/aaos and fill in an LLM API key:
+#   sudo cp /etc/default/aaos.example /etc/default/aaos
+#   sudoedit /etc/default/aaos
+#   sudo chmod 0600 /etc/default/aaos
+#   sudo systemctl restart agentd
+#
+# Or let \`agentd configure\` do it for you interactively.
+
+# ---------- LLM provider (required — daemon runs but agents cannot run without this) ----------
+# Prefer DeepSeek (cheap + fast); Anthropic is the fallback.
+# DEEPSEEK_API_KEY=sk-...
+# ANTHROPIC_API_KEY=sk-ant-...
+
+# ---------- Runtime backend ----------
+$confine_comment
+$backend_line
+$confine_line
+
+# ---------- Inference scheduling ----------
+# AAOS_MAX_CONCURRENT_INFERENCE=3
+
+# ---------- Skills catalog ----------
+# Bundled 21 skills live at /usr/share/aaos/skills/ and are auto-discovered.
+# Append custom roots colon-separated (shadow-by-name wins last):
+# AAOS_SKILLS_DIR=/srv/team-skills:/opt/extra-skills
+
+# ---------- Memory persistence ----------
+# AAOS_MEMORY_DB=/var/lib/aaos/memory.db
+
+# ---------- Workspace GC ----------
+# AAOS_WORKSPACE_TTL_DAYS=7
+EOF
+    chmod 0644 /etc/default/aaos.example
+
     # Enable + start the daemon on fresh installs. When `maintainer-scripts`
     # is set in [package.metadata.deb], cargo-deb copies our scripts
     # verbatim and does NOT append its own `systemd-units` directives —
