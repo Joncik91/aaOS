@@ -159,40 +159,37 @@ First tagged release with a CI-built `.deb` attached via `.github/workflows/rele
 
 Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0.1 — `aaos_0.0.1-1_amd64.deb`, 4.25 MB, built inside a `debian:13` container so cargo-deb encodes Debian's libc/systemd minimums.
 
+### 15. Agentic-by-default `.deb`
+*ex-"M1" · complete 2026-04-19*
+
+The 2026-04-19 `.deb` audit found that the package installed green but a fresh operator still had to paste an LLM key, know about `--features mcp`, and discover `AAOS_SKILLS_DIR` before any agent could do useful work. Five `.deb`-level fixes closed that gap without touching the runtime:
+
+- **MCP baked into the release build** (`a6c993b`). `packaging/build-deb.sh` now passes `--features mcp` by default (`AAOS_BUILD_FEATURES` env var overrides). Both the MCP client (external tools register as `mcp.<server>.<tool>`) and the loopback server (`127.0.0.1:3781`) are on by default. Claude Code, Cursor, any MCP client can delegate goals to aaOS without rebuilding. Binary size 4.25 MB → 4.69 MB.
+- **`/etc/aaos/mcp-servers.yaml.example` template** (`54499de`). Shipped as a deb asset with commented-out GitHub MCP (HTTP), filesystem MCP (stdio via npx), and git MCP (stdio via uvx) entries. Both client and server subsystems stay off-by-default — operators copy-and-uncomment to opt in.
+- **21 AgentSkills bundled under `/usr/share/aaos/skills/`** (`5c78a04`). FHS-correct vendor-supplied read-only data location. `discover_all_skills` now probes three paths in order: `/usr/share/aaos/skills/` (bundled), `/etc/aaos/skills/` (operator conffiles), `/var/lib/aaos/skills/` (runtime-installed); `AAOS_SKILLS_DIR` overrides append last.
+- **Kernel-probe-driven backend default** (`9f18848`). `packaging/debian/postinst` now probes `/sys/kernel/security/lsm` for `landlock` + `/proc/sys/kernel/unprivileged_userns_clone` and generates `/etc/default/aaos.example` with `AAOS_DEFAULT_BACKEND=namespaced` + `AAOS_CONFINE_SUBTASKS=1` uncommented when both pass. Falls back to commented-out defaults with inline reason on older kernels.
+- **`agentd configure` subcommand** (`4bb5e38`). Interactive first-boot setup: prompts for a DeepSeek or Anthropic API key, atomically writes `/etc/default/aaos` mode 0600 root:root (tempfile + fsync + rename — no window at looser mode), runs `systemctl daemon-reload && restart agentd`. Non-interactive mode via `--key-from-env VAR`. Daemon's missing-key startup log now points at the command instead of a dead-end "unavailable" message. 5 new tests (107 agentd-lib tests total).
+
+**Deliverable met.** `apt install ./aaos_0.0.1-1_amd64.deb` followed by one `sudo agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from the installed template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
+
 ---
 
 ## Active milestones
 
-### M1 — Agentic-by-default `.deb`
-*next*
+### M1 — Debian-derivative reference image
+*next (was M2 before #15 shipped)*
 
-The 2026-04-19 `.deb` audit surfaced the gap: the package installs green but a fresh operator still has to paste an LLM key, know about `--features mcp`, and discover `AAOS_SKILLS_DIR` before any agent does useful work. M1 closes those at the `.deb` level — no image work, ships via the existing release workflow.
-
-**Scope.**
-- **MCP enabled in the release build.** `packaging/build-deb.sh` and `.github/workflows/release.yml` build with `--features mcp` so the MCP client (external tools register as `mcp.<server>.<tool>`) and the loopback server (`127.0.0.1:3781`) are both on by default. Claude Code, Cursor, any MCP client can delegate goals to aaOS without rebuilding.
-- **Skills catalog bundled.** Ship the 21 skills from [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) under `/usr/share/aaos/skills/` as a `.deb` asset. Default `AAOS_SKILLS_DIR=/usr/share/aaos/skills` in an installed `/etc/default/aaos.example` template. First-boot agents get a populated catalog instead of an empty one.
-- **Confinement-by-default on capable kernels.** `packaging/debian/postinst` probes Landlock + unprivileged user namespaces; if both are present, the generated `/etc/default/aaos.example` sets `AAOS_DEFAULT_BACKEND=namespaced` and `AAOS_CONFINE_SUBTASKS=1`. Falls back to `inprocess` on older kernels with a logged-at-startup notice explaining why.
-- **One-step key bootstrap.** A new `agentd configure` subcommand prompts interactively for an LLM key, writes `/etc/default/aaos` mode 0600 root:root, and `systemctl restart agentd`. The daemon detects a missing key on startup and logs a single actionable line pointing at the command. No free-form config editing unless the operator wants it.
-- **MCP server YAML template.** Install `/etc/aaos/mcp-servers.yaml.example` with commented-out GitHub + filesystem MCP entries so an operator copying-and-uncommenting has external tool sources in one minute, not one hour of schema reading.
-
-**Deliverable.** `apt install ./aaos_0.X.Y-1_amd64.deb` + one `agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from a template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
-
-**Out of scope for M1.** No Packer image work (that's M2). No new runtime features. No web UI. No self-evolution tool authoring (tracked in `ideas.md`).
-
-### M2 — Debian-derivative reference image
-*after M1*
-
-A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the M1 `.deb`, enables the service, and bakes opinionated defaults.
+A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the build-history #15 `.deb`, enables the service, and bakes opinionated defaults.
 
 **Deliverable.** Bootable ISO + cloud snapshots (Debian publishes official images on AWS, DigitalOcean, Hetzner — our derivative ships on the same targets).
 
 **Opinionated defaults baked into the image.**
-- `AAOS_DEFAULT_BACKEND=namespaced` on by default (the M1 probe is no longer needed — the image guarantees a capable kernel).
+- `AAOS_DEFAULT_BACKEND=namespaced` on by default (the `#15` postinst probe is no longer needed — the image guarantees a capable kernel).
 - `NamespacedBackend` Landlock-backed by default, seccomp stacked on top, cgroups v2 quotas per agent.
 - Desktop meta-packages stripped (no X11, no Wayland, no LibreOffice — headless appliance).
 - Custom motd pointing at the socket, the journal, and the docs URL.
 - journald as the default audit sink.
-- Key provisioning via cloud-init user-data (cloud snapshots) or first-boot prompt (ISO). `agentd configure` from M1 remains the fallback for every path.
+- Key provisioning via cloud-init user-data (cloud snapshots) or first-boot prompt (ISO). `agentd configure` from `#15` remains the fallback for every path.
 
 **Isolation layers used by the derivative.**
 - **Namespaces** for per-agent isolation (mount, pid, net, user, cgroup).
@@ -220,7 +217,7 @@ With two backend implementations already proving `AgentServices` is substrate-ag
 
 **Why this matters.** The `AgentServices` trait was originally pitched as "future syscall interface." Reframe: it's a **substrate-agnostic ABI**. An operator picks isolation based on threat model and resource budget, not on what kernel we happened to build.
 
-**Prerequisites.** M1 + M2 ship. Real workloads on hardened Linux prove the capability model. If tenant-isolation pressure emerges, MicroVM backend is the next layer. Microkernel only if formally-verified enforcement is a buyer's gating requirement.
+**Prerequisites.** M1 (image) ships. Real workloads on hardened Linux prove the capability model. If tenant-isolation pressure emerges, MicroVM backend is the next layer. Microkernel only if formally-verified enforcement is a buyer's gating requirement.
 
 ---
 
@@ -235,7 +232,7 @@ aaOS supports the [AgentSkills](https://agentskills.io) open standard by Anthrop
 
 **What this enables:** any AgentSkills-compatible skill works in aaOS — but under capability enforcement that no other runtime provides. The same skill that has open shell access in Claude Code runs under unforgeable capability tokens in aaOS. Skills become the "driver model" for agent capabilities; the runtime provides the security boundary.
 
-Bundled-skills installation under `/usr/share/aaos/skills/` ships with M1.
+Bundled-skills installation under `/usr/share/aaos/skills/` shipped with build-history #15 (2026-04-19).
 
 ### Self-reflection runs
 *ongoing*
