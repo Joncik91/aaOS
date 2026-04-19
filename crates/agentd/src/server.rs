@@ -2438,6 +2438,7 @@ lifecycle: persistent
                     tool: "file_write".into(),
                     input_hash: "h".into(),
                     args_preview: None,
+                    execution_surface: aaos_core::ToolExecutionSurface::Daemon,
                 },
             ));
             audit.record(AuditEvent::new(
@@ -2583,6 +2584,7 @@ system_prompt: "other"
                     tool: "web_fetch".into(),
                     input_hash: "h1".into(),
                     args_preview: None,
+                    execution_surface: aaos_core::ToolExecutionSurface::Daemon,
                 },
             ));
             audit.record(AuditEvent::new(
@@ -2591,6 +2593,7 @@ system_prompt: "other"
                     tool: "file_write".into(),
                     input_hash: "h2".into(),
                     args_preview: None,
+                    execution_surface: aaos_core::ToolExecutionSurface::Daemon,
                 },
             ));
             audit.record(AuditEvent::new(
@@ -2599,6 +2602,7 @@ system_prompt: "other"
                     tool: "file_read".into(),
                     input_hash: "h3".into(),
                     args_preview: None,
+                    execution_surface: aaos_core::ToolExecutionSurface::Daemon,
                 },
             ));
             audit.record(AuditEvent::new(

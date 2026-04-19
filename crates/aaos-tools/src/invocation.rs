@@ -122,6 +122,7 @@ impl ToolInvocation {
                 tool: tool_name.to_string(),
                 input_hash,
                 args_preview: Some(args_preview),
+                execution_surface: aaos_core::ToolExecutionSurface::Daemon,
             },
         ));
 

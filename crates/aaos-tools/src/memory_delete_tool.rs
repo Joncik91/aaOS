@@ -62,6 +62,7 @@ impl Tool for MemoryDeleteTool {
                 tool: "memory_delete".into(),
                 input_hash: memory_id_str.to_string(),
                 args_preview: None,
+                execution_surface: aaos_core::ToolExecutionSurface::Daemon,
             },
         ));
 

@@ -171,6 +171,7 @@ mod tests {
             tool: "web_fetch".into(),
             input_hash: "h".into(),
             args_preview: None,
+            execution_surface: aaos_core::ToolExecutionSurface::Daemon,
         })));
     }
 
@@ -260,6 +261,7 @@ mod tests {
             tool: "web_fetch".into(),
             input_hash: "h".into(),
             args_preview: None,
+            execution_surface: aaos_core::ToolExecutionSurface::Daemon,
         });
         let s = format_operator_line(&e, "fetcher", false);
         assert!(s.contains("web_fetch"));
@@ -345,6 +347,7 @@ mod tests {
                 tool: "t".into(),
                 input_hash: "h".into(),
                 args_preview: None,
+                execution_surface: aaos_core::ToolExecutionSurface::Daemon,
             }),
             evt(AuditEventKind::AgentExecutionCompleted {
                 stop_reason: "d".into(),
@@ -393,6 +396,7 @@ mod tests {
             tool: "file_write".into(),
             input_hash: "h".into(),
             args_preview: None,
+            execution_surface: aaos_core::ToolExecutionSurface::Daemon,
         });
         let s = format_operator_line(&e, "x", true);
         assert!(s.contains("\x1b[36m"), "expected cyan for tool: {}", s);

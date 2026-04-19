@@ -10,6 +10,7 @@ pub mod services;
 pub mod skill;
 pub mod task_ttl;
 pub mod tool_definition;
+pub mod tool_surface;
 
 pub use agent_id::AgentId;
 pub use audit::{
@@ -33,3 +34,4 @@ pub use services::{
 pub use skill::{discover_skills, Skill, SkillMetadata};
 pub use task_ttl::TaskTtl;
 pub use tool_definition::ToolDefinition;
+pub use tool_surface::{route_for, ToolExecutionSurface, DAEMON_SIDE_TOOLS};

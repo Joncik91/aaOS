@@ -69,6 +69,10 @@ pub enum AuditEventKind {
         /// operator observability.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         args_preview: Option<String>,
+        /// Which surface actually ran the tool — daemon-side (today's code
+        /// path, and network/subprocess tools) or worker-side (Phase F-b/3).
+        #[serde(default)]
+        execution_surface: crate::tool_surface::ToolExecutionSurface,
     },
     ToolResult {
         tool: String,
@@ -374,6 +378,7 @@ mod tests {
                 tool: "web_search".into(),
                 input_hash: "abc123".into(),
                 args_preview: None,
+                execution_surface: crate::tool_surface::ToolExecutionSurface::Daemon,
             },
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -535,6 +540,7 @@ mod tests {
                     tool: format!("tool-{i}"),
                     input_hash: "h".into(),
                     args_preview: None,
+                    execution_surface: crate::tool_surface::ToolExecutionSurface::Daemon,
                 },
             ));
         }

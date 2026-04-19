@@ -123,6 +123,7 @@ impl Tool for SkillReadTool {
                     tool: "skill_read".into(),
                     input_hash: format!("{}:{}", skill_name, file_path),
                     args_preview: Some(format!("{}:{}", skill_name, file_path)),
+                    execution_surface: aaos_core::ToolExecutionSurface::Daemon,
                 },
             ));
 
@@ -140,6 +141,7 @@ impl Tool for SkillReadTool {
                 tool: "skill_read".into(),
                 input_hash: skill_name.to_string(),
                 args_preview: Some(skill_name.to_string()),
+                execution_surface: aaos_core::ToolExecutionSurface::Daemon,
             },
         ));
 
