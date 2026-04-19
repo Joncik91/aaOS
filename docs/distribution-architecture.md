@@ -90,9 +90,9 @@ The tool wrapper registry is extensible; third parties can drop a wrapper spec i
 
 ## Package layout
 
-The `.deb` (Phase F-a) and the image (Phase F-c) share most of their contents — the image is "Debian + the .deb + a handful of config files." Phase F-b shipped Standard-spec completion (reasoning scheduler, dynamic model routing, runtime-side tool confinement on `NamespacedBackend`, per-task TTL) as part of the `.deb`; the image work is F-c. The split:
+The `.deb` (build-history #9 + M1) and the image (M2) share most of their contents — the image is "Debian + the .deb + a handful of config files." The runtime-side work already landed in the `.deb`: reasoning scheduler (#10), dynamic model routing (#11), runtime-side tool confinement (#12), per-task TTL (#13). The split:
 
-### `.deb` contents (Phase F-a)
+### `.deb` contents (build-history #9, extended by M1)
 
 - `aaos-base` — systemd service, agentd binary, worker binary, default config. Depends on `systemd`, `curl`, `jq`.
 - `aaos-skills` — 21 bundled AgentSkills, read-only at `/usr/share/aaos/skills/`.
@@ -105,7 +105,7 @@ The `.deb` (Phase F-a) and the image (Phase F-c) share most of their contents �
 
 Installable on any Debian 13 host: `apt install ./aaos_*.deb`.
 
-### Image additions (Phase F-c)
+### Image additions (M2)
 
 The image is the `.deb` plus:
 
@@ -156,9 +156,9 @@ The current Docker-only deployment doesn't disappear. The derivative ships along
 
 This sketch doesn't get implemented in one step. The order that makes sense:
 
-1. **Proof of concept — systemd unit.** Package `agentd` as a `.deb`, install on a fresh Debian 13 VM, run a real goal. Confirms the service model works outside Docker. (This is the Phase F-a deliverable.)
+1. **Proof of concept — systemd unit.** Package `agentd` as a `.deb`, install on a fresh Debian 13 VM, run a real goal. Confirms the service model works outside Docker. (This is the build-history #9 deliverable.)
 2. **First tool wrapper — `grep`.** Build the wrapper scaffold (capability declaration, JSON schema, Landlock + seccomp scoping) with one tool as the reference implementation.
-3. **Packer pipeline — Debian 13 + the `.deb` + 5 wrappers.** Produce an ISO. Measure size, boot time, memory baseline. (This is the Phase F-c deliverable at its minimum.)
+3. **Packer pipeline — Debian 13 + the `.deb` + 5 wrappers.** Produce an ISO. Measure size, boot time, memory baseline. (This is the M2 deliverable at its minimum.)
 4. **Landlock integration on by default in the image.** Per-capability rulesets, tested against the existing capability tests.
 5. **Cloud snapshot.** One cloud target first; extend to the others Debian publishes on.
 6. **First external users.** Someone other than the maintainer installs the `.deb` or boots the image and reports what breaks.

@@ -29,7 +29,7 @@ The subset `file_read(offset, limit)`, `file_edit`, `file_list`, `grep`, `cargo_
 
 The `cargo_run` + `file_edit` pair in particular closes the self-build loop: the agent whose code is being edited can read its own plan, patch its own source, and `cargo test` its own tests against itself. Run 12 shipped `git_commit` to close the last unbroken human-in-the-loop step; see [`docs/reflection/2026-04-17-git-commit-tool.md`](reflection/2026-04-17-git-commit-tool.md) for the run narrative.
 
-## Where each tool runs (F-b/3 worker confinement)
+## Where each tool runs (build-history #12 — worker confinement)
 
 When `AAOS_DEFAULT_BACKEND=namespaced` + `AAOS_CONFINE_SUBTASKS=1` (default on namespaced builds), the filesystem + compute tools execute inside the per-agent worker under Landlock + seccomp; the CLI shows `[worker]` on those lines. Network + subprocess tools run daemon-side and show `[daemon]`. The split is by design, not by deferral — routing a network tool through the worker to a daemon-side HTTP proxy would move no security line, and the daemon already runs `cargo_run` / `git_commit` under capability + audit.
 

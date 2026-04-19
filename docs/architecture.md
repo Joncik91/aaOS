@@ -22,12 +22,12 @@ The core of the system. Manages:
 - **Agent Registry** — Thread-safe process table (DashMap-based). Handles spawn, stop (sync and async), capability issuance, and persistent loop startup.
 - **Persistent Agent Loop** — Agents with `lifecycle: persistent` run a background tokio task (`persistent_agent_loop`) that receives messages from a channel, executes them with conversation history via the LLM executor, persists the transcript, and responds via the router's pending-response map. Survives executor errors. Supports Pause/Resume/Stop commands.
 - **Session Store** — `SessionStore` trait with `JsonlSessionStore` (JSONL files, one per agent) and `InMemorySessionStore` (for tests). History loaded once at loop startup, appended after each turn, compacted every 10 turns. Configurable via `max_history_messages`.
-- **Schedulers** — Two coexisting scheduler abstractions. The legacy `RoundRobinScheduler` with priority support is implemented but not yet activated for agent-level scheduling. The new `ReasoningScheduler` (Phase F-b sub-project 1) awards LLM inference slots via a priority queue keyed on per-subtask wall-clock deadlines; every subtask's LLM client is wrapped in a `SchedulerView` so `complete()` calls route through it. See the Reasoning-Slot Scheduler section below.
+- **Schedulers** — Two coexisting scheduler abstractions. The legacy `RoundRobinScheduler` with priority support is implemented but not yet activated for agent-level scheduling. The new `ReasoningScheduler` (build-history #10) awards LLM inference slots via a priority queue keyed on per-subtask wall-clock deadlines; every subtask's LLM client is wrapped in a `SchedulerView` so `complete()` calls route through it. See the Reasoning-Slot Scheduler section below.
 - **Per-task TTL** — Optional `TaskTtl { max_hops, max_wall_clock }` on `Subtask`, populated from env defaults (`AAOS_DEFAULT_TASK_TTL_HOPS`, `AAOS_DEFAULT_TASK_TTL_WALL_CLOCK_S`) when the planner's output omits it. Enforced in `PlanExecutor::spawn_subtask`: hops-exhaustion refuses launch; a `tokio::select!` race cancels the runner future when the wall-clock deadline fires. Failure cascades to dependents via the existing partial-failure logic.
 - **Supervisor** — Restart policies (always, on-failure, never) with exponential backoff
 - **Budget Enforcement** — `BudgetTracker` with atomic CAS operations tracks per-agent token usage. `BudgetConfig` in agent manifest (optional `max_tokens` + `reset_period_seconds`). Enforced in `report_usage()` — agents exceeding budget get `BudgetExceeded` errors. No budget = no enforcement.
 
-#### Reasoning-Slot Scheduler (Phase F-b sub-project 1)
+#### Reasoning-Slot Scheduler (build-history #10)
 
 Every `agentd` server owns one `ReasoningScheduler` that gates LLM inference calls for **subtask agents** (children spawned by the PlanExecutor). Construction reads `AAOS_MAX_CONCURRENT_INFERENCE` (default 3) once per server. On startup, a single `dispatcher_loop` tokio task is spawned; it repeatedly pops the earliest-deadline `ReasoningRequest` off a `BinaryHeap<Reverse<...>>`, acquires a permit from an inner `Semaphore`, and hands the permit to the request's `oneshot::Sender<OwnedSemaphorePermit>`.
 
@@ -37,7 +37,7 @@ Each subtask's LLM client is wrapped in a `SchedulerView` before `AgentExecutor`
 
 The `LatencyTracker` trait has a minimal `SubtaskWallClockTracker` impl; sub-project 2 adds `PerModelLatencyTracker` as a second impl keyed by model name (256-sample bounded ring per model, p50/p95 queries) and a `CompositeLatencyTracker` that fans out `record()` to both.
 
-#### Dynamic Model Routing (Phase F-b sub-project 2)
+#### Dynamic Model Routing (build-history #11)
 
 Each `Role` declares a `model_ladder: Vec<String>` (ordered list; tier 0 == `role.model`, invariant enforced at catalog load) and an `escalate_on: Vec<EscalationSignal>` (defaults to all three). `Subtask.current_model_tier: u8` indexes into the ladder at spawn time — `role.render_manifest_with_model(ladder[tier], params)` produces the per-subtask manifest. The executor's replan path runs `decide_escalation` on each failed subtask against a structured `Vec<FailedSubtask>` (carried through `ExecutorError::Correctable.failures`); on a configured signal it bumps the tier up to `ladder.len() - 1`, emits `SubtaskModelEscalated`, and `carry_tiers_forward` merges the bump into the planner's new plan by subtask-id match.
 
@@ -50,7 +50,7 @@ Signals are scanned from the audit broadcast via `AuditLog::events_snapshot()` (
 
 **Scope:** signal-based routing only; no cost math, no classifier. `PerModelLatencyTracker` collects per-model p50/p95 into 256-sample bounded rings but is not consumed by any routing decision in v1 — future cost-aware routing can read from it.
 
-#### Worker-Side Tool Confinement (Phase F-b sub-project 3)
+#### Worker-Side Tool Confinement (build-history #12)
 
 When `AAOS_DEFAULT_BACKEND=namespaced`, agent tool invocations execute inside the worker under Landlock + seccomp — not in `agentd`'s address space. The daemon keeps policy (capability check + audit + repeat-guard); the broker stream carries each call across to the worker via `Request::InvokeTool { tool_name, input, request_id }` and returns the result through a `pending: HashMap<u64, oneshot::Sender>` demux on the existing post-handshake stream.
 
