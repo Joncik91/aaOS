@@ -226,12 +226,14 @@ mod tests {
     fn write_env_file_lands_mode_0600() {
         let dir = tempdir().unwrap();
         let target = dir.path().join("aaos");
-        write_env_file(&target, "DEEPSEEK_API_KEY", "sk-testkey-123456").unwrap();
+        write_env_file(&target, "DEEPSEEK_API_KEY", "aaaaaaaaaa").unwrap();
         let meta = std::fs::metadata(&target).unwrap();
         let mode = meta.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "expected 0600, got {:o}", mode);
         let body = std::fs::read_to_string(&target).unwrap();
-        assert!(body.contains("DEEPSEEK_API_KEY=sk-testkey-123456"));
+        // Test value is the literal "aaaaaaaaaa" — low entropy, obviously
+        // fake, below gitleaks' generic-api-key threshold.
+        assert!(body.contains("DEEPSEEK_API_KEY=aaaaaaaaaa"));
     }
 
     #[test]
@@ -239,9 +241,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let target = dir.path().join("aaos");
         std::fs::write(&target, "stale=garbage\n").unwrap();
-        write_env_file(&target, "DEEPSEEK_API_KEY", "sk-fresh-0987654321").unwrap();
+        write_env_file(&target, "DEEPSEEK_API_KEY", "bbbbbbbbbbbbbbbb").unwrap();
         let body = std::fs::read_to_string(&target).unwrap();
         assert!(!body.contains("stale=garbage"));
-        assert!(body.contains("sk-fresh-0987654321"));
+        assert!(body.contains("bbbbbbbbbbbbbbbb"));
     }
 }
