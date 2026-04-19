@@ -27,7 +27,7 @@ pub use file_read_many::FileReadManyTool;
 pub use file_write::FileWriteTool;
 pub use git_commit::GitCommitTool;
 pub use grep::GrepTool;
-pub use invocation::ToolInvocation;
+pub use invocation::{ToolInvocation, WorkerHandle};
 pub use memory_delete_tool::MemoryDeleteTool;
 pub use memory_query_tool::MemoryQueryTool;
 pub use memory_store_tool::MemoryStoreTool;

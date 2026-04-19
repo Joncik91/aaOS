@@ -3,25 +3,43 @@ use std::sync::{Arc, Mutex};
 
 use aaos_core::{
     AgentId, AuditEvent, AuditEventKind, AuditLog, Capability, CapabilityHandle,
-    CapabilityRegistry, CapabilityToken, CoreError, Result,
+    CapabilityRegistry, CoreError, Result, ToolExecutionSurface,
 };
 use serde_json::Value;
 
 use crate::context::InvocationContext;
 use crate::registry::ToolRegistry;
 
+/// Thin trait implemented by the broker-session adapter in `agentd`.
+/// `ToolInvocation` holds an optional `Arc<dyn WorkerHandle>` and uses
+/// it to forward invocations to the confined worker process when the
+/// routing table says `ToolExecutionSurface::Worker`.
+#[async_trait::async_trait]
+pub trait WorkerHandle: Send + Sync {
+    /// Return the backend kind for routing (`"namespaced"` or `"in_process"`).
+    fn backend_kind(&self) -> &'static str;
+    /// Forward a tool invocation across the broker.
+    async fn invoke_over_worker(
+        &self,
+        agent_id: AgentId,
+        tool_name: &str,
+        input: serde_json::Value,
+    ) -> std::result::Result<serde_json::Value, String>;
+}
+
 /// Handles tool invocations with capability enforcement and audit logging.
 ///
 /// Every tool call goes through the invocation layer, which:
 /// 1. Checks the agent's capability token permits the tool
 /// 2. Validates input against the tool's schema
-/// 3. Invokes the tool
+/// 3. Invokes the tool (daemon-side or worker-side depending on routing)
 /// 4. Logs the invocation to the audit trail
 pub struct ToolInvocation {
     registry: Arc<ToolRegistry>,
     audit_log: Arc<dyn AuditLog>,
     capability_registry: Arc<CapabilityRegistry>,
     repeat_counts: Mutex<HashMap<(AgentId, String, u64), u32>>,
+    worker_handle: Option<Arc<dyn WorkerHandle>>,
 }
 
 impl ToolInvocation {
@@ -35,6 +53,27 @@ impl ToolInvocation {
             audit_log,
             capability_registry,
             repeat_counts: Mutex::new(HashMap::new()),
+            worker_handle: None,
+        }
+    }
+
+    /// Construct a `ToolInvocation` that can route tool calls to a confined
+    /// worker process via the supplied `WorkerHandle`. The handle's
+    /// `backend_kind()` determines routing — `"namespaced"` sends filesystem
+    /// and compute tools to the worker; daemon-side tools (`web_fetch`,
+    /// `cargo_run`, `git_commit`) stay in the daemon regardless.
+    pub fn new_with_worker_handle(
+        registry: Arc<ToolRegistry>,
+        audit_log: Arc<dyn AuditLog>,
+        capability_registry: Arc<CapabilityRegistry>,
+        worker_handle: Arc<dyn WorkerHandle>,
+    ) -> Self {
+        Self {
+            registry,
+            audit_log,
+            capability_registry,
+            repeat_counts: Mutex::new(HashMap::new()),
+            worker_handle: Some(worker_handle),
         }
     }
 
@@ -71,8 +110,13 @@ impl ToolInvocation {
             });
         }
 
-        // Get the tool
-        let tool = self.registry.get(tool_name)?;
+        // Determine execution surface BEFORE the audit event so we emit
+        // the correct surface tag. No worker_handle → always Daemon.
+        let surface: ToolExecutionSurface = self
+            .worker_handle
+            .as_ref()
+            .map(|h| crate::routing::route_for(tool_name, h.backend_kind()))
+            .unwrap_or(ToolExecutionSurface::Daemon);
 
         // Log invocation
         let input_hash_u64 = md5_hash(&input);
@@ -122,7 +166,7 @@ impl ToolInvocation {
                 tool: tool_name.to_string(),
                 input_hash,
                 args_preview: Some(args_preview),
-                execution_surface: aaos_core::ToolExecutionSurface::Daemon,
+                execution_surface: surface,
             },
         ));
 
@@ -144,14 +188,30 @@ impl ToolInvocation {
             .cloned()
             .collect();
 
-        let ctx = InvocationContext {
-            agent_id,
-            tokens: filtered_handles,
-            capability_registry: self.capability_registry.clone(),
+        // Fork: Worker-routed calls go over the broker; Daemon calls go to
+        // the local registry. The capability check and audit prefix above
+        // are surface-agnostic and always run in the daemon.
+        let mut result: Result<Value> = match surface {
+            ToolExecutionSurface::Worker => {
+                let handle = self
+                    .worker_handle
+                    .as_ref()
+                    .expect("surface=Worker implies handle is Some");
+                handle
+                    .invoke_over_worker(agent_id, tool_name, input.clone())
+                    .await
+                    .map_err(|reason| CoreError::Ipc(reason))
+            }
+            ToolExecutionSurface::Daemon => {
+                let tool = self.registry.get(tool_name)?;
+                let ctx = InvocationContext {
+                    agent_id,
+                    tokens: filtered_handles,
+                    capability_registry: self.capability_registry.clone(),
+                };
+                tool.invoke(input, &ctx).await
+            }
         };
-
-        // Invoke with context
-        let mut result = tool.invoke(input, &ctx).await;
 
         // Log result (with a bounded preview for operator observability).
         let result_preview = match &result {
@@ -290,7 +350,7 @@ impl ToolInvocation {
 mod tests {
     use super::*;
     use crate::tool::EchoTool;
-    use aaos_core::{CapabilityRegistry, Constraints, InMemoryAuditLog};
+    use aaos_core::{CapabilityRegistry, CapabilityToken, Constraints, InMemoryAuditLog};
     use std::sync::Arc;
 
     fn setup() -> (
@@ -606,5 +666,156 @@ mod tests {
         // Eviction in quarters means the map can dip as low as 3/4 of cap
         // right after a cleanup; it should be populated, not empty.
         assert!(len > 0, "map should not be empty after 2000 calls");
+    }
+
+    // ---- WorkerHandle routing tests (T7) ----
+
+    /// Mock WorkerHandle that records every invoke_over_worker call and
+    /// returns `{"ok": true}`. backend_kind is configurable.
+    struct MockWorkerHandle {
+        kind: &'static str,
+        invocations: Arc<Mutex<Vec<(AgentId, String, serde_json::Value)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkerHandle for MockWorkerHandle {
+        fn backend_kind(&self) -> &'static str {
+            self.kind
+        }
+
+        async fn invoke_over_worker(
+            &self,
+            agent_id: AgentId,
+            tool_name: &str,
+            input: serde_json::Value,
+        ) -> std::result::Result<serde_json::Value, String> {
+            self.invocations
+                .lock()
+                .unwrap()
+                .push((agent_id, tool_name.to_string(), input));
+            Ok(serde_json::json!({"ok": true}))
+        }
+    }
+
+    fn setup_worker_harness(
+        backend_kind: &'static str,
+    ) -> (
+        ToolInvocation,
+        AgentId,
+        Vec<CapabilityHandle>,
+        Arc<InMemoryAuditLog>,
+        Arc<Mutex<Vec<(AgentId, String, serde_json::Value)>>>,
+    ) {
+        let registry = Arc::new(ToolRegistry::new());
+        // Register EchoTool as "file_write" and "web_fetch" so daemon-side
+        // lookups don't fail with ToolNotFound when routing goes Daemon.
+        registry.register_as(Arc::new(EchoTool), "file_write");
+        registry.register_as(Arc::new(EchoTool), "web_fetch");
+
+        let log = Arc::new(InMemoryAuditLog::new());
+        let cap_registry = Arc::new(CapabilityRegistry::new());
+        let agent_id = AgentId::new();
+
+        // Grant wildcard capability so both tool names pass the check.
+        let token = CapabilityToken::issue(
+            agent_id,
+            Capability::ToolInvoke {
+                tool_name: "*".into(),
+            },
+            Constraints::default(),
+        );
+        let handle = cap_registry.insert(agent_id, token);
+
+        let invocations: Arc<Mutex<Vec<(AgentId, String, serde_json::Value)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let mock = Arc::new(MockWorkerHandle {
+            kind: backend_kind,
+            invocations: invocations.clone(),
+        });
+
+        let invocation = ToolInvocation::new_with_worker_handle(
+            registry,
+            log.clone(),
+            cap_registry,
+            mock,
+        );
+
+        (invocation, agent_id, vec![handle], log, invocations)
+    }
+
+    #[tokio::test]
+    async fn namespaced_routes_file_write_to_worker() {
+        let (invocation, agent_id, handles, log, mock_invocations) =
+            setup_worker_harness("namespaced");
+
+        let result = invocation
+            .invoke(
+                agent_id,
+                "file_write",
+                serde_json::json!({"path": "/tmp/x", "content": "hi"}),
+                &handles,
+            )
+            .await
+            .unwrap();
+
+        // Mock returned {"ok": true}
+        assert_eq!(result, serde_json::json!({"ok": true}));
+
+        // Mock captured the call
+        let calls = mock_invocations.lock().unwrap();
+        assert_eq!(calls.len(), 1, "mock should have received exactly one call");
+        assert_eq!(calls[0].1, "file_write");
+
+        // Audit event carries surface = Worker
+        let events = log.events();
+        let surface_in_audit = events.iter().find_map(|e| match &e.event {
+            AuditEventKind::ToolInvoked { tool, execution_surface, .. } if tool == "file_write" => {
+                Some(*execution_surface)
+            }
+            _ => None,
+        });
+        assert_eq!(
+            surface_in_audit,
+            Some(ToolExecutionSurface::Worker),
+            "ToolInvoked audit event must carry execution_surface = Worker"
+        );
+    }
+
+    #[tokio::test]
+    async fn namespaced_keeps_web_fetch_on_daemon() {
+        let (invocation, agent_id, handles, log, mock_invocations) =
+            setup_worker_harness("namespaced");
+
+        // web_fetch is in DAEMON_SIDE_TOOLS — even with namespaced backend,
+        // route_for returns Daemon and the mock must NOT be called.
+        let _result = invocation
+            .invoke(
+                agent_id,
+                "web_fetch",
+                serde_json::json!({"url": "https://example.com"}),
+                &handles,
+            )
+            .await;
+
+        // Mock must NOT have been called
+        let calls = mock_invocations.lock().unwrap();
+        assert!(
+            calls.is_empty(),
+            "mock must not be called for web_fetch (daemon-side tool)"
+        );
+
+        // Audit event carries surface = Daemon
+        let events = log.events();
+        let surface_in_audit = events.iter().find_map(|e| match &e.event {
+            AuditEventKind::ToolInvoked { tool, execution_surface, .. } if tool == "web_fetch" => {
+                Some(*execution_surface)
+            }
+            _ => None,
+        });
+        assert_eq!(
+            surface_in_audit,
+            Some(ToolExecutionSurface::Daemon),
+            "ToolInvoked audit event must carry execution_surface = Daemon for daemon-side tools"
+        );
     }
 }

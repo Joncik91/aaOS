@@ -53,6 +53,14 @@ impl ToolRegistry {
     pub fn count(&self) -> usize {
         self.tools.read().unwrap().len()
     }
+
+    /// Register a tool under an explicit name, overriding the name from its
+    /// `definition()`. Useful in tests to reuse stub tool implementations
+    /// under multiple names (e.g. EchoTool registered as "file_write").
+    #[cfg(test)]
+    pub fn register_as(&self, tool: Arc<dyn Tool>, name: &str) {
+        self.tools.write().unwrap().insert(name.to_string(), tool);
+    }
 }
 
 impl Default for ToolRegistry {
