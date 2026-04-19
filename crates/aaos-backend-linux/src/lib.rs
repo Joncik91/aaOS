@@ -104,8 +104,15 @@ impl Default for NamespacedBackendConfig {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(5000);
+        // Default session_dir inside agentd's own RuntimeDirectory so
+        // the daemon-as-aaos-user can create it without needing to
+        // chown /var/run/aaos/. systemd gives us /run/agentd owned by
+        // aaos:aaos 0750; we nest sessions/ inside it.
+        let session_dir = std::env::var("AAOS_NAMESPACED_SESSION_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/run/agentd/sessions"));
         Self {
-            session_dir: PathBuf::from("/var/run/aaos/sessions"),
+            session_dir,
             worker_binary: PathBuf::from("/usr/bin/aaos-agent-worker"),
             shared_lib_paths: vec![
                 PathBuf::from("/lib/x86_64-linux-gnu"),
