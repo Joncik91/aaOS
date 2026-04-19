@@ -29,6 +29,21 @@ The subset `file_read(offset, limit)`, `file_edit`, `file_list`, `grep`, `cargo_
 
 The `cargo_run` + `file_edit` pair in particular closes the self-build loop: the agent whose code is being edited can read its own plan, patch its own source, and `cargo test` its own tests against itself. Run 12 shipped `git_commit` to close the last unbroken human-in-the-loop step; see [`docs/reflection/2026-04-17-git-commit-tool.md`](reflection/2026-04-17-git-commit-tool.md) for the run narrative.
 
+## Where each tool runs (F-b/3 worker confinement)
+
+When `AAOS_DEFAULT_BACKEND=namespaced` + `AAOS_CONFINE_SUBTASKS=1` (default on namespaced builds), the filesystem + compute tools execute inside the per-agent worker under Landlock + seccomp; the CLI shows `[worker]` on those lines. Network + subprocess tools run daemon-side and show `[daemon]`. The split is by design, not by deferral — routing a network tool through the worker to a daemon-side HTTP proxy would move no security line, and the daemon already runs `cargo_run` / `git_commit` under capability + audit.
+
+| Tool | Runs where | Why |
+|------|-----------|-----|
+| `echo` | worker | Pure compute |
+| `file_read`, `file_write`, `file_edit`, `file_list`, `file_read_many`, `grep` | worker | Filesystem ops confined by Landlock + bind-mount visibility |
+| `web_fetch` | daemon | Worker seccomp has no `socket`/`connect` |
+| `cargo_run`, `git_commit` | daemon | Worker seccomp kill-filter denies `execve` |
+| `spawn_agent`, `spawn_agents` | daemon | Lifecycle operation on the daemon's registry |
+| `memory_store`, `memory_query`, `memory_delete`, `skill_read` | daemon | Memory backend + skill catalog are daemon-owned; broker-mediated backend is a future sub-project |
+
+See [architecture — Three layers of confinement](architecture.md) for how bind-mount, Landlock, and capability tokens interact.
+
 ## External tools via MCP
 
 When `agentd` is built with `--features mcp` and `/etc/aaos/mcp-servers.yaml` lists external MCP servers, their tools register into the same `ToolRegistry` as built-ins under the naming convention `mcp.<server>.<tool>`. They go through the identical capability-check, audit, and narrow path; a manifest grants them with `tool: mcp.<server>.<tool>`. From the agent's perspective there is no difference between a built-in and an MCP-proxied tool — the distinction is operational (the binary on disk vs the remote process across a transport), not semantic. See [API — MCP Server API](api.md#mcp-server-api-loopback-only---features-mcp) for the outbound direction.

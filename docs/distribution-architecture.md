@@ -90,7 +90,7 @@ The tool wrapper registry is extensible; third parties can drop a wrapper spec i
 
 ## Package layout
 
-The `.deb` (Phase F-a) and the image (Phase F-b) share most of their contents — the image is "Debian + the .deb + a handful of config files." The split:
+The `.deb` (Phase F-a) and the image (Phase F-c) share most of their contents — the image is "Debian + the .deb + a handful of config files." Phase F-b shipped Standard-spec completion (reasoning scheduler, dynamic model routing, runtime-side tool confinement on `NamespacedBackend`, per-task TTL) as part of the `.deb`; the image work is F-c. The split:
 
 ### `.deb` contents (Phase F-a)
 
@@ -105,7 +105,7 @@ The `.deb` (Phase F-a) and the image (Phase F-b) share most of their contents �
 
 Installable on any Debian 13 host: `apt install ./aaos_*.deb`.
 
-### Image additions (Phase F-b)
+### Image additions (Phase F-c)
 
 The image is the `.deb` plus:
 
@@ -158,7 +158,7 @@ This sketch doesn't get implemented in one step. The order that makes sense:
 
 1. **Proof of concept — systemd unit.** Package `agentd` as a `.deb`, install on a fresh Debian 13 VM, run a real goal. Confirms the service model works outside Docker. (This is the Phase F-a deliverable.)
 2. **First tool wrapper — `grep`.** Build the wrapper scaffold (capability declaration, JSON schema, Landlock + seccomp scoping) with one tool as the reference implementation.
-3. **Packer pipeline — Debian 13 + the `.deb` + 5 wrappers.** Produce an ISO. Measure size, boot time, memory baseline. (This is the Phase F-b deliverable at its minimum.)
+3. **Packer pipeline — Debian 13 + the `.deb` + 5 wrappers.** Produce an ISO. Measure size, boot time, memory baseline. (This is the Phase F-c deliverable at its minimum.)
 4. **Landlock integration on by default in the image.** Per-capability rulesets, tested against the existing capability tests.
 5. **Cloud snapshot.** One cloud target first; extend to the others Debian publishes on.
 6. **First external users.** Someone other than the maintainer installs the `.deb` or boots the image and reports what breaks.
