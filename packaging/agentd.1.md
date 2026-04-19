@@ -68,6 +68,19 @@ Inspect the role catalog at */etc/aaos/roles/*. Three subcommands:
 - **show** *NAME* — print a role's full YAML definition.
 - **validate** *PATH* — parse a role YAML without installing it; reports schema issues.
 
+## configure
+
+First-boot setup. Prompts for a DeepSeek or Anthropic API key, writes */etc/default/aaos* with mode **0600 root:root**, and restarts **agentd.service**. Intended as the single-command replacement for hand-editing the env file.
+
+Flags:
+
+- **--provider** *deepseek|anthropic* (default: deepseek) — which API key to seed.
+- **--key-from-env** *VAR* — read the key from the given env var instead of prompting. Intended for non-interactive provisioning (Ansible, cloud-init).
+- **--env-file** *PATH* (default: */etc/default/aaos*) — write target. Non-default paths don't require root.
+- **--no-restart** — skip the `systemctl restart agentd` at the end.
+
+Must run as root when writing */etc/default/aaos* (e.g. `sudo agentd configure`).
+
 # EXIT CODES
 
 - **0** — success (goal completed, list returned, agent stopped)

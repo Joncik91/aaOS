@@ -61,7 +61,11 @@ async fn main() -> anyhow::Result<()> {
                     Arc::new(ScheduledLlmClient::new(raw, sched_config));
                 Server::with_llm_client(client)
             } else {
-                tracing::warn!("No LLM client configured. agent.run will be unavailable.");
+                tracing::warn!(
+                    "No LLM client configured — neither DEEPSEEK_API_KEY nor ANTHROPIC_API_KEY is set. \
+                     Run `sudo agentd configure` to set one, or edit /etc/default/aaos manually. \
+                     agent.run will be unavailable until then."
+                );
                 Arc::new(Server::new())
             };
 
@@ -147,6 +151,14 @@ async fn main() -> anyhow::Result<()> {
                 RolesCommand::Show { name, dir } => agentd::cli::roles::show(name, dir).await,
                 RolesCommand::Validate { path } => agentd::cli::roles::validate(path).await,
             };
+        }
+        Command::Configure {
+            provider,
+            key_from_env,
+            env_file,
+            no_restart,
+        } => {
+            return agentd::cli::configure::run(provider, key_from_env, env_file, no_restart).await;
         }
     }
 

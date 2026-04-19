@@ -77,6 +77,34 @@ pub enum CliCommand {
         #[command(subcommand)]
         subcommand: RolesCommand,
     },
+    /// First-boot setup: prompt for an LLM API key, write /etc/default/aaos
+    /// with mode 0600 root:root, restart the daemon.
+    ///
+    /// Run after `apt install ./aaos_*.deb` as root (e.g. via sudo) — the
+    /// command seeds the env file that systemd reads before de-privileging
+    /// to User=aaos, so the file must land at /etc/default/aaos with the
+    /// key readable only by root.
+    #[command(
+        long_about = "Interactive first-boot setup. Prompts for a DeepSeek or Anthropic API key, writes /etc/default/aaos mode 0600, and optionally restarts agentd.\n\nExample:\n    sudo agentd configure"
+    )]
+    Configure {
+        /// Provider to configure. Default is `deepseek` (cheapest; aaOS's
+        /// first-choice default).
+        #[arg(long, value_parser = ["deepseek", "anthropic"], default_value = "deepseek")]
+        provider: String,
+        /// Read the API key from the named env var instead of prompting.
+        /// Useful for non-interactive provisioning (Ansible, cloud-init).
+        #[arg(long)]
+        key_from_env: Option<String>,
+        /// Path to the env file. Defaults to /etc/default/aaos (what
+        /// packaging/agentd.service reads via EnvironmentFile=).
+        #[arg(long, default_value = "/etc/default/aaos")]
+        env_file: PathBuf,
+        /// Skip the systemctl restart at the end — useful on non-systemd
+        /// hosts (CI, containers) or when editing before the daemon runs.
+        #[arg(long)]
+        no_restart: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -97,6 +125,8 @@ pub enum RolesCommand {
 }
 
 // ---- Stub subcommand runners. Real implementations land in Tasks 9-13. ----
+
+pub mod configure;
 
 pub mod submit;
 
