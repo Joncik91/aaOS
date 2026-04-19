@@ -84,10 +84,116 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use aaos_core::{
-    AgentBackend, AgentLaunchHandle, AgentLaunchSpec, BackendHealth, CoreError, Result,
+    AgentBackend, AgentLaunchHandle, AgentLaunchSpec, AgentManifest, BackendHealth,
+    CapabilityDeclaration, CoreError, Result,
 };
 
 use crate::broker_session::SessionMap;
+
+/// Extract filesystem-root directories from the manifest's capability
+/// declarations. For each `"file_read: <glob>"` or `"file_write: <glob>"`
+/// entry, take the glob's directory component and return it. Used by
+/// the namespaced backend to build the bind-mount + Landlock allow
+/// list so tool calls can reach the paths the daemon-side capabilities
+/// grant them.
+///
+/// Path-glob components like `*` / `{param}` are not expanded here —
+/// we deliberately take the parent directory, which may be wider than
+/// the capability grant but narrower than the host filesystem.
+/// Capability tokens remain the policy gate; this just provides the
+/// filesystem visibility needed for the tokens to mean something
+/// inside the sandbox.
+fn extract_capability_roots(manifest: &AgentManifest) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for decl in &manifest.capabilities {
+        let s = match decl {
+            CapabilityDeclaration::Simple(s) => s.as_str(),
+            CapabilityDeclaration::WithParams { .. } => continue,
+        };
+        let (kind, rest) = match s.split_once(':') {
+            Some((k, r)) => (k.trim(), r.trim()),
+            None => continue,
+        };
+        if kind != "file_read" && kind != "file_write" {
+            continue;
+        }
+        // Strip trailing `/*` and the like; take everything before the
+        // first `*` or `{` so template placeholders don't end up as
+        // mount paths.
+        let rest_str = rest.to_string();
+        let stop = rest_str
+            .find(|c: char| c == '*' || c == '{')
+            .unwrap_or(rest_str.len());
+        let trimmed = &rest_str[..stop];
+        let path = PathBuf::from(trimmed);
+        // Take parent directory if the path is a file-like leaf
+        // (contains an extension or is under a named dir).
+        let root = if path.is_absolute() {
+            // If the path ends in `/` treat as directory; otherwise take
+            // the parent to cover the whole dir. Simplest: if ends in
+            // `/`, keep; else take parent; fallback to path itself.
+            if trimmed.ends_with('/') {
+                path
+            } else {
+                path.parent().map(|p| p.to_path_buf()).unwrap_or(path)
+            }
+        } else {
+            // Relative / weird paths — skip.
+            continue;
+        };
+        // Filter out degenerate roots.
+        if root.as_os_str().is_empty()
+            || root == PathBuf::from("/")
+            || root == PathBuf::from(".")
+        {
+            continue;
+        }
+        roots.push(root);
+    }
+    roots
+}
+
+#[cfg(test)]
+mod capability_root_tests {
+    use super::*;
+
+    fn mk(caps: &[&str]) -> AgentManifest {
+        let caps_yaml: String = caps.iter().map(|s| format!("  - \"{s}\"\n")).collect();
+        let yaml = format!(
+            "name: t\nmodel: claude-haiku-4-5-20251001\nsystem_prompt: x\ncapabilities:\n{caps_yaml}"
+        );
+        AgentManifest::from_yaml(&yaml).unwrap()
+    }
+
+    #[test]
+    fn extracts_parent_dir_for_file_write_leaf() {
+        let m = mk(&["file_write: /data/compare.md"]);
+        let roots = extract_capability_roots(&m);
+        assert_eq!(roots, vec![PathBuf::from("/data")]);
+    }
+
+    #[test]
+    fn keeps_trailing_slash_dirs() {
+        let m = mk(&["file_write: /data/"]);
+        let roots = extract_capability_roots(&m);
+        assert_eq!(roots, vec![PathBuf::from("/data/")]);
+    }
+
+    #[test]
+    fn strips_glob_star() {
+        let m = mk(&["file_read: /logs/*.jsonl"]);
+        let roots = extract_capability_roots(&m);
+        assert_eq!(roots, vec![PathBuf::from("/logs")]);
+    }
+
+    #[test]
+    fn skips_root_and_non_file_caps() {
+        let m = mk(&["tool: web_fetch", "file_write: /foo.txt"]);
+        let roots = extract_capability_roots(&m);
+        // /foo.txt → /
+        assert!(roots.is_empty(), "got: {:?}", roots);
+    }
+}
 
 /// Configuration for constructing a [`NamespacedBackend`].
 #[derive(Debug, Clone)]
@@ -557,34 +663,41 @@ mod launch_impl {
                 }
             }
 
-            // Step D2: bind-mount the per-agent workspace (read-write)
-            // at the same absolute path so tool calls using host paths
-            // (e.g. /var/lib/aaos/workspace/<run-id>/hn.html) resolve
-            // inside the worker. Only when policy.workspace.is_some().
-            if let Some(ws) = policy_clone.workspace.as_ref() {
-                let ws_rel = ws.strip_prefix("/").unwrap_or(ws);
-                let inside_ws = new_root.join(ws_rel);
-                if let Err(e) = std::fs::create_dir_all(&inside_ws) {
-                    log_step("D2-mkdir-workspace", Some(&e.to_string()));
+            // Step D2: bind-mount the per-agent workspace + any extra
+            // capability-declared writable roots (read-write) at the
+            // same absolute paths inside the worker's mount ns. Tool
+            // calls using host paths resolve identically daemon-side
+            // vs worker-side.
+            let d2_targets: Vec<PathBuf> = policy_clone
+                .workspace
+                .iter()
+                .cloned()
+                .chain(policy_clone.extra_writable_roots.iter().cloned())
+                .collect();
+            for target in &d2_targets {
+                let rel = target.strip_prefix("/").unwrap_or(target);
+                let inside = new_root.join(rel);
+                if let Err(e) = std::fs::create_dir_all(&inside) {
+                    log_step(
+                        &format!("D2-mkdir-{}", target.display()),
+                        Some(&e.to_string()),
+                    );
                     return 41;
                 }
-                // The host-side workspace dir must exist (executor
-                // creates /var/lib/aaos/workspace/<run-id>/ before
-                // spawning subtasks). If it doesn't, create it — the
-                // worker's writes to the bind-mount will reach the
-                // host filesystem directly.
-                let _ = std::fs::create_dir_all(ws);
+                // Host-side dir must exist; create if not (harmless
+                // directory create on /data, /var/lib/aaos/workspace/<run>, etc.).
+                let _ = std::fs::create_dir_all(target);
                 match nix::mount::mount::<std::path::Path, std::path::Path, str, str>(
-                    Some(ws),
-                    &inside_ws,
+                    Some(target),
+                    &inside,
                     None,
                     nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
                     None,
                 ) {
-                    Ok(_) => log_step(&format!("D2-bind-workspace-{}", ws.display()), None),
+                    Ok(_) => log_step(&format!("D2-bind-{}", target.display()), None),
                     Err(e) => {
                         log_step(
-                            &format!("D2-bind-workspace-{}", ws.display()),
+                            &format!("D2-bind-{}", target.display()),
                             Some(&e.to_string()),
                         );
                         return 42;
@@ -810,11 +923,32 @@ mod launch_impl {
         } else {
             Some(spec.workspace_path.clone())
         };
+
+        // Phase F-b/3c: extract additional writable roots from the
+        // manifest's capability list. For each "file_write: {glob}" or
+        // "file_read: {glob}" entry whose path isn't under the
+        // workspace, we bind-mount the glob's parent directory so
+        // tool calls can actually reach the declared output paths
+        // (e.g. writer role declares `file_write: /data/compare.md`
+        // → we bind-mount `/data`). Capability tokens are still the
+        // policy gate — bind-mount + Landlock just provide the
+        // filesystem visibility needed for the tokens to mean
+        // something.
+        let mut extra_writable_roots = extract_capability_roots(&spec.manifest);
+        // Filter out anything already covered by workspace.
+        if let Some(ws) = workspace.as_ref() {
+            extra_writable_roots.retain(|p| !p.starts_with(ws));
+        }
+        // Dedup.
+        extra_writable_roots.sort();
+        extra_writable_roots.dedup();
+
         let policy = PolicyDescription {
             scratch: PathBuf::from("/scratch"),
             shared_libs: backend.config.shared_lib_paths.clone(),
             broker_socket: socket_path.clone(),
             workspace,
+            extra_writable_roots,
         };
 
         let my_uid = nix::unistd::getuid().as_raw();

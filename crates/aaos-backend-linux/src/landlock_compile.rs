@@ -117,13 +117,19 @@ mod linux_impl {
                 })?;
         }
 
-        // Per-agent workspace, read + write (narrow scope — one path
-        // per agent, bind-mounted at the same absolute path inside the
-        // worker's mount ns). Capability tokens still gate which paths
-        // within the workspace each tool call may touch.
-        if let Some(ws) = policy.workspace.as_ref() {
+        // Per-agent workspace + extra capability-declared writable
+        // roots (narrow, per-agent scope — bind-mounted at the same
+        // absolute path inside the worker's mount ns). Capability
+        // tokens still gate which paths within each root each tool
+        // call may touch.
+        let rw_roots = policy
+            .workspace
+            .iter()
+            .cloned()
+            .chain(policy.extra_writable_roots.iter().cloned());
+        for ws in rw_roots {
             if ws.exists() {
-                let fd = PathFd::new(ws).map_err(|e| LandlockCompileError::RuleAddFailed {
+                let fd = PathFd::new(&ws).map_err(|e| LandlockCompileError::RuleAddFailed {
                     path: ws.clone(),
                     reason: e.to_string(),
                 })?;
@@ -136,7 +142,7 @@ mod linux_impl {
             } else {
                 tracing::warn!(
                     path = %ws.display(),
-                    "landlock: workspace path does not exist, skipping rule"
+                    "landlock: writable root does not exist, skipping rule"
                 );
             }
         }
@@ -178,6 +184,7 @@ mod linux_impl {
                 ],
                 broker_socket: PathBuf::from("/nonexistent.sock"),
                 workspace: None,
+                extra_writable_roots: vec![],
             }
         }
 

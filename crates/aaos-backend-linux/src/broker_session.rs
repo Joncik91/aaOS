@@ -632,6 +632,7 @@ mod tests {
             shared_libs: vec![],
             broker_socket: PathBuf::from("/tmp/s.sock"),
             workspace: None,
+            extra_writable_roots: vec![],
         }
     }
 

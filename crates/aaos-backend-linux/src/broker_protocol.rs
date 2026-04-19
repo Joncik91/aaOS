@@ -163,6 +163,15 @@ pub struct PolicyDescription {
     /// grants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<PathBuf>,
+
+    /// Additional read+write allowlist paths bind-mounted at the same
+    /// absolute path inside the worker. Populated from the role's
+    /// FileRead / FileWrite capability path_globs so the writer can
+    /// reach its declared output directory (e.g. `/data/`) without
+    /// having to stuff everything under `workspace`. Each entry gets
+    /// a Landlock PathBeneath rule and a bind-mount from the host.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_writable_roots: Vec<PathBuf>,
 }
 
 /// Generic JSON-RPC response envelope.
@@ -238,6 +247,7 @@ mod tests {
                 ],
                 broker_socket: PathBuf::from("/var/run/aaos/sessions/x.sock"),
                 workspace: None,
+                extra_writable_roots: vec![],
             },
         };
         let s = serde_json::to_string(&ack).unwrap();
