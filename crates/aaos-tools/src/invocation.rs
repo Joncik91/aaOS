@@ -48,12 +48,16 @@ impl std::fmt::Display for WorkerInvokeError {
 pub trait WorkerHandle: Send + Sync {
     /// Return the backend kind for routing (`"namespaced"` or `"in_process"`).
     fn backend_kind(&self) -> &'static str;
-    /// Forward a tool invocation across the broker.
+    /// Forward a tool invocation across the broker. `tokens` carries the
+    /// resolved `CapabilityToken` structs for the invoking agent so the
+    /// worker can rebuild a per-call `CapabilityRegistry` and satisfy the
+    /// tool's internal `ctx.capability_registry.permits()` check.
     async fn invoke_over_worker(
         &self,
         agent_id: AgentId,
         tool_name: &str,
         input: serde_json::Value,
+        tokens: Vec<aaos_core::CapabilityToken>,
     ) -> std::result::Result<serde_json::Value, WorkerInvokeError>;
 }
 
@@ -221,6 +225,15 @@ impl ToolInvocation {
         // side execution and record the actual surface (Daemon) in the
         // audit event so operators see honestly that the call was not
         // confined. Any other worker error propagates as CoreError::Ipc.
+        // Resolve CapabilityToken structs for forwarding to the worker.
+        // The worker rebuilds a per-call registry from these so the tool's
+        // own `ctx.capability_registry.permits()` call succeeds. Revoked or
+        // expired tokens are resolved as-is (the worker's registry will deny
+        // them, same as the daemon would — no special handling needed).
+        let resolved_tokens = self
+            .capability_registry
+            .resolve_tokens(&filtered_handles, agent_id);
+
         let (actual_surface, mut result): (ToolExecutionSurface, Result<Value>) =
             match intended_surface {
                 ToolExecutionSurface::Worker => {
@@ -229,7 +242,7 @@ impl ToolInvocation {
                         .as_ref()
                         .expect("intended_surface=Worker implies handle is Some");
                     match handle
-                        .invoke_over_worker(agent_id, tool_name, input.clone())
+                        .invoke_over_worker(agent_id, tool_name, input.clone(), resolved_tokens)
                         .await
                     {
                         Ok(v) => (ToolExecutionSurface::Worker, Ok(v)),
@@ -735,6 +748,9 @@ mod tests {
     struct MockWorkerHandle {
         kind: &'static str,
         invocations: Arc<Mutex<Vec<(AgentId, String, serde_json::Value)>>>,
+        /// Received token lists per call, for assertions in
+        /// `worker_handle_receives_forwarded_tokens`.
+        received_tokens: Arc<Mutex<Vec<Vec<aaos_core::CapabilityToken>>>>,
     }
 
     #[async_trait::async_trait]
@@ -748,11 +764,13 @@ mod tests {
             agent_id: AgentId,
             tool_name: &str,
             input: serde_json::Value,
+            tokens: Vec<aaos_core::CapabilityToken>,
         ) -> std::result::Result<serde_json::Value, WorkerInvokeError> {
             self.invocations
                 .lock()
                 .unwrap()
                 .push((agent_id, tool_name.to_string(), input));
+            self.received_tokens.lock().unwrap().push(tokens);
             Ok(serde_json::json!({"ok": true}))
         }
     }
@@ -765,6 +783,23 @@ mod tests {
         Vec<CapabilityHandle>,
         Arc<InMemoryAuditLog>,
         Arc<Mutex<Vec<(AgentId, String, serde_json::Value)>>>,
+    ) {
+        let (invocation, agent_id, handles, log, invocations, _received_tokens) =
+            setup_worker_harness_full(backend_kind);
+        (invocation, agent_id, handles, log, invocations)
+    }
+
+    /// Extended harness that also returns the received_tokens arc for
+    /// assertions in token-forwarding tests.
+    fn setup_worker_harness_full(
+        backend_kind: &'static str,
+    ) -> (
+        ToolInvocation,
+        AgentId,
+        Vec<CapabilityHandle>,
+        Arc<InMemoryAuditLog>,
+        Arc<Mutex<Vec<(AgentId, String, serde_json::Value)>>>,
+        Arc<Mutex<Vec<Vec<aaos_core::CapabilityToken>>>>,
     ) {
         let registry = Arc::new(ToolRegistry::new());
         // Register EchoTool as "file_write" and "web_fetch" so daemon-side
@@ -788,9 +823,12 @@ mod tests {
 
         let invocations: Arc<Mutex<Vec<(AgentId, String, serde_json::Value)>>> =
             Arc::new(Mutex::new(Vec::new()));
+        let received_tokens: Arc<Mutex<Vec<Vec<aaos_core::CapabilityToken>>>> =
+            Arc::new(Mutex::new(Vec::new()));
         let mock = Arc::new(MockWorkerHandle {
             kind: backend_kind,
             invocations: invocations.clone(),
+            received_tokens: received_tokens.clone(),
         });
 
         let invocation = ToolInvocation::new_with_worker_handle(
@@ -800,7 +838,7 @@ mod tests {
             mock,
         );
 
-        (invocation, agent_id, vec![handle], log, invocations)
+        (invocation, agent_id, vec![handle], log, invocations, received_tokens)
     }
 
     #[tokio::test]
@@ -897,6 +935,7 @@ mod tests {
                 _agent_id: AgentId,
                 _tool_name: &str,
                 _input: serde_json::Value,
+                _tokens: Vec<aaos_core::CapabilityToken>,
             ) -> std::result::Result<serde_json::Value, WorkerInvokeError> {
                 Err(WorkerInvokeError::NoSession)
             }
@@ -1037,6 +1076,47 @@ mod tests {
             surface_in_audit,
             Some(ToolExecutionSurface::Daemon),
             "in_process backend must route every tool daemon-side"
+        );
+    }
+
+    /// Verify that when a worker-routed tool call is made, the mock
+    /// handle receives a non-empty token list containing the agent's
+    /// resolved `CapabilityToken` structs. This pins the token-forwarding
+    /// behaviour: the daemon resolves handles → tokens before the send so
+    /// the worker can rebuild its per-call registry.
+    #[tokio::test]
+    async fn worker_handle_receives_forwarded_tokens() {
+        let (invocation, agent_id, handles, _log, _invocations, received_tokens) =
+            setup_worker_harness_full("namespaced");
+
+        let _ = invocation
+            .invoke(
+                agent_id,
+                "file_write",
+                serde_json::json!({"path": "/tmp/x", "content": "hi"}),
+                &handles,
+            )
+            .await
+            .unwrap();
+
+        let calls = received_tokens.lock().unwrap();
+        assert_eq!(calls.len(), 1, "mock must have received exactly one call");
+        let tokens_for_call = &calls[0];
+        assert!(
+            !tokens_for_call.is_empty(),
+            "worker must receive a non-empty token list; got empty"
+        );
+        // The forwarded token should be the ToolInvoke:* grant we issued.
+        let has_tool_invoke = tokens_for_call.iter().any(|t| {
+            matches!(&t.capability, aaos_core::Capability::ToolInvoke { tool_name } if tool_name == "*")
+        });
+        assert!(
+            has_tool_invoke,
+            "forwarded tokens must include the ToolInvoke:* grant; got {:?}",
+            tokens_for_call
+                .iter()
+                .map(|t| &t.capability)
+                .collect::<Vec<_>>()
         );
     }
 }
