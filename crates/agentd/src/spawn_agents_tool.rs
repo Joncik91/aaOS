@@ -114,14 +114,11 @@ impl Tool for SpawnAgentsTool {
             ));
         }
         if children.len() > cap {
-            return Err(CoreError::InvalidManifest(
-                format!(
-                    "'children' has {} entries but AAOS_SPAWN_AGENTS_BATCH_CAP is {}",
-                    children.len(),
-                    cap
-                )
-                .into(),
-            ));
+            return Err(CoreError::InvalidManifest(format!(
+                "'children' has {} entries but AAOS_SPAWN_AGENTS_BATCH_CAP is {}",
+                children.len(),
+                cap
+            )));
         }
 
         // === PREFLIGHT: fast-fail check, not reservation ===
@@ -136,15 +133,12 @@ impl Tool for SpawnAgentsTool {
         let snapshot_count = self.registry.active_count();
         let snapshot_limit = self.registry.max_agents();
         if snapshot_count + children.len() > snapshot_limit {
-            return Err(CoreError::InvalidManifest(
-                format!(
-                    "spawn_agents: {} requested, registry has {}/{} agents — over limit",
-                    children.len(),
-                    snapshot_count,
-                    snapshot_limit
-                )
-                .into(),
-            ));
+            return Err(CoreError::InvalidManifest(format!(
+                "spawn_agents: {} requested, registry has {}/{} agents — over limit",
+                children.len(),
+                snapshot_count,
+                snapshot_limit
+            )));
         }
 
         // === FAN OUT ===

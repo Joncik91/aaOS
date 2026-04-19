@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use aaos_core::{AgentId, SummarizationFailureKind, TokenBudget};
-use aaos_llm::types::{CompletionRequest, CompletionResponse};
+use aaos_llm::types::CompletionRequest;
 use aaos_llm::{ContentBlock, LlmClient, Message};
 
 /// Typed classification of a summarization failure, carried inside
@@ -58,7 +58,7 @@ pub fn message_chars(msg: &Message) -> usize {
 
 /// Estimate token count for a slice of messages using chars/4 heuristic.
 pub fn estimate_tokens(messages: &[Message]) -> u32 {
-    let total_chars: usize = messages.iter().map(|m| message_chars(m)).sum();
+    let total_chars: usize = messages.iter().map(message_chars).sum();
     (total_chars / 4) as u32
 }
 
@@ -323,14 +323,12 @@ impl ContextManager {
         }
 
         // Check if the boundary starts on a ToolResult — back up
-        if boundary < history.len() {
-            if matches!(&history[boundary], Message::ToolResult { .. }) {
-                // Find the Assistant message before this ToolResult
-                while boundary > 0 {
-                    boundary -= 1;
-                    if matches!(&history[boundary], Message::Assistant { .. }) {
-                        break;
-                    }
+        if boundary < history.len() && matches!(&history[boundary], Message::ToolResult { .. }) {
+            // Find the Assistant message before this ToolResult
+            while boundary > 0 {
+                boundary -= 1;
+                if matches!(&history[boundary], Message::Assistant { .. }) {
+                    break;
                 }
             }
         }
@@ -426,6 +424,7 @@ impl ContextManager {
 mod tests {
     use super::*;
     use aaos_core::TokenUsage;
+    use aaos_llm::types::CompletionResponse;
     use aaos_llm::{LlmError, LlmResult};
     use async_trait::async_trait;
     use std::sync::Mutex;

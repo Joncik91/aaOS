@@ -226,6 +226,9 @@ mod linux_impl {
                             // backend before execve). Fall back to a fresh id if missing
                             // — the tool's internal capability check will then fail, which
                             // is the correct fail-closed behaviour for a misconfigured worker.
+                            // unwrap_or_else(AgentId::new) generates a fresh UUID on miss
+                            // — not a default — so `unwrap_or_default` is wrong here.
+                            #[allow(clippy::unwrap_or_default)]
                             let agent_id = std::env::var(ENV_AGENT_ID)
                                 .ok()
                                 .and_then(|s| s.parse::<aaos_core::AgentId>().ok())
@@ -296,7 +299,7 @@ mod linux_impl {
                 // the broker sees the socket close. That's the
                 // positive outcome.
                 // SAFETY: execve with a NULL-terminated C string path.
-                let path = b"/bin/true\0".as_ptr() as *const libc::c_char;
+                let path = c"/bin/true".as_ptr();
                 let argv = [path, std::ptr::null()];
                 let envp: [*const libc::c_char; 1] = [std::ptr::null()];
                 unsafe {

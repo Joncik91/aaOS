@@ -2,9 +2,9 @@
 //!
 //! Each `PlanExecutor` run creates a directory under
 //! `/var/lib/aaos/workspace/<run-id>/` that holds the rendered `plan.json`
-//! + any fetched / written artifacts. Nothing in the runtime prunes these:
-//! a long-running daemon accumulates one directory per run forever until
-//! the disk fills (soak-test Bug 3 from 2026-04-19).
+//! plus any fetched or written artifacts. Nothing in the runtime prunes
+//! these; a long-running daemon accumulates one directory per run
+//! forever until the disk fills (soak-test Bug 3 from 2026-04-19).
 //!
 //! This module adds a simple TTL-based sweep:
 //!

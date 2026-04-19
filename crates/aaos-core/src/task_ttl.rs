@@ -66,7 +66,7 @@ mod serde_duration {
 
         let opt = Option::<f64>::deserialize(d)?;
         opt.map(|secs| {
-            if !secs.is_finite() || secs < 0.0 || secs > MAX_WALL_CLOCK_SECS {
+            if !secs.is_finite() || !(0.0..=MAX_WALL_CLOCK_SECS).contains(&secs) {
                 return Err(serde::de::Error::custom(format!(
                     "TaskTtl.max_wall_clock must be a non-negative finite number of seconds \
                      no greater than {MAX_WALL_CLOCK_SECS} (30 days), got {secs}"

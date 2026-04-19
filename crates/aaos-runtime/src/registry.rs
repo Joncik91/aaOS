@@ -88,9 +88,10 @@ impl AgentRegistry {
         let mut current = self.active_count.load(Ordering::Acquire);
         loop {
             if current >= self.max_agents {
-                return Err(CoreError::InvalidManifest(
-                    format!("agent limit exceeded: max {} agents", self.max_agents).into(),
-                ));
+                return Err(CoreError::InvalidManifest(format!(
+                    "agent limit exceeded: max {} agents",
+                    self.max_agents
+                )));
             }
             match self.active_count.compare_exchange_weak(
                 current,
@@ -120,9 +121,9 @@ impl AgentRegistry {
     fn insert_atomic(&self, id: AgentId, process: AgentProcess) -> Result<()> {
         use dashmap::mapref::entry::Entry;
         match self.agents.entry(id) {
-            Entry::Occupied(_) => Err(CoreError::InvalidManifest(
-                format!("agent with id {id} already exists").into(),
-            )),
+            Entry::Occupied(_) => Err(CoreError::InvalidManifest(format!(
+                "agent with id {id} already exists"
+            ))),
             Entry::Vacant(v) => {
                 v.insert(process);
                 Ok(())
@@ -379,12 +380,12 @@ impl AgentRegistry {
     pub fn revoke_capability(&self, agent_id: AgentId, token_id: uuid::Uuid) -> Result<bool> {
         // Find the capability in the agent's handles to verify ownership,
         // then revoke via the capability registry (which flips revoked_at).
-        let has_token = self.agents.get(&agent_id).map_or(false, |entry| {
-            entry.value().capabilities.iter().any(|h| {
-                self.capability_registry
-                    .token_id_of(*h)
-                    .map_or(false, |tid| tid == token_id)
-            })
+        let has_token = self.agents.get(&agent_id).is_some_and(|entry| {
+            entry
+                .value()
+                .capabilities
+                .iter()
+                .any(|h| self.capability_registry.token_id_of(*h) == Some(token_id))
         });
         if !has_token {
             return Ok(false);
@@ -443,13 +444,6 @@ impl AgentRegistry {
             .ok_or(CoreError::AgentNotFound(id))
     }
 
-    /// Deprecated alias for `get_token_handles`. Kept for backward compatibility
-    /// during migration; returns handles, not tokens.
-    #[deprecated(since = "handle-based tokens", note = "use get_token_handles instead")]
-    pub fn get_tokens(&self, id: AgentId) -> Result<Vec<CapabilityHandle>> {
-        self.get_token_handles(id)
-    }
-
     /// Get a clone of the agent's manifest.
     pub fn get_manifest(&self, id: AgentId) -> Result<AgentManifest> {
         self.agents
@@ -480,9 +474,9 @@ impl AgentRegistry {
     ) -> Result<()> {
         const MAX_SPAWN_DEPTH: u32 = 5;
         if depth > MAX_SPAWN_DEPTH {
-            return Err(CoreError::InvalidManifest(
-                format!("spawn depth exceeded: max depth is {MAX_SPAWN_DEPTH}").into(),
-            ));
+            return Err(CoreError::InvalidManifest(format!(
+                "spawn depth exceeded: max depth is {MAX_SPAWN_DEPTH}"
+            )));
         }
 
         // Atomic admission: reserve a slot. Drops/releases on any early return.
@@ -747,18 +741,18 @@ capabilities:
     }
 
     #[test]
-    fn get_tokens_returns_agent_capabilities() {
+    fn get_token_handles_returns_agent_capabilities() {
         let (registry, _log) = test_registry();
         let id = registry.spawn(test_manifest("agent-1")).unwrap();
-        let tokens = registry.get_tokens(id).unwrap();
+        let handles = registry.get_token_handles(id).unwrap();
         // test_manifest declares web_search and file_read
-        assert_eq!(tokens.len(), 2);
+        assert_eq!(handles.len(), 2);
     }
 
     #[test]
-    fn get_tokens_nonexistent_agent() {
+    fn get_token_handles_nonexistent_agent() {
         let (registry, _log) = test_registry();
-        let result = registry.get_tokens(AgentId::new());
+        let result = registry.get_token_handles(AgentId::new());
         assert!(result.is_err());
     }
 
@@ -916,14 +910,14 @@ capabilities:
         registry
             .spawn_with_id(test_manifest("bootstrap"), id)
             .unwrap();
-        assert_eq!(registry.has_stable_identity(id).unwrap(), true);
+        assert!(registry.has_stable_identity(id).unwrap());
     }
 
     #[test]
     fn spawn_does_not_set_persistent_identity() {
         let (registry, _log) = test_registry();
         let id = registry.spawn(test_manifest("child")).unwrap();
-        assert_eq!(registry.has_stable_identity(id).unwrap(), false);
+        assert!(!registry.has_stable_identity(id).unwrap());
     }
 
     #[test]
@@ -933,7 +927,7 @@ capabilities:
         registry
             .spawn_with_token_handles(id, test_manifest("child"), vec![], 1, None)
             .unwrap();
-        assert_eq!(registry.has_stable_identity(id).unwrap(), false);
+        assert!(!registry.has_stable_identity(id).unwrap());
     }
 
     // TODO(handle-migration): spawn_with_token_handles no longer inspects

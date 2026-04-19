@@ -143,10 +143,7 @@ async fn run_git_commit(ws: &Path, message: &str, paths: &[String]) -> Result<Va
         && !stderr.contains("nothing to commit")
         && !stdout.contains("nothing to commit")
     {
-        match get_head_commit_sha(ws).await {
-            Ok(sha) => Some(sha),
-            Err(_) => None,
-        }
+        get_head_commit_sha(ws).await.ok()
     } else {
         None
     };

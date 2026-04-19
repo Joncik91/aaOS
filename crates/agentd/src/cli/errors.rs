@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn io_error_exit_code_is_3() {
-        let e = CliError::Io(std::io::Error::new(std::io::ErrorKind::Other, "boom"));
+        let e = CliError::Io(std::io::Error::other("boom"));
         assert_eq!(exit_code(&e), 3);
     }
 

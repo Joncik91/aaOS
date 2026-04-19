@@ -40,12 +40,11 @@ pub struct RoleBudget {
 /// tool call within a single subtask, filtered by the `on` list (e.g.
 /// `["tool_error", "timeout"]`). The LLM-loop iteration cap — the hard
 /// ceiling on how many turns an agent can take inside one subtask — is
-/// derived from this by the executor as `max_iterations = max(max_attempts
-/// + 10, 10)` (see `PlanExecutor::spawn_subtask`). The `+10` headroom
-/// accounts for setup + verification turns that happen around the
-/// retry-eligible tool calls. If you bump `max_attempts` expecting N
-/// additional turns, you actually get N+10 turns on the first bump and
-/// N thereafter.
+/// derived from this by the executor as `max(max_attempts + 10, 10)` (see
+/// `PlanExecutor::spawn_subtask`). The extra ten-turn headroom covers
+/// setup and verification turns that happen around the retry-eligible
+/// tool calls, so bumping `max_attempts` by N yields N+10 more turns on
+/// the first bump and N thereafter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleRetry {
     pub max_attempts: u32,

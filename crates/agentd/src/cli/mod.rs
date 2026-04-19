@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn submit_parses_with_goal() {
-        let c = TestCli::parse_from(&["agentd", "submit", "hello world"]);
+        let c = TestCli::parse_from(["agentd", "submit", "hello world"]);
         match c.cmd {
             CliCommand::Submit {
                 goal,
@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn submit_accepts_verbose_flag() {
-        let c = TestCli::parse_from(&["agentd", "submit", "-v", "hi"]);
+        let c = TestCli::parse_from(["agentd", "submit", "-v", "hi"]);
         match c.cmd {
             CliCommand::Submit { verbose, .. } => assert!(verbose),
             _ => panic!(),
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn list_accepts_json_flag() {
-        let c = TestCli::parse_from(&["agentd", "list", "--json"]);
+        let c = TestCli::parse_from(["agentd", "list", "--json"]);
         match c.cmd {
             CliCommand::List { json, .. } => assert!(json),
             _ => panic!(),
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn status_requires_agent_id() {
-        let result = TestCli::try_parse_from(&["agentd", "status"]);
+        let result = TestCli::try_parse_from(["agentd", "status"]);
         assert!(result.is_err(), "expected parse error for missing agent_id");
     }
 }

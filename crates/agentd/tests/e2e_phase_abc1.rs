@@ -6,7 +6,7 @@
 //! 1. Phase A: Spawn ephemeral agent with echo tool, verify tool use
 //! 2. Phase B: Spawn persistent agent, send facts, verify memory across turns
 //! 3. Phase C1: Spawn persistent agent with small context window, fill it up,
-//!              verify summarization preserves early facts in the summary
+//!    verify summarization preserves early facts in the summary
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -309,7 +309,7 @@ async fn full_e2e_phase_a_b_c1() {
     eprintln!("    {} total agents in registry", agents.len());
     // Some agents may have been stopped already, just verify the registry is accessible
     assert!(
-        agents.len() >= 1,
+        !agents.is_empty(),
         "expected at least 1 agent in registry, got {}",
         agents.len()
     );

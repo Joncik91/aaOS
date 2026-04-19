@@ -69,7 +69,7 @@ mod tests {
     }
 }
 
-use crate::plan::{Plan, Subtask};
+use crate::plan::Plan;
 use aaos_core::{AuditEvent, AuditEventKind};
 
 /// Information carried from a failed execution attempt back to the replan

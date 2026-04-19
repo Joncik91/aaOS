@@ -106,9 +106,8 @@ impl McpSession {
                 json!({ "name": remote_name, "arguments": arguments }),
             ))
             .await
-            .map_err(|e| {
+            .inspect_err(|_e| {
                 self.healthy.store(false, Ordering::Relaxed);
-                e
             })?;
         if let Some(err) = resp.error {
             return Err(McpError::Rpc {

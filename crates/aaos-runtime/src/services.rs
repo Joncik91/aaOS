@@ -229,9 +229,7 @@ impl AgentServices for InProcessAgentServices {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.router.register_pending(trace_id, tx);
 
-        if let Err(e) = self.router.route(msg).await {
-            return Err(e);
-        }
+        self.router.route(msg).await?;
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => {

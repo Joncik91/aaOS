@@ -49,10 +49,11 @@ fn test_config(tmp: &Path) -> NamespacedBackendConfig {
         "worker binary missing — run `cargo build -p aaos-backend-linux --bin aaos-agent-worker` first: {}",
         worker.display()
     );
-    let mut cfg = NamespacedBackendConfig::default();
-    cfg.session_dir = tmp.join("sessions");
-    cfg.worker_binary = worker;
-    cfg
+    NamespacedBackendConfig {
+        session_dir: tmp.join("sessions"),
+        worker_binary: worker,
+        ..NamespacedBackendConfig::default()
+    }
 }
 
 fn sample_spec() -> AgentLaunchSpec {

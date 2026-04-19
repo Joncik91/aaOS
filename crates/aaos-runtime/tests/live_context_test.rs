@@ -135,7 +135,7 @@ async fn live_context_summarization_preserves_facts() {
     let archives = session_store.load_archives(&agent_id).unwrap();
     println!("Archives on disk: {}", archives.len());
     assert!(
-        archives.len() >= 1,
+        !archives.is_empty(),
         "Expected at least one archive segment (got {})",
         archive_count
     );

@@ -179,6 +179,12 @@ pub struct InMemorySessionStore {
     archives: dashmap::DashMap<String, Vec<ArchiveSegment>>,
 }
 
+impl Default for InMemorySessionStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemorySessionStore {
     pub fn new() -> Self {
         Self {

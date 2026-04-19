@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use aaos_core::{
-    AgentId, AgentManifest, AgentServices, ApprovalService, AuditLog, Capability, CapabilityToken,
-    Constraints, CoreError, Result, ToolDefinition,
+    AgentId, AgentManifest, AgentServices, ApprovalService, AuditLog, Capability, CoreError,
+    Result, ToolDefinition,
 };
 use aaos_ipc::MessageRouter;
 use aaos_llm::{AgentExecutor, ExecutorConfig, LlmClient};

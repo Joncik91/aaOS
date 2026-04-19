@@ -40,12 +40,8 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
-      # Clippy is advisory-only today: ~35 pre-existing warnings would fail
-      # a -D warnings gate from day 1. Track them down first, then flip the
-      # gate in a follow-up.
-      - name: cargo clippy (advisory)
-        run: cargo clippy --workspace --all-targets -- -W clippy::all
-        continue-on-error: true
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo check --features mcp
         run: cargo check -p agentd --features mcp

@@ -113,7 +113,7 @@ async fn full_e2e_phase_a_and_b() {
             .map(|t| t["name"].as_str().unwrap())
             .collect::<Vec<_>>()
     );
-    assert!(tools.len() >= 1);
+    assert!(!tools.is_empty());
 
     // ─── Phase B: Persistent agent with conversation memory ───
 

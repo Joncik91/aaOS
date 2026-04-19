@@ -22,6 +22,7 @@ impl McpClient {
         for server_cfg in &config.servers {
             // Build the initial transport and a factory closure for the reconnect loop.
             // The factory must be 'static + Send, so we capture only the fields we need.
+            #[allow(clippy::type_complexity)]
             let (transport, factory): (
                 Arc<dyn McpTransport>,
                 Box<dyn Fn() -> Arc<dyn McpTransport> + Send + 'static>,

@@ -138,13 +138,6 @@ fn scope_to_str(scope: &MemoryScope) -> &'static str {
     }
 }
 
-fn str_to_scope(s: &str) -> MemoryScope {
-    match s {
-        "private" => MemoryScope::Private,
-        _ => MemoryScope::Private,
-    }
-}
-
 #[async_trait]
 impl MemoryStore for SqliteMemoryStore {
     async fn store(&self, record: MemoryRecord) -> MemoryStoreResult<Uuid> {

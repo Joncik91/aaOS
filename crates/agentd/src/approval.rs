@@ -33,6 +33,12 @@ pub struct ApprovalInfo {
     pub timestamp: DateTime<Utc>,
 }
 
+impl Default for ApprovalQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ApprovalQueue {
     pub fn new() -> Self {
         Self {

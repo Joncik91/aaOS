@@ -77,7 +77,7 @@ pub fn probe_mount_capable() -> bool {
     }
 }
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -121,9 +121,7 @@ fn extract_capability_roots(manifest: &AgentManifest) -> Vec<PathBuf> {
         // first `*` or `{` so template placeholders don't end up as
         // mount paths.
         let rest_str = rest.to_string();
-        let stop = rest_str
-            .find(|c: char| c == '*' || c == '{')
-            .unwrap_or(rest_str.len());
+        let stop = rest_str.find(['*', '{']).unwrap_or(rest_str.len());
         let trimmed = &rest_str[..stop];
         let path = PathBuf::from(trimmed);
         // Take parent directory if the path is a file-like leaf
@@ -142,7 +140,10 @@ fn extract_capability_roots(manifest: &AgentManifest) -> Vec<PathBuf> {
             continue;
         };
         // Filter out degenerate roots.
-        if root.as_os_str().is_empty() || root == PathBuf::from("/") || root == PathBuf::from(".") {
+        if root.as_os_str().is_empty()
+            || root.as_path() == Path::new("/")
+            || root.as_path() == Path::new(".")
+        {
             continue;
         }
         roots.push(root);
@@ -583,7 +584,7 @@ mod launch_impl {
             // Step A: wait for parent to finish uid/gid mapping.
             let mut byte = [0u8; 1];
             match nix::unistd::read(ready_rx_fd, &mut byte) {
-                Ok(n) if n == 1 => log_step("A-pipe-read", None),
+                Ok(1) => log_step("A-pipe-read", None),
                 Err(e) => {
                     log_step("A-pipe-read", Some(&e.to_string()));
                     return 10;
@@ -1186,6 +1187,7 @@ impl AgentBackend for NamespacedBackend {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -1470,7 +1472,7 @@ system_prompt: "x"
         let backend = NamespacedBackend::new(cfg).expect("Landlock supported");
         let agent_id = AgentId::new();
         let spec = AgentLaunchSpec {
-            agent_id: agent_id.clone(),
+            agent_id,
             manifest: AgentManifest::from_yaml(
                 r#"
 name: e2e-file-read
@@ -1632,7 +1634,7 @@ system_prompt: "x"
         let backend = NamespacedBackend::new(cfg).expect("Landlock supported");
         let agent_id = AgentId::new();
         let spec = AgentLaunchSpec {
-            agent_id: agent_id.clone(),
+            agent_id,
             manifest: AgentManifest::from_yaml(
                 r#"
 name: e2e-landlock-denial

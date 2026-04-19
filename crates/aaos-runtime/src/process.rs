@@ -165,7 +165,6 @@ pub struct AgentInfo {
 mod tests {
     use super::*;
     use aaos_core::{Capability, CapabilityRegistry, CapabilityToken, Constraints};
-    use std::sync::Arc;
 
     fn test_manifest() -> AgentManifest {
         AgentManifest::from_yaml(

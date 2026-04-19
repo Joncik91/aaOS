@@ -7,7 +7,7 @@ use aaos_runtime::plan::{Role, RoleCatalog};
 pub async fn list(dir: PathBuf) -> anyhow::Result<()> {
     let cat = RoleCatalog::load_from_dir(&dir)
         .map_err(|e| anyhow::anyhow!("load {}: {e}", dir.display()))?;
-    println!("{:<16} {:<20} {}", "NAME", "MODEL", "PARAMETERS");
+    println!("{:<16} {:<20} PARAMETERS", "NAME", "MODEL");
     for name in cat.names() {
         let r = cat.get(name).unwrap();
         let params: Vec<String> = r

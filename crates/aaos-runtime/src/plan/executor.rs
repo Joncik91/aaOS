@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -231,7 +231,7 @@ impl PlanExecutor {
         }
     }
 
-    fn write_plan_json(&self, run_root: &PathBuf, plan: &Plan) -> Result<(), ExecutorError> {
+    fn write_plan_json(&self, run_root: &Path, plan: &Plan) -> Result<(), ExecutorError> {
         let path = run_root.join("plan.json");
         let json = serde_json::to_string_pretty(plan).unwrap();
         std::fs::write(&path, json).map_err(|e| {
@@ -242,11 +242,11 @@ impl PlanExecutor {
     pub async fn execute_plan(
         &self,
         plan: &Plan,
-        run_root: &PathBuf,
+        run_root: &Path,
     ) -> Result<PlanResult, ExecutorError> {
         use futures::future::join_all;
 
-        let subs = Substitutions::new(run_root.clone());
+        let subs = Substitutions::new(run_root.to_path_buf());
 
         // Work on a depth-adjusted clone of the plan. Each subtask's
         // `ttl.max_hops` is reduced by its depth from roots (longest path
@@ -766,10 +766,7 @@ mod tests {
         let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
         let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
         let tmp = tempfile::tempdir().unwrap();
-        let err = exec
-            .execute_plan(&bad_plan, &tmp.path().to_path_buf())
-            .await
-            .unwrap_err();
+        let err = exec.execute_plan(&bad_plan, tmp.path()).await.unwrap_err();
         assert!(matches!(err, ExecutorError::Correctable { .. }));
     }
 
@@ -791,10 +788,7 @@ mod tests {
         let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
         let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
         let tmp = tempfile::tempdir().unwrap();
-        let err = exec
-            .execute_plan(&bad_plan, &tmp.path().to_path_buf())
-            .await
-            .unwrap_err();
+        let err = exec.execute_plan(&bad_plan, tmp.path()).await.unwrap_err();
         assert!(matches!(err, ExecutorError::Correctable { .. }));
     }
 
@@ -850,10 +844,7 @@ mod tests {
             final_output: "/out".into(),
         };
         let tmp = tempfile::tempdir().unwrap();
-        let r = exec
-            .execute_plan(&plan, &tmp.path().to_path_buf())
-            .await
-            .unwrap();
+        let r = exec.execute_plan(&plan, tmp.path()).await.unwrap();
         assert_eq!(r.results.len(), 2);
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
 
@@ -1002,10 +993,7 @@ mod tests {
             final_output: "/out".into(),
         };
         let tmp = tempfile::tempdir().unwrap();
-        let err = exec
-            .execute_plan(&plan, &tmp.path().to_path_buf())
-            .await
-            .unwrap_err();
+        let err = exec.execute_plan(&plan, tmp.path()).await.unwrap_err();
         match err {
             ExecutorError::Correctable { reason: msg, .. } => {
                 assert!(msg.contains("subtask 'hn'"), "got: {}", msg);
@@ -1072,10 +1060,7 @@ mod tests {
             }],
             final_output: "/out".into(),
         };
-        let err = exec
-            .execute_plan(&plan, &tmp.path().to_path_buf())
-            .await
-            .unwrap_err();
+        let err = exec.execute_plan(&plan, tmp.path()).await.unwrap_err();
         match err {
             ExecutorError::Correctable { reason: msg, .. } => {
                 assert!(msg.contains("did not produce"), "got: {msg}");
@@ -1107,7 +1092,7 @@ mod tests {
             }],
             final_output: "/out".into(),
         };
-        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let result = exec.execute_plan(&plan, tmp.path()).await;
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
     }
 
@@ -1137,7 +1122,7 @@ mod tests {
             final_output: "/out".into(),
         };
         let tmp = tempfile::tempdir().unwrap();
-        let _ = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let _ = exec.execute_plan(&plan, tmp.path()).await;
         let events = audit_concrete.events();
         let failed = events.iter().find(|e| {
             matches!(
@@ -1207,10 +1192,7 @@ mod tests {
             final_output: "/out".into(),
         };
         let tmp = tempfile::tempdir().unwrap();
-        let err = exec
-            .execute_plan(&plan, &tmp.path().to_path_buf())
-            .await
-            .unwrap_err();
+        let err = exec.execute_plan(&plan, tmp.path()).await.unwrap_err();
         assert!(matches!(err, ExecutorError::Correctable { .. }));
 
         let events = audit_concrete.events();
@@ -1312,7 +1294,7 @@ mod tests {
         };
 
         let tmp = tempfile::tempdir().unwrap();
-        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let result = exec.execute_plan(&plan, tmp.path()).await;
         assert!(
             matches!(&result, Err(ExecutorError::Correctable { .. })),
             "expected hop-exhausted subtask to produce Correctable failure; got {:?}",
@@ -1400,7 +1382,7 @@ mod tests {
         };
 
         let tmp = tempfile::tempdir().unwrap();
-        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let result = exec.execute_plan(&plan, tmp.path()).await;
         assert!(
             result.is_err(),
             "C should have been refused by TTL hops exhaustion; got {:?}",
@@ -1506,7 +1488,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let start = std::time::Instant::now();
-        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let result = exec.execute_plan(&plan, tmp.path()).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "wall-clock expiry must fail the plan");
@@ -1582,7 +1564,7 @@ mod tests {
         };
 
         let tmp = tempfile::tempdir().unwrap();
-        let _ = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let _ = exec.execute_plan(&plan, tmp.path()).await;
 
         let dependent_started = audit.events().into_iter().any(|e| {
             matches!(&e.event, AuditEventKind::SubtaskStarted { subtask_id, .. } if subtask_id == "dependent")
@@ -1783,7 +1765,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let start = std::time::Instant::now();
-        let result = exec.execute_plan(&plan, &tmp.path().to_path_buf()).await;
+        let result = exec.execute_plan(&plan, tmp.path()).await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "wall-clock expiry must fail the plan");

@@ -58,10 +58,7 @@ mod linux_impl {
             Ok(r) => r,
             Err(_) => return false,
         };
-        match ruleset_attr.create() {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        ruleset_attr.create().is_ok()
     }
 
     /// Build a [`RulesetCreated`] from the policy description.

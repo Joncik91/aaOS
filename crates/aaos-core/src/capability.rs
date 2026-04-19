@@ -333,7 +333,7 @@ pub fn extract_host(input: &str) -> String {
         None => return lowered,
     };
     let authority_end = after_scheme
-        .find(|c: char| c == '/' || c == '?' || c == '#')
+        .find(['/', '?', '#'])
         .unwrap_or(after_scheme.len());
     let authority = &after_scheme[..authority_end];
     let host_start = authority.rfind('@').map(|i| i + 1).unwrap_or(0);

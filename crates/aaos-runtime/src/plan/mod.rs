@@ -37,7 +37,7 @@ pub struct Subtask {
     #[serde(default)]
     pub depends_on: Vec<SubtaskId>,
     /// Optional per-subtask TTL. Populated by the planner from role defaults
-    /// + env, or left None for no bound. Existing serialized plans without
+    /// plus env, or left None for no bound. Existing serialized plans without
     /// this field deserialize to None (back-compat).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl: Option<aaos_core::TaskTtl>,

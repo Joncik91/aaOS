@@ -24,6 +24,7 @@ fn extract_user_message(msg: &McpMessage) -> String {
 }
 
 /// Run the persistent agent message loop.
+#[allow(clippy::too_many_arguments)]
 pub async fn persistent_agent_loop(
     agent_id: AgentId,
     manifest: AgentManifest,

@@ -139,6 +139,7 @@ impl Server {
     /// today's inline construction, plus a self-referential handle to
     /// the backend (so future `spawn_agent` calls on the trait can
     /// delegate without additional wiring).
+    #[allow(clippy::too_many_arguments)]
     fn build_in_process_backend(
         registry: Arc<AgentRegistry>,
         session_store: Arc<dyn aaos_runtime::SessionStore>,
@@ -808,6 +809,7 @@ impl Server {
     }
 
     /// Create a new server with default configuration.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
         let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
@@ -2369,6 +2371,62 @@ impl Server {
     }
 }
 
+/// Write one NDJSON frame (JSON value + `\n`) to the connection writer.
+async fn write_ndjson<W: tokio::io::AsyncWrite + Unpin>(
+    writer: &mut W,
+    frame: &serde_json::Value,
+) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt;
+    let mut line = serde_json::to_vec(frame).unwrap_or_else(|_| b"null".to_vec());
+    line.push(b'\n');
+    writer.write_all(&line).await?;
+    writer.flush().await
+}
+
+/// Discover skills from standard AgentSkills paths + AAOS_SKILLS_DIR env var.
+fn discover_all_skills() -> Vec<aaos_core::Skill> {
+    let mut all_skills = Vec::new();
+    for skills_dir in &["/etc/aaos/skills", "/var/lib/aaos/skills"] {
+        let path = std::path::Path::new(skills_dir);
+        if path.is_dir() {
+            all_skills.extend(aaos_core::discover_skills(path));
+        }
+    }
+    if let Ok(extra) = std::env::var("AAOS_SKILLS_DIR") {
+        for dir in extra.split(':') {
+            let path = std::path::Path::new(dir);
+            if path.is_dir() {
+                all_skills.extend(aaos_core::discover_skills(path));
+            }
+        }
+    }
+    if !all_skills.is_empty() {
+        tracing::info!(count = all_skills.len(), "skills loaded");
+    }
+    all_skills
+}
+
+/// Create the memory store backend: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise.
+fn create_memory_store(embedding_model: &str) -> Arc<dyn aaos_memory::MemoryStore> {
+    if let Ok(db_path) = std::env::var("AAOS_MEMORY_DB") {
+        match aaos_memory::SqliteMemoryStore::open(&PathBuf::from(&db_path)) {
+            Ok(store) => {
+                tracing::info!(path = %db_path, "persistent memory store (SQLite)");
+                return Arc::new(store);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, path = %db_path, "failed to open SQLite memory, falling back to in-memory");
+            }
+        }
+    }
+    tracing::info!("using in-memory memory store (non-persistent)");
+    Arc::new(aaos_memory::InMemoryMemoryStore::new(
+        10_000,
+        768,
+        embedding_model,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2617,11 +2675,15 @@ system_prompt: "You are helpful."
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn submit_streaming_writes_events_then_end_frame() {
         use std::time::Duration;
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::UnixStream;
 
+        // The lock serializes test-wide access to AAOS_BOOTSTRAP_MANIFEST_PATH +
+        // AAOS_ROLES_DIR across the whole body; `tokio::sync::Mutex` would not
+        // fit because the lock is shared with synchronous #[test] callers.
         let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let socket_path = tmp.path().join("agentd.sock");
@@ -3109,60 +3171,4 @@ retry: { max_attempts: 1, on: [] }
         );
         std::env::remove_var("AAOS_ROLES_DIR");
     }
-}
-
-/// Write one NDJSON frame (JSON value + `\n`) to the connection writer.
-async fn write_ndjson<W: tokio::io::AsyncWrite + Unpin>(
-    writer: &mut W,
-    frame: &serde_json::Value,
-) -> std::io::Result<()> {
-    use tokio::io::AsyncWriteExt;
-    let mut line = serde_json::to_vec(frame).unwrap_or_else(|_| b"null".to_vec());
-    line.push(b'\n');
-    writer.write_all(&line).await?;
-    writer.flush().await
-}
-
-/// Discover skills from standard AgentSkills paths + AAOS_SKILLS_DIR env var.
-fn discover_all_skills() -> Vec<aaos_core::Skill> {
-    let mut all_skills = Vec::new();
-    for skills_dir in &["/etc/aaos/skills", "/var/lib/aaos/skills"] {
-        let path = std::path::Path::new(skills_dir);
-        if path.is_dir() {
-            all_skills.extend(aaos_core::discover_skills(path));
-        }
-    }
-    if let Ok(extra) = std::env::var("AAOS_SKILLS_DIR") {
-        for dir in extra.split(':') {
-            let path = std::path::Path::new(dir);
-            if path.is_dir() {
-                all_skills.extend(aaos_core::discover_skills(path));
-            }
-        }
-    }
-    if !all_skills.is_empty() {
-        tracing::info!(count = all_skills.len(), "skills loaded");
-    }
-    all_skills
-}
-
-/// Create the memory store backend: SQLite if AAOS_MEMORY_DB is set, in-memory otherwise.
-fn create_memory_store(embedding_model: &str) -> Arc<dyn aaos_memory::MemoryStore> {
-    if let Ok(db_path) = std::env::var("AAOS_MEMORY_DB") {
-        match aaos_memory::SqliteMemoryStore::open(&PathBuf::from(&db_path)) {
-            Ok(store) => {
-                tracing::info!(path = %db_path, "persistent memory store (SQLite)");
-                return Arc::new(store);
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, path = %db_path, "failed to open SQLite memory, falling back to in-memory");
-            }
-        }
-    }
-    tracing::info!("using in-memory memory store (non-persistent)");
-    Arc::new(aaos_memory::InMemoryMemoryStore::new(
-        10_000,
-        768,
-        embedding_model,
-    ))
 }

@@ -76,7 +76,7 @@ impl Tool for MemoryQueryTool {
             .map_err(|e| CoreError::SchemaValidation(
                 format!(
                     "invalid category (expected one of: fact, observation, decision, preference): {e}"
-                ).into()
+                )
             ))?;
 
         // Embed the query
