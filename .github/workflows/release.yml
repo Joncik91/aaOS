@@ -1,0 +1,81 @@
+name: Release
+
+# Fires on tag push (vX.Y.Z). Builds the `.deb` against Debian 13 (matches
+# the package's declared target), attaches it to a GitHub Release created
+# from the tag. Manual dispatch (workflow_dispatch) is also allowed so a
+# release can be rebuilt without re-tagging.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-deb:
+    name: Build aaOS .deb (Debian 13)
+    runs-on: ubuntu-latest
+    # Build inside an official debian:13 container. cargo-deb encodes
+    # the host distribution into the dependency metadata, so baking on
+    # Ubuntu would produce a .deb pinned to Ubuntu's libc/systemd
+    # minimums — which bites users on Debian 13.
+    container:
+      image: debian:13
+    timeout-minutes: 25
+    steps:
+      - name: Install base dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            curl ca-certificates git build-essential pkg-config \
+            libssl-dev pandoc gzip
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The container-based job doesn't share the runner's HOME layout
+          # so the cache key includes the container ref for isolation.
+          key: release-deb-debian13
+
+      - name: Build man page
+        run: ./packaging/build-man-page.sh
+
+      - name: Build release binaries and .deb
+        run: ./packaging/build-deb.sh
+
+      - name: Locate the built artifact
+        id: artifact
+        run: |
+          deb=$(ls target/debian/aaos_*.deb | head -n1)
+          if [ -z "$deb" ]; then
+            echo "no .deb produced" >&2
+            exit 1
+          fi
+          echo "path=$deb" >> $GITHUB_OUTPUT
+          echo "name=$(basename "$deb")" >> $GITHUB_OUTPUT
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ steps.artifact.outputs.path }}
+
+      - name: Attach to GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.artifact.outputs.path }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
