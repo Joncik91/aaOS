@@ -16,7 +16,7 @@ See [Architecture](docs/architecture.md) for the full stack, [Roadmap](docs/road
 
 ```bash
 # 1. Install the .deb (download from Releases, or build from source — see below).
-sudo apt install ./aaos_0.0.0-1_amd64.deb
+sudo apt install ./aaos_0.0.1-1_amd64.deb
 
 # 2. Join the aaos group so your shell can talk to the daemon socket.
 #    Log out and back in for group membership to take effect.
