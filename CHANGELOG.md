@@ -10,13 +10,19 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Nothing queued for the next release yet.  Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.2 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.2 `.deb` preinstalled).
+
+Queued for the next patch release:
+
+### Fixed (queued)
+
+- **Bug 7** — `memory_store`, `memory_query`, `memory_delete` route worker-side but aren't in `aaos_backend_linux::worker_tools::WORKER_SIDE_TOOLS`. Calling any memory tool under confinement returns `tool error: tool memory_X not available in worker` (the substring also duplicates — stringly-constructed error). Memory tools genuinely need daemon-side execution (they require LLM-embedding HTTP access), so the fix is moving them into `DAEMON_SIDE_TOOLS` in `aaos-core::tool_surface`. Surfaced during the extended v0.0.2 droplet QA. Agents with memory-using manifests under confinement get a clean failure today rather than silent success — acceptable degraded behavior, but worth fixing.
 
 ---
 
 ## [0.0.2] — 2026-04-19
 
-First QA-driven patch.  Fresh-droplet soak test of the v0.0.1 `.deb` surfaced six bugs; this release fixes all of them.  See [`docs/reflection/2026-04-19-v0.0.1-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.1-droplet-qa.md) for the full QA record.
+First QA-driven patch.  Fresh-droplet soak test of the v0.0.1 `.deb` surfaced six bugs; this release fixes all of them.  See [`docs/reflection/2026-04-19-v0.0.1-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.1-droplet-qa.md) for the original QA record and [`docs/reflection/2026-04-19-v0.0.2-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.2-droplet-qa.md) for the v0.0.2 verification pass (all six bugs confirmed closed end-to-end; one new Bug 7 surfaced — see `[Unreleased]` above).
 
 Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.0.2> — `aaos_0.0.2-1_amd64.deb`, 4.29 MB.
 
