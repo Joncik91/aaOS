@@ -25,7 +25,17 @@ impl ToolExecutionSurface {
 ///
 /// - `web_fetch`: seccomp allowlist has no socket/connect syscalls.
 /// - `cargo_run`, `git_commit`: seccomp kill-filter denies execve.
-pub const DAEMON_SIDE_TOOLS: &[&str] = &["web_fetch", "cargo_run", "git_commit"];
+/// - `memory_store`, `memory_query`, `memory_delete`: require HTTP access
+///   to the embedding endpoint (Ollama / OpenAI-compatible), which the
+///   worker sandbox cannot provide.
+pub const DAEMON_SIDE_TOOLS: &[&str] = &[
+    "web_fetch",
+    "cargo_run",
+    "git_commit",
+    "memory_store",
+    "memory_query",
+    "memory_delete",
+];
 
 /// Return the intended execution surface for a tool call given the
 /// active backend kind (as reported by `AgentLaunchHandle::backend_kind`).

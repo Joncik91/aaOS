@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use aaos_tools::registry::ToolRegistry;
 
-/// Explicit whitelist. Memory + skill tools are omitted in v1 because
-/// they require a memory store that is not wired into the worker yet;
-/// those stay daemon-side until a follow-up sub-project adds a
-/// broker-mediated memory backend.
+/// Explicit whitelist. Memory tools are omitted because they require
+/// HTTP access to the embedding endpoint (Ollama / OpenAI-compatible)
+/// which the worker sandbox cannot provide; they route daemon-side via
+/// `aaos_core::tool_surface::DAEMON_SIDE_TOOLS`.
 pub const WORKER_SIDE_TOOLS: &[&str] = &[
     "echo",
     "file_read",
@@ -58,6 +58,18 @@ mod tests {
         assert!(
             reg.get("git_commit").is_err(),
             "git_commit must not be worker-side"
+        );
+        assert!(
+            reg.get("memory_store").is_err(),
+            "memory_store must not be worker-side"
+        );
+        assert!(
+            reg.get("memory_query").is_err(),
+            "memory_query must not be worker-side"
+        );
+        assert!(
+            reg.get("memory_delete").is_err(),
+            "memory_delete must not be worker-side"
         );
     }
 }

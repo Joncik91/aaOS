@@ -12,11 +12,9 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.2 `.deb` preinstalled).
 
-Queued for the next patch release:
+### Fixed
 
-### Fixed (queued)
-
-- **Bug 7** — `memory_store`, `memory_query`, `memory_delete` route worker-side but aren't in `aaos_backend_linux::worker_tools::WORKER_SIDE_TOOLS`. Calling any memory tool under confinement returns `tool error: tool memory_X not available in worker` (the substring also duplicates — stringly-constructed error). Memory tools genuinely need daemon-side execution (they require LLM-embedding HTTP access), so the fix is moving them into `DAEMON_SIDE_TOOLS` in `aaos-core::tool_surface`. Surfaced during the extended v0.0.2 droplet QA. Agents with memory-using manifests under confinement get a clean failure today rather than silent success — acceptable degraded behavior, but worth fixing.
+- **Bug 7** — `memory_store`, `memory_query`, `memory_delete` now correctly route daemon-side under confinement. Previously these tools were absent from both `WORKER_SIDE_TOOLS` and `DAEMON_SIDE_TOOLS`, causing a `tool error: tool memory_X not available in worker` failure under namespaced backend. Memory tools require HTTP access to the embedding endpoint which the worker sandbox cannot provide, so they join `web_fetch`, `cargo_run`, and `git_commit` in `DAEMON_SIDE_TOOLS` in `aaos-core::tool_surface`.
 
 ---
 
