@@ -302,41 +302,70 @@ impl PlanExecutor {
                 match result {
                     Ok(r) => {
                         // Role-contract guard: any "file_write: {<param>}" grant
-                        // without a trailing `/*` is a declared single-path
-                        // output — the subtask is not complete unless that file
-                        // exists. Catches run-12 shape where a builder agent
-                        // emits "complete" having skipped the report write.
-                        if let Some(reason) =
-                            check_declared_outputs_exist(&self.catalog, subtask, &subs)
-                        {
-                            self.audit_log.record(AuditEvent::new(
-                                r.agent_id,
-                                AuditEventKind::SubtaskCompleted {
-                                    subtask_id: subtask.id.clone(),
-                                    success: false,
-                                },
-                            ));
-                            if first_failure.is_none() {
-                                first_failure = Some(format!(
-                                    "subtask '{}' (role '{}') did not produce its declared output: {}",
-                                    subtask.id, subtask.role, reason
+                        // without a trailing `/*` is a declared single-path output.
+                        // Severity depends on role.require_declared_output:
+                        //   - MissingFatal  → audit failure + replan (fetcher, etc.)
+                        //   - MissingAdvisory → SubtaskOutputMissing audit event +
+                        //     subtask still succeeds (writer/analyzer/generalist)
+                        //   - Present → no-op
+                        match check_declared_outputs_exist(&self.catalog, subtask, &subs) {
+                            crate::plan::SubtaskOutputStatus::MissingFatal(reason) => {
+                                self.audit_log.record(AuditEvent::new(
+                                    r.agent_id,
+                                    AuditEventKind::SubtaskCompleted {
+                                        subtask_id: subtask.id.clone(),
+                                        success: false,
+                                    },
                                 ));
+                                if first_failure.is_none() {
+                                    first_failure = Some(format!(
+                                        "subtask '{}' (role '{}') did not produce its declared output: {}",
+                                        subtask.id, subtask.role, reason
+                                    ));
+                                }
+                                failed_ids_with_agents.push((
+                                    subtask.id.clone(),
+                                    r.agent_id,
+                                    subtask.role.clone(),
+                                ));
+                                continue;
                             }
-                            failed_ids_with_agents.push((
-                                subtask.id.clone(),
-                                r.agent_id,
-                                subtask.role.clone(),
-                            ));
-                            continue;
+                            crate::plan::SubtaskOutputStatus::MissingAdvisory(reason) => {
+                                // Emit advisory warning; subtask still considered successful.
+                                tracing::warn!(
+                                    subtask_id = %subtask.id,
+                                    role = %subtask.role,
+                                    reason = %reason,
+                                    "subtask did not produce declared output (advisory — role does not require it)"
+                                );
+                                self.audit_log.record(AuditEvent::new(
+                                    r.agent_id,
+                                    AuditEventKind::SubtaskOutputMissing {
+                                        subtask_id: subtask.id.clone(),
+                                        declared_path: reason.clone(),
+                                    },
+                                ));
+                                // Fall through to success handling below.
+                                self.audit_log.record(AuditEvent::new(
+                                    r.agent_id,
+                                    AuditEventKind::SubtaskCompleted {
+                                        subtask_id: subtask.id.clone(),
+                                        success: true,
+                                    },
+                                ));
+                                results.insert(subtask.id.clone(), r);
+                            }
+                            crate::plan::SubtaskOutputStatus::Present => {
+                                self.audit_log.record(AuditEvent::new(
+                                    r.agent_id,
+                                    AuditEventKind::SubtaskCompleted {
+                                        subtask_id: subtask.id.clone(),
+                                        success: true,
+                                    },
+                                ));
+                                results.insert(subtask.id.clone(), r);
+                            }
                         }
-                        self.audit_log.record(AuditEvent::new(
-                            r.agent_id,
-                            AuditEventKind::SubtaskCompleted {
-                                subtask_id: subtask.id.clone(),
-                                success: true,
-                            },
-                        ));
-                        results.insert(subtask.id.clone(), r);
                     }
                     Err(e) => {
                         self.audit_log.record(AuditEvent::new(
@@ -504,13 +533,15 @@ impl PlanExecutor {
         let manifest_yaml = role.render_manifest_with_model(model_for_this_tier, &resolved_params);
         let message = role.render_message(&resolved_params);
 
-        // max_iterations = retry.max_attempts + 10, floor 10. The +10 is
-        // headroom for the setup + verification turns that surround the
-        // retry-eligible tool calls (plan-read, cargo_run check/test,
-        // report write). See RoleRetry doc in plan/role.rs.
+        // max_iterations comes from role.orchestration.max_iterations (default
+        // 50). This replaces the old max_attempts + 10 formula, giving each
+        // subtask a proper multi-turn budget so it can explore + synthesise
+        // without hitting an artificially low cap. The role YAML opts into a
+        // smaller value (e.g. fetcher uses 10 — it's a scaffold so the LLM
+        // loop doesn't even run, but the value is carried for parity).
         let overrides = SubtaskExecutorOverrides {
             max_output_tokens: role.budget.max_output_tokens as u32,
-            max_iterations: (role.retry.max_attempts + 10).max(10),
+            max_iterations: role.orchestration.max_iterations,
         };
 
         let subtask_id_owned = subtask.id.clone();
@@ -598,26 +629,35 @@ impl From<PlannerError> for ExecutorError {
     }
 }
 
-/// Falls back to a single-subtask plan using the `generalist` role when the
-/// planner fails to produce any valid plan on the initial call.
+/// Check whether a subtask produced all of its declared `file_write` outputs.
 ///
-/// Returns the human-readable "<path> missing" reason if any of the role's
-/// `file_write: {param}` grants (without a trailing `/*`) resolves to a path
-/// that doesn't exist after the subtask ran. Returns None when everything
-/// the role declared as output is on disk.
+/// Returns:
+///   * `SubtaskOutputStatus::Present` — all declared outputs exist on disk
+///     (or the role declares none).
+///   * `SubtaskOutputStatus::MissingFatal(reason)` — a declared output is
+///     absent and `role.require_declared_output` is `true`. Caller raises
+///     `Correctable` + triggers a replan.
+///   * `SubtaskOutputStatus::MissingAdvisory(reason)` — a declared output is
+///     absent but `role.require_declared_output` is `false`. Caller emits a
+///     `SubtaskOutputMissing` audit event and lets the subtask succeed.
 ///
 /// Rationale: a role that declares a single-path write grant is implicitly
 /// contracted to produce that file. Prompts have been an insufficient lever
 /// (see run 12 reflection — the "plan-complete checklist" did not fire).
-/// This is an executor-enforced version of the same contract.
+/// This is an executor-enforced version of the same contract; the severity is
+/// now per-role rather than always-fatal.
 fn check_declared_outputs_exist(
     catalog: &RoleCatalog,
     subtask: &Subtask,
     subs: &Substitutions,
-) -> Option<String> {
+) -> crate::plan::SubtaskOutputStatus {
+    use crate::plan::SubtaskOutputStatus;
     use std::path::Path;
 
-    let role = catalog.get(&subtask.role)?;
+    let Some(role) = catalog.get(&subtask.role) else {
+        // Role not found — nothing to check; validation already caught this.
+        return SubtaskOutputStatus::Present;
+    };
     let resolved_params = subs.apply(&subtask.params);
 
     for grant in &role.capabilities {
@@ -639,12 +679,15 @@ fn check_declared_outputs_exist(
             None => continue,
         };
         if !Path::new(path_str).exists() {
-            return Some(format!(
-                "'{path_str}' (from {{{param_name}}}) was not written"
-            ));
+            let reason = format!("'{path_str}' (from {{{param_name}}}) was not written");
+            return if role.require_declared_output {
+                SubtaskOutputStatus::MissingFatal(reason)
+            } else {
+                SubtaskOutputStatus::MissingAdvisory(reason)
+            };
         }
     }
-    None
+    SubtaskOutputStatus::Present
 }
 
 /// The generalist role is the broad-capability escape hatch for novel goals
@@ -1037,7 +1080,9 @@ mod tests {
             escalate_on: default_escalation_signals(),
             scaffold: None,
             orchestration: crate::plan::role::RoleOrchestration::default(),
-            require_declared_output: false,
+            // reporter opts into hard enforcement so the declared_output_missing_fails_subtask
+            // test exercises the MissingFatal path (the behaviour the old test was built for).
+            require_declared_output: true,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("reporter".into(), r);
@@ -1100,6 +1145,144 @@ mod tests {
         };
         let result = exec.execute_plan(&plan, tmp.path()).await;
         assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    }
+
+    /// A role with require_declared_output:false and a missing output should
+    /// still succeed — emitting a SubtaskOutputMissing advisory event only.
+    #[tokio::test]
+    async fn declared_output_missing_advisory_succeeds_with_audit_event() {
+        // Build a catalog with require_declared_output:false (the default).
+        let advisory_role = crate::plan::Role {
+            name: "writer-test".into(),
+            model: "deepseek-chat".into(),
+            parameters: StdHashMap::from([(
+                "report".into(),
+                ParameterSchema {
+                    param_type: ParameterType::Path,
+                    required: true,
+                    description: "".into(),
+                },
+            )]),
+            capabilities: vec!["file_write: {report}".into()],
+            system_prompt: "x".into(),
+            message_template: "write {report}".into(),
+            budget: RoleBudget {
+                max_input_tokens: 1000,
+                max_output_tokens: 500,
+            },
+            retry: RoleRetry {
+                max_attempts: 1,
+                on: vec![],
+            },
+            priority: 128,
+            model_ladder: vec![],
+            escalate_on: default_escalation_signals(),
+            scaffold: None,
+            orchestration: crate::plan::role::RoleOrchestration::default(),
+            require_declared_output: false, // advisory — not fatal
+        };
+        let mut cat = RoleCatalog::default();
+        cat.roles_mut().insert("writer-test".into(), advisory_role);
+        let cat = Arc::new(cat);
+
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let audit_concrete = Arc::new(InMemoryAuditLog::new());
+        let audit: Arc<dyn AuditLog> = audit_concrete.clone();
+        let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
+
+        let tmp = tempfile::tempdir().unwrap();
+        // report_path does NOT exist — simulates a subtask that didn't write its output.
+        let report_path = tmp.path().join("report.md");
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "w".into(),
+                role: "writer-test".into(),
+                params: serde_json::json!({ "report": report_path.to_str().unwrap() }),
+                depends_on: vec![],
+                ttl: None,
+                current_model_tier: 0,
+            }],
+            final_output: "/out".into(),
+        };
+        // Should succeed (advisory, not fatal).
+        let result = exec.execute_plan(&plan, tmp.path()).await;
+        assert!(
+            result.is_ok(),
+            "advisory missing output must succeed; got {:?}",
+            result
+        );
+
+        // The SubtaskOutputMissing advisory event must be in the audit log.
+        let events = audit_concrete.events();
+        let advisory = events.iter().find(|e| {
+            matches!(&e.event, AuditEventKind::SubtaskOutputMissing { subtask_id, .. } if subtask_id == "w")
+        });
+        assert!(
+            advisory.is_some(),
+            "expected SubtaskOutputMissing advisory event — events: {:?}",
+            events.iter().map(|e| &e.event).collect::<Vec<_>>()
+        );
+
+        // SubtaskCompleted must show success:true despite the missing file.
+        let completed = events.iter().find(|e| {
+            matches!(&e.event, AuditEventKind::SubtaskCompleted { subtask_id, success: true } if subtask_id == "w")
+        });
+        assert!(
+            completed.is_some(),
+            "expected SubtaskCompleted{{success:true}} for 'w'"
+        );
+    }
+
+    /// The runner receives SubtaskExecutorOverrides with max_iterations from
+    /// role.orchestration.max_iterations (not the old max_attempts + 10 formula).
+    #[tokio::test]
+    async fn spawn_subtask_honors_role_orchestration_max_iterations() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        // Build a catalog with a role that has max_iterations: 17 explicitly.
+        let mut role = make_role_for_tests("custom-iter");
+        role.orchestration.max_iterations = 17;
+        let mut cat = RoleCatalog::default();
+        cat.roles_mut().insert("custom-iter".into(), role);
+        let cat = Arc::new(cat);
+
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let captured = Arc::new(AtomicU32::new(0));
+        let captured_clone = captured.clone();
+        let runner: SubtaskRunner =
+            Arc::new(move |id, _m, _msg, overrides, _deadline, _run_root| {
+                captured_clone.store(overrides.max_iterations, Ordering::SeqCst);
+                Box::pin(async move {
+                    Ok(SubtaskResult {
+                        subtask_id: id,
+                        agent_id: AgentId::new(),
+                        response: "ok".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    })
+                })
+            });
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "s".into(),
+                role: "custom-iter".into(),
+                params: serde_json::json!({}),
+                depends_on: vec![],
+                ttl: None,
+                current_model_tier: 0,
+            }],
+            final_output: "/out".into(),
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        exec.execute_plan(&plan, tmp.path()).await.unwrap();
+        assert_eq!(
+            captured.load(Ordering::SeqCst),
+            17,
+            "runner must receive max_iterations from role.orchestration.max_iterations"
+        );
     }
 
     #[tokio::test]
