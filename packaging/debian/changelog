@@ -1,3 +1,14 @@
+aaos (0.0.4-1) trixie; urgency=medium
+
+  * Fix: grep tool now routes daemon-side under the namespaced
+    backend.  grep shells out to `rg` (ripgrep); the worker's
+    seccomp kill-filter denies execve, so every grep call under
+    confinement failed with "failed to spawn rg: Operation not
+    permitted".  Surfaced by the v0.0.3 self-reflection droplet
+    run (Bug 8).
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 24 Apr 2026 17:00:00 +0000
+
 aaos (0.0.3-1) trixie; urgency=medium
 
   * Fix: memory_store / memory_query / memory_delete now route

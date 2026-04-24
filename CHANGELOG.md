@@ -10,7 +10,23 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.3 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.4 `.deb` preinstalled).
+
+### Known — not yet fixed
+
+- **Bug 9 (medium)** — when a subtask's tools fail (e.g. every `grep` call returning an IPC error), the Planner's replan-on-empty-output path spawns a generalist that writes a "Fallback Report: NOT COMPLETED" marker to the output file and marks the run `complete`.  Operators see a green-looking goal with a degraded report and no indication that a tool actually failed.  Surfaced by the v0.0.3 self-reflection run; fix needs a design decision on how to surface partial-success (propagate tool-failures up, fail the whole plan, or write a partial report with inline errors).  Tracked in `docs/reflection/2026-04-24-v0.0.3-self-reflection.md`.
+
+---
+
+## [0.0.4] — 2026-04-24
+
+Second release from the same day as v0.0.3.  The v0.0.3 self-reflection droplet run (aaOS reading its own source tree under confinement) surfaced Bug 8 within 45 seconds of investigation.  No new features; patch-level release.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.0.4> — `aaos_0.0.4-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 8** — `grep` tool now routes daemon-side under confinement.  `grep` shells out to `rg` (ripgrep) as a subprocess; the worker's seccomp kill-filter denies `execve`, so every grep call under the namespaced backend failed with `ipc error: failed to spawn rg: Operation not permitted (os error 1)`.  Same class as Bug 7 (routing-list drift between `WORKER_SIDE_TOOLS` and `DAEMON_SIDE_TOOLS`).  Moved `"grep"` from `aaos_backend_linux::worker_tools::WORKER_SIDE_TOOLS` to `aaos_core::tool_surface::DAEMON_SIDE_TOOLS`; dropped the `GrepTool` registration from `build_worker_registry`; flipped the routing tests.  Commit `aaf82a3`.
 
 ---
 
@@ -19,6 +35,8 @@ Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline 
 Ships the Bug 7 fix queued from the v0.0.2 extended QA pass.  No new features; patch-level release to unblock confined agents that call memory tools.
 
 Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.0.3> — `aaos_0.0.3-1_amd64.deb`.
+
+**Known issues (fixed in 0.0.4):** Bug 8 — `grep` tool fails with `Operation not permitted` under the namespaced backend because ripgrep subprocess spawn is blocked by seccomp.  Affects any role that uses grep while confined (including the `reflector` role for self-reflection runs).  Upgrade to v0.0.4.
 
 ### Fixed
 
@@ -132,7 +150,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.4
 [0.0.3]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.3
 [0.0.2]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.2
 [0.0.1]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.1
