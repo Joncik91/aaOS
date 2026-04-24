@@ -24,7 +24,10 @@ impl ToolExecutionSurface {
 /// Tools that must always execute daemon-side, regardless of backend.
 ///
 /// - `web_fetch`: seccomp allowlist has no socket/connect syscalls.
-/// - `cargo_run`, `git_commit`: seccomp kill-filter denies execve.
+/// - `cargo_run`, `git_commit`, `grep`: seccomp kill-filter denies
+///   execve — these tools shell out to external binaries (cargo, git,
+///   rg) and would fail with "Operation not permitted" under the
+///   worker sandbox.
 /// - `memory_store`, `memory_query`, `memory_delete`: require HTTP access
 ///   to the embedding endpoint (Ollama / OpenAI-compatible), which the
 ///   worker sandbox cannot provide.
@@ -32,6 +35,7 @@ pub const DAEMON_SIDE_TOOLS: &[&str] = &[
     "web_fetch",
     "cargo_run",
     "git_commit",
+    "grep",
     "memory_store",
     "memory_query",
     "memory_delete",
@@ -70,7 +74,7 @@ mod tests {
             ToolExecutionSurface::Worker
         );
         assert_eq!(
-            route_for("grep", "namespaced"),
+            route_for("file_read", "namespaced"),
             ToolExecutionSurface::Worker
         );
     }

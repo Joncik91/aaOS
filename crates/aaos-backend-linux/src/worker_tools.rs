@@ -10,10 +10,17 @@ use std::sync::Arc;
 
 use aaos_tools::registry::ToolRegistry;
 
-/// Explicit whitelist. Memory tools are omitted because they require
-/// HTTP access to the embedding endpoint (Ollama / OpenAI-compatible)
-/// which the worker sandbox cannot provide; they route daemon-side via
-/// `aaos_core::tool_surface::DAEMON_SIDE_TOOLS`.
+/// Explicit whitelist. Tools omitted here run daemon-side via
+/// `aaos_core::tool_surface::DAEMON_SIDE_TOOLS`:
+/// - Memory tools (`memory_store`/`memory_query`/`memory_delete`): need
+///   HTTP access to the embedding endpoint, which the worker sandbox
+///   cannot provide.
+/// - Subprocess-spawning tools (`cargo_run`, `git_commit`, `grep`): the
+///   worker's seccomp kill-filter denies execve, so shelling out to
+///   cargo / git / rg inside the worker fails with "Operation not
+///   permitted".
+/// - Network tools (`web_fetch`): seccomp allowlist has no socket/
+///   connect syscalls.
 pub const WORKER_SIDE_TOOLS: &[&str] = &[
     "echo",
     "file_read",
@@ -21,7 +28,6 @@ pub const WORKER_SIDE_TOOLS: &[&str] = &[
     "file_edit",
     "file_list",
     "file_read_many",
-    "grep",
 ];
 
 /// Build a registry containing only the worker-safe tools.
@@ -33,7 +39,6 @@ pub fn build_worker_registry() -> Arc<ToolRegistry> {
     reg.register(Arc::new(aaos_tools::FileEditTool));
     reg.register(Arc::new(aaos_tools::FileListTool));
     reg.register(Arc::new(aaos_tools::FileReadManyTool));
-    reg.register(Arc::new(aaos_tools::GrepTool));
     Arc::new(reg)
 }
 
@@ -58,6 +63,10 @@ mod tests {
         assert!(
             reg.get("git_commit").is_err(),
             "git_commit must not be worker-side"
+        );
+        assert!(
+            reg.get("grep").is_err(),
+            "grep must not be worker-side (ripgrep subprocess blocked by seccomp)"
         );
         assert!(
             reg.get("memory_store").is_err(),
