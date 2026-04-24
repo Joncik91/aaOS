@@ -4,7 +4,7 @@
 
 **An agent-first runtime where AI agents are native processes, capabilities replace permissions, and the system is designed for autonomy — not human interaction.**
 
-A working agent runtime on Linux that can read and modify source code — including its own. 9 Rust crates, ~37,600 lines, 624 tests (605 + 19 `#[ignore]`-gated on host prereqs such as ripgrep, git, Linux kernel primitives, or a child toolchain — exercised on CI, optional locally). Ships as a Debian `.deb` with an operator CLI; current release `v0.0.2` is built inside a `debian:13` container with `mcp,namespaced-agents` features baked in and attached at [Releases](https://github.com/Joncik91/aaOS/releases). Orchestration is two-phase: a cheap-LLM **Planner** emits a structured Plan; a deterministic Rust **PlanExecutor** walks the DAG, running independent subtasks in parallel. The capability model, audit trail, and substrate-agnostic ABI have survived 42 self-reflection runs plus two full fresh-droplet QA passes — initial v0.0.1 pass finding six bugs, verification v0.0.2 pass confirming they're all closed and surfacing one more (see [`docs/reflection/`](docs/reflection/README.md)).
+A working agent runtime on Linux that can read and modify source code — including its own. 9 Rust crates, ~37,600 lines, 624 tests (605 + 19 `#[ignore]`-gated on host prereqs such as ripgrep, git, Linux kernel primitives, or a child toolchain — exercised on CI, optional locally). Ships as a Debian `.deb` with an operator CLI; current release `v0.0.3` is built inside a `debian:13` container with `mcp,namespaced-agents` features baked in and attached at [Releases](https://github.com/Joncik91/aaOS/releases). Orchestration is two-phase: a cheap-LLM **Planner** emits a structured Plan; a deterministic Rust **PlanExecutor** walks the DAG, running independent subtasks in parallel. The capability model, audit trail, and substrate-agnostic ABI have survived 42 self-reflection runs plus two full fresh-droplet QA passes — initial v0.0.1 pass finding six bugs, verification v0.0.2 pass confirming they're all closed and surfacing one more (Bug 7, fixed in v0.0.3); see [`docs/reflection/`](docs/reflection/README.md).
 
 The long-term target is a **Debian derivative** where aaOS runs as the system orchestrator (Home Assistant OS for agents), with Landlock + seccomp enforcing capability tokens at the kernel layer. Runtime-side tool confinement already shipped via a `NamespacedBackend`: agent tool calls execute inside a per-agent Linux user/mount namespace with Landlock + seccomp active and capability tokens forwarded across a broker stream. The `AgentServices` trait remains a substrate-agnostic ABI — process-backed today, MicroVM-per-agent later, microkernel only if a customer demands formally-verified boundaries. The programming model is the product; the substrate is replaceable.
 
@@ -16,7 +16,7 @@ See [Architecture](docs/architecture.md) for the full stack, [Roadmap](docs/road
 
 ```bash
 # 1. Install the .deb (download from Releases, or build from source — see below).
-sudo apt install ./aaos_0.0.2-1_amd64.deb
+sudo apt install ./aaos_0.0.3-1_amd64.deb
 
 # 2. Join the aaos group so your shell can talk to the daemon socket.
 #    Log out and back in for group membership to take effect.

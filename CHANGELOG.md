@@ -10,17 +10,27 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.2 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.3 `.deb` preinstalled).
+
+---
+
+## [0.0.3] — 2026-04-24
+
+Ships the Bug 7 fix queued from the v0.0.2 extended QA pass.  No new features; patch-level release to unblock confined agents that call memory tools.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.0.3> — `aaos_0.0.3-1_amd64.deb`.
 
 ### Fixed
 
-- **Bug 7** — `memory_store`, `memory_query`, `memory_delete` now correctly route daemon-side under confinement. Previously these tools were absent from both `WORKER_SIDE_TOOLS` and `DAEMON_SIDE_TOOLS`, causing a `tool error: tool memory_X not available in worker` failure under namespaced backend. Memory tools require HTTP access to the embedding endpoint which the worker sandbox cannot provide, so they join `web_fetch`, `cargo_run`, and `git_commit` in `DAEMON_SIDE_TOOLS` in `aaos-core::tool_surface`.
+- **Bug 7** — `memory_store`, `memory_query`, `memory_delete` now correctly route daemon-side under confinement.  Previously these tools were absent from both `WORKER_SIDE_TOOLS` and `DAEMON_SIDE_TOOLS`, causing a `tool error: tool memory_X not available in worker` failure under the namespaced backend.  Memory tools need HTTP access to the embedding endpoint that the worker sandbox can't provide, so they join `web_fetch`, `cargo_run`, and `git_commit` in `DAEMON_SIDE_TOOLS` in `aaos-core::tool_surface`.  Surfaced by the v0.0.2 extended-QA pass in [`docs/reflection/2026-04-19-v0.0.2-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.2-droplet-qa.md).  Commit `03d384f`.
 
 ---
 
 ## [0.0.2] — 2026-04-19
 
-First QA-driven patch.  Fresh-droplet soak test of the v0.0.1 `.deb` surfaced six bugs; this release fixes all of them.  See [`docs/reflection/2026-04-19-v0.0.1-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.1-droplet-qa.md) for the original QA record and [`docs/reflection/2026-04-19-v0.0.2-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.2-droplet-qa.md) for the v0.0.2 verification pass (all six bugs confirmed closed end-to-end; one new Bug 7 surfaced — see `[Unreleased]` above).
+First QA-driven patch.  Fresh-droplet soak test of the v0.0.1 `.deb` surfaced six bugs; this release fixes all of them.  See [`docs/reflection/2026-04-19-v0.0.1-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.1-droplet-qa.md) for the original QA record and [`docs/reflection/2026-04-19-v0.0.2-droplet-qa.md`](docs/reflection/2026-04-19-v0.0.2-droplet-qa.md) for the v0.0.2 verification pass (all six bugs confirmed closed end-to-end; one new Bug 7 surfaced — fixed in `[0.0.3]` above).
+
+**Known issues (fixed in 0.0.3):** Bug 7 — memory tools (`memory_store` / `memory_query` / `memory_delete`) fail under the namespaced backend with `tool error: tool memory_X not available in worker`.  Affects agents that declare memory capabilities while running confined.  No workaround in v0.0.2; upgrade to v0.0.3.
 
 Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.0.2> — `aaos_0.0.2-1_amd64.deb`, 4.29 MB.
 
@@ -122,7 +132,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.3
 [0.0.2]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.2
 [0.0.1]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.1
 [0.0.0]: https://github.com/Joncik91/aaOS/commits/779dd62

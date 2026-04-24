@@ -12,7 +12,7 @@ Plus two ongoing strands — **AgentSkills** and **Self-reflection runs** — th
 
 Where an old label (e.g. "Phase F-b/3" or "C2") appears in reflection logs, commit messages, or external notes, the `ex-<old label>` line under each heading below preserves the mapping.
 
-For a release-by-release summary (what landed in `v0.0.1` vs `v0.0.2` and the pre-tagged `0.0.0` body of work), see [`CHANGELOG.md`](../CHANGELOG.md).
+For a release-by-release summary (what landed in `v0.0.1`, `v0.0.2`, `v0.0.3` and the pre-tagged `0.0.0` body of work), see [`CHANGELOG.md`](../CHANGELOG.md).
 
 ---
 
@@ -172,7 +172,7 @@ The 2026-04-19 `.deb` audit found that the package installed green but a fresh o
 - **Kernel-probe-driven backend default** (`9f18848`). `packaging/debian/postinst` now probes `/sys/kernel/security/lsm` for `landlock` + `/proc/sys/kernel/unprivileged_userns_clone` and generates `/etc/default/aaos.example` with `AAOS_DEFAULT_BACKEND=namespaced` + `AAOS_CONFINE_SUBTASKS=1` uncommented when both pass. Falls back to commented-out defaults with inline reason on older kernels.
 - **`agentd configure` subcommand** (`4bb5e38`). Interactive first-boot setup: prompts for a DeepSeek or Anthropic API key, atomically writes `/etc/default/aaos` mode 0600 root:root (tempfile + fsync + rename — no window at looser mode), runs `systemctl daemon-reload && restart agentd`. Non-interactive mode via `--key-from-env VAR`. Daemon's missing-key startup log now points at the command instead of a dead-end "unavailable" message. 5 new tests (107 agentd-lib tests total).
 
-**Deliverable met.** `apt install ./aaos_0.0.2-1_amd64.deb` followed by one `sudo agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from the installed template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
+**Deliverable met.** `apt install ./aaos_0.0.3-1_amd64.deb` followed by one `sudo agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from the installed template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
 
 ### 16. v0.0.2 release — droplet QA + six bug fixes
 *complete 2026-04-19*
@@ -188,7 +188,14 @@ Fresh-droplet QA of the v0.0.1 `.deb` (see [`reflection/2026-04-19-v0.0.1-drople
 
 All six fixes verified on the same droplet after rebuild + reinstall. Tagged as `v0.0.2` (`d1cbe8c` + release workflow run 24638517499). Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0.2 — `aaos_0.0.2-1_amd64.deb`, 4.29 MB.
 
-**Extended verification pass (see [`reflection/2026-04-19-v0.0.2-droplet-qa.md`](reflection/2026-04-19-v0.0.2-droplet-qa.md))** — full-suite re-run with the tests the first sweep skipped: purge/install idempotency, non-root operator-group access, stop/start lifecycle, corrupt env, purge-while-running, `kill -9` mid-run recovery, OOM via cgroup cap, disk-full via tmpfs, skill shadowing, external MCP client registration via mock stdio server. All six original bugs remain closed. One new **Bug 7 (medium)** surfaced: `memory_{store,query,delete}` route `[worker]` but aren't in `WORKER_SIDE_TOOLS`, so they fail with `tool error: tool memory_X not available in worker` under confinement. Queued for v0.0.3 via `CHANGELOG.md` `[Unreleased]`.
+**Extended verification pass (see [`reflection/2026-04-19-v0.0.2-droplet-qa.md`](reflection/2026-04-19-v0.0.2-droplet-qa.md))** — full-suite re-run with the tests the first sweep skipped: purge/install idempotency, non-root operator-group access, stop/start lifecycle, corrupt env, purge-while-running, `kill -9` mid-run recovery, OOM via cgroup cap, disk-full via tmpfs, skill shadowing, external MCP client registration via mock stdio server. All six original bugs remain closed. One new **Bug 7 (medium)** surfaced: `memory_{store,query,delete}` route `[worker]` but aren't in `WORKER_SIDE_TOOLS`, so they fail with `tool error: tool memory_X not available in worker` under confinement. Fixed in #17 below.
+
+### 17. v0.0.3 release — Bug 7 patch
+*complete 2026-04-24*
+
+Patch-level release shipping the Bug 7 fix queued from the v0.0.2 extended QA pass.  No new features.  `memory_store`, `memory_query`, and `memory_delete` now live in `DAEMON_SIDE_TOOLS` in `aaos-core::tool_surface`, which is the right home for them: the memory store needs HTTP access to the embedding endpoint, and the worker sandbox can't provide it.  They join `web_fetch`, `cargo_run`, and `git_commit` as daemon-side tools — agents running confined still get the full memory surface, it just resolves across the broker stream instead of inside the worker process.  Commit `03d384f`.
+
+Tagged as `v0.0.3`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0.3 — `aaos_0.0.3-1_amd64.deb`.
 
 ---
 
@@ -266,7 +273,7 @@ The runtime reads its own code, finds bugs, proposes features, and produces test
 - **Tool-gap iteration (2026-04-17)** — runs 5–6 of the second self-build attempt failed to produce a diff — not from the model but because `file_read` returned whole files and there was no `file_edit` primitive. Diagnosis: self-build is tool-bound, not model-bound. Shipped `file_edit` + `file_read(offset, limit)` in commit `2819921`.
 - **aaOS edits aaOS (2026-04-17)** — first end-to-end self-build success. 471 s wall clock. Nine `file_read(offset, limit)` calls paged through the 2700-line file; five `file_edit` calls applied all anchors on first try; `cargo check` + `cargo test` both passed. The agent's diff was byte-identical to the maintainer's manual fix.
 - **Junior-senior workflow (runs 8–12)** — aaOS itself is now the author of new code. Senior (human) writes plans + reviews; junior (agent on an ephemeral droplet) applies the edits. Runs 8–10 shipped the `grep` navigation primitive. Run 11 added the tool-repeat guard (hint injection at attempt ≥ 3 on same `(agent, tool, input_hash)`), plus a budget bump and a plan-complete checklist. Run 12 shipped the `git_commit` tool, completing the five-tool coding surface (`file_read(offset, limit)`, `file_edit`, `file_list`, `grep`, `git_commit` — with `cargo_run` for build/test).
-- **Release-gated droplet QA (2026-04-19)** — first tagged release (`v0.0.1`) immediately soak-tested on a fresh Debian 13 droplet via a five-pass QA suite (package hygiene, daemon lifecycle, canonical goal, fault injection, MCP + skills). Six bugs surfaced — Bug 1 critical (`.deb` missing `--features namespaced-agents` → confinement silently disabled). All closed in `v0.0.2` (`160861f` + `d1cbe8c`), verified via a repeat QA pass. Extended full-suite re-run (purge idempotency, non-root operator access, `kill -9` recovery, OOM, disk-full, skill shadowing, external MCP stdio client) surfaced Bug 7 (memory tools not in `WORKER_SIDE_TOOLS` whitelist) — queued for `v0.0.3` via `CHANGELOG.md`.
+- **Release-gated droplet QA (2026-04-19)** — first tagged release (`v0.0.1`) immediately soak-tested on a fresh Debian 13 droplet via a five-pass QA suite (package hygiene, daemon lifecycle, canonical goal, fault injection, MCP + skills). Six bugs surfaced — Bug 1 critical (`.deb` missing `--features namespaced-agents` → confinement silently disabled). All closed in `v0.0.2` (`160861f` + `d1cbe8c`), verified via a repeat QA pass. Extended full-suite re-run (purge idempotency, non-root operator access, `kill -9` recovery, OOM, disk-full, skill shadowing, external MCP stdio client) surfaced Bug 7 (memory tools not in `WORKER_SIDE_TOOLS` whitelist) — closed in `v0.0.3` (`03d384f`).
 
 Cross-cutting lessons distilled from the runs (LLM calendar estimates aren't real, cost from token-math ≠ dashboard, skill adherence evolves, prompts persuade but only the kernel enforces, structured handoff beats opaque prompts, coding agents are tool-bound not model-bound) live in [`patterns.md`](patterns.md).
 
