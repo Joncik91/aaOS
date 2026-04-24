@@ -10,11 +10,42 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.5 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.0 `.deb` preinstalled).
 
-### Known — not yet fixed
+---
 
-- **Bug 9 (high)** — when a subtask fails to produce its declared output (tools succeeded but LLM never wrote, or tools failed silently), the Planner's replan path spawns a fallback generalist that writes a plausible-looking but **hallucinated** failure report to the output file and marks the run `complete`.  Observed twice on the v0.0.4 verification run: a generalist wrote "target directory `/src/aaOS` was not found or could not be read" to `/data/report.md` moments after three other agents had successfully read 40+ files from that path.  Whether the operator sees the real error depends on retry-count arithmetic: `max_replans` exhausted → correct `bootstrap failed`; `max_replans` remaining → silent hallucinated success.  The new `persistent` orchestration mode avoids this path entirely (Bootstrap has no output contract to miss); the bug remains for plan-mode failures.  Fix direction: the fallback agent must inherit the failed subtask's audit trail, or be replaced by a deterministic scaffold that writes an accurate failure summary without invoking an LLM.  Tracked in `docs/reflection/2026-04-24-v0.0.3-self-reflection.md`.
+## [0.1.0] — 2026-04-24
+
+Architectural release.  Unifies both orchestration paths (plan/decompose and persistent/direct) through the PlanExecutor.  Each subtask now runs as a full multi-turn agent with a role-configurable iteration budget.  Bug 9 (hallucinated fallback reports) is closed by deleting the fallback path.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.0> — `aaos_0.1.0-1_amd64.deb`.
+
+### Added
+
+- **`role.orchestration.max_iterations`** — optional `orchestration:` block in role YAML sets the per-subtask multi-turn iteration budget.  Default 50 if absent.  Replaces the old `retry.max_attempts + 10` formula (floor 10).  Bundled role values: `fetcher` 10, `writer` 30, `analyzer` 30, `generalist` 50, `builder` 50.
+- **`role.require_declared_output`** — optional boolean (default `false`).  When `true`, a subtask that finishes without writing its declared `file_write` output is a hard failure, not an advisory.  `fetcher` sets this to `true`.
+- **`SubtaskOutputStatus` enum** — `check_declared_outputs_exist` now returns `Present`, `MissingAdvisory(String)`, or `MissingFatal(String)`.  Advisory path emits `AuditEventKind::SubtaskOutputMissing` and continues as success; fatal propagates as a subtask failure.
+- **`AuditEventKind::SubtaskOutputMissing { subtask_id, declared_path }`** — advisory audit event emitted when a subtask's declared output file is absent and `require_declared_output: false`.
+- **`PlanExecutor::run_with_plan(initial_plan, goal, run_id)`** — new method that starts from a pre-built `Plan` and skips the Planner call entirely.  Used by the Direct path.
+- **`inline_direct_plan(goal, run_id)`** — server-side function that builds a 1-node generalist `Plan` for the Direct orchestration path.
+
+### Changed
+
+- **Both orchestration modes now route through PlanExecutor.**  `plan` (now `decompose`) calls `PlanExecutor::run()` as before.  `persistent` (now `direct`) calls `PlanExecutor::run_with_plan()` with a 1-node inline plan — the Bootstrap persistent agent is no longer used for per-submit work.
+- **Classifier output changed from `plan`/`persistent` to `decompose`/`direct`.**  New `DecompositionMode` enum in `orchestration_classifier.rs`.  Classifier prompt updated: asks whether the goal has independent parallelisable subtasks.  Fallback on LLM error changed from `direct` (was `plan`).  Wire API (`--orchestration plan|persistent`) preserved; `plan → Decompose`, `persistent → Direct`.
+- **Subtask iteration budget now reads from `role.orchestration.max_iterations`** instead of `retry.max_attempts + 10`.  Old default was ~12; new default is 50.  Open-ended goals benefit most: a single-subtask direct run now has 50 turns instead of 12.
+- **`NoopOrchestrationClassifier` now returns `Direct`** (was `Plan`).  When no LLM client is configured, the daemon routes all submissions to the generalist single-agent path rather than attempting a Planner call that would immediately fail.
+- **Architecture docs updated** — "Orchestration modes" section rewritten to reflect the unified PlanExecutor path, new role YAML fields, `SubtaskOutputStatus`, and `fallback_generalist_plan` removal.
+
+### Removed
+
+- **`fallback_generalist_plan`** function in `executor.rs` — closes Bug 9.  A malformed Planner response now propagates as `ExecutorError::Correctable`; the replan loop handles retries; after `max_replans` the run fails cleanly with no hallucinated report.  The `PlannerError::Malformed → fallback_generalist_plan` arm in `PlanExecutor::run()` is gone.
+- **Bootstrap streaming path in `server.rs`** — `handle_submit_streaming` no longer has a Bootstrap arm.  `ensure_bootstrap_running`, `route_goal_to`, `event_in_subtree` helper methods deleted.  `submit_streaming_writes_events_then_end_frame` integration test (Bootstrap-specific) deleted; replaced by the routing tests added in v0.0.5.
+- **Bug 9 from the Known issues list** — the fallback-generalist hallucination path is structurally impossible in v0.1.0.  See `docs/reflection/2026-04-24-v0.0.3-self-reflection.md` for the closure write-up.
+
+### Fixed
+
+- Test count: 613 → 625 workspace-wide.  Net gain despite deleting the Bootstrap streaming integration test (`submit_streaming_writes_events_then_end_frame`) — that test was replaced by more precise unit tests for the new routing logic, plus new tests for `SubtaskOutputStatus`, `RoleOrchestration`, `run_with_plan`, and classifier behaviour under `decompose`/`direct` labels.
 
 ---
 
@@ -177,7 +208,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.0.5...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Joncik91/aaOS/releases/tag/v0.1.0
 [0.0.5]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.5
 [0.0.4]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.4
 [0.0.3]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.3

@@ -1,3 +1,27 @@
+aaos (0.1.0-1) trixie; urgency=medium
+
+  * Architecture: both orchestration modes (plan/decompose and
+    persistent/direct) now route through the unified PlanExecutor.
+    The Bootstrap persistent agent is no longer used for per-submit
+    goals.
+  * Each subtask now runs as a full multi-turn agent. Iteration budget
+    is set by role.orchestration.max_iterations (default 50) instead
+    of the old retry.max_attempts+10 formula (default ~12).
+  * Bug 9 closed: fallback_generalist_plan deleted. A malformed Planner
+    response now propagates as a correctable error through the replan
+    loop; after max_replans exhausted the run fails cleanly with no
+    hallucinated report on disk.
+  * New role YAML fields: orchestration.max_iterations (u32, default 50)
+    and require_declared_output (bool, default false). fetcher role sets
+    require_declared_output: true.
+  * New SubtaskOutputMissing advisory audit event when a subtask finishes
+    without writing its declared output and require_declared_output is
+    false.
+  * Classifier output changed from plan/persistent to decompose/direct;
+    fallback on LLM error is now direct (was plan). Wire API preserved.
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 24 Apr 2026 22:00:00 +0000
+
 aaos (0.0.5-1) trixie; urgency=medium
 
   * Feature: agentd submit now auto-classifies the goal and routes

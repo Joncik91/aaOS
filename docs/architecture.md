@@ -138,7 +138,7 @@ New in Phase F. Bidirectional MCP (2024-11 spec) support lives in the `aaos-mcp`
 
 - **MCP client** — For each configured server (transport: `stdio` or `http`), `aaos-mcp::client::McpClient::connect_and_register` opens a session (JSON-RPC `initialize` → `tools/list`), wraps each remote tool in an `McpToolProxy`, and registers it into the runtime's `ToolRegistry` under the name `mcp.<server>.<tool>`. Proxied tools invoke exactly like built-ins: capability-checked at the registry boundary, audited on invoke/result, narrowable via the existing `Capability::ToolInvoke { tool_name }` mechanism. Per-session reconnect loop runs with exponential backoff (1s → 30s cap). A session that goes unhealthy returns `CoreError::ToolUnavailable` on subsequent calls until it recovers.
 - **MCP server** — When `server.enabled: true` in config, an axum HTTP+SSE listener binds `127.0.0.1:3781` (loopback only — no auth; operator's job to expose it over SSH tunnel or Tailscale if remote access is needed). Exposes three tools:
-  - `submit_goal(goal, role?)` — routes the goal to the persistent bootstrap agent via the existing `ensure_bootstrap_running()` / `route_goal_to()` path. Returns the bootstrap's `AgentId` as `run_id`.
+  - `submit_goal(goal, role?)` — routes the goal via the `agent.submit_streaming` path. Returns a `run_id` for status queries. (Prior to v0.1.0 this routed to the Bootstrap persistent agent; the Bootstrap path is no longer used for per-submit work.)
   - `get_agent_status(run_id)` — returns `running`, `completed`, `failed`, or `notfound`.
   - `cancel_agent(run_id)` — delegates to `AgentRegistry::stop_sync`.
 - **Server-Sent Events** — `GET /mcp/events?run_id=<id>` subscribes to the `BroadcastAuditLog` and streams events filtered to the given agent as SSE frames. The stream terminates on client disconnect without affecting the run.
@@ -160,16 +160,32 @@ The system can run autonomously in a Docker container with `agentd` as PID 1. Tw
 - **StdoutAuditLog** — Audit events streamed as JSON-lines to stdout for `docker logs -f` observability.
 - **BroadcastAuditLog** — Fan-out wrapper over an inner `AuditLog`. Every recorded event goes to the inner sink AND to any subscribers (tokio `broadcast::channel`). The daemon's streaming JSON-RPC methods (`agent.submit_streaming`, `agent.logs_streaming`) subscribe and forward filtered events over the client's Unix socket as NDJSON frames.
 
-#### Orchestration modes
+#### Orchestration modes (v0.1.0)
 
-`agentd submit` auto-detects whether to use `plan` or `persistent` mode based on the goal text. A cheap single-shot LLM call (via `LlmOrchestrationClassifier`, ~50 input / 1 output token) inspects the goal and picks the mode before any agent work begins. Pass `--orchestration [plan|persistent]` to override the auto-detected mode; the classifier is bypassed when the flag is present.
+`agentd submit` auto-detects whether to decompose the goal into a parallel DAG or handle it as a single multi-turn agent run. A cheap single-shot LLM call (via `LlmOrchestrationClassifier`, ~50 input / 1 output token) produces exactly one word — `decompose` or `direct` — before any agent work begins. Pass `--orchestration [plan|persistent]` to bypass the classifier.
 
-- **`plan`** — Planner + PlanExecutor DAG. Right for structured goals with declared outputs per subtask (fetch → analyse → write). Requires a loaded role catalog at startup; returns a legible error if the catalog failed to load rather than silently falling back. Each run is stateless: no agent survives beyond the goal.
-- **`persistent`** — Bootstrap persistent agent. Right for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed. Does not require a role catalog.
+- **`plan` / `decompose`** — Planner + PlanExecutor multi-node DAG. Best for structured goals with independent parallelisable subtasks and declared outputs per subtask (fetch → analyse → write). Requires a loaded role catalog; returns a legible error if the catalog failed to load. Each subtask runs as a multi-turn agent with a role-specific iteration budget (`role.orchestration.max_iterations`, default 50). Parallelism is unchanged: `topo_batches` + `join_all` runs independent nodes concurrently.
+- **`persistent` / `direct`** — One multi-turn generalist agent, no Planner call. The server constructs a 1-node plan inline (`inline_direct_plan`) and hands it directly to PlanExecutor via `run_with_plan`. Best for open-ended investigation, code-reading, and exploration goals where a single agent must manage its own context. Requires the same role catalog as `plan` (generalist role must be present). The Bootstrap persistent agent is no longer used for per-submit work.
 
-The routing gate lives in `server.rs:handle_submit_streaming`. After mode resolution, an `AuditEventKind::OrchestrationSelected { mode, source }` event is emitted (`source: "explicit"` or `"auto"`) so operators can always see which path was chosen and why. The classifier falls back to `plan` on any LLM error; when no LLM client is configured, a `NoopOrchestrationClassifier` picks `plan` immediately without a network call.
+Both modes route through the unified PlanExecutor; the distinction is whether the Planner is called to build a multi-node DAG (`decompose`) or a pre-built 1-node plan is used directly (`direct`).
 
-When to pick which: use `plan` for structured data pipelines with known output contracts; use `persistent` for investigation, reflection, or any goal where the agent must adapt its own strategy mid-run. For most goals, leaving the flag absent and trusting the classifier is the right default.
+**Classifier output contract changed in v0.1.0.** Prior to v0.1.0 the classifier returned `plan` or `persistent`. From v0.1.0 it returns `decompose` or `direct` via the `DecompositionMode` enum. The `OrchestrationMode` wire enum (`plan`/`persistent`) maps to `DecompositionMode` at the routing gate and is preserved for backwards compatibility.
+
+**`fallback_generalist_plan` removed (Bug 9 closed).** The silent fallback path that spawned a generalist when the Planner emitted malformed output is deleted. A malformed Planner response now propagates as `ExecutorError::Correctable`, which the replan loop handles. After `max_replans` exhausted the run fails cleanly with no hallucinated report on disk.
+
+The routing gate lives in `server.rs:handle_submit_streaming`. After mode resolution, an `AuditEventKind::OrchestrationSelected { mode, source }` event is emitted (`source: "explicit"` or `"auto"`) so operators can see which path was chosen and why. The classifier falls back to `direct` on any LLM error; when no LLM client is configured, `NoopOrchestrationClassifier` picks `direct` immediately.
+
+**Role YAML additions.** Each role now has an optional `orchestration:` block:
+
+```yaml
+orchestration:
+  max_iterations: 50    # default; per-subtask multi-turn budget
+require_declared_output: false  # if true, missing file_write output is fatal
+```
+
+Bundled role budgets: `fetcher` 10, `writer` 30, `analyzer` 30, `generalist` 50, `builder` 50. `fetcher` additionally sets `require_declared_output: true` — a fetcher that didn't write its declared file is a hard failure, not an advisory.
+
+**`SubtaskOutputStatus` enum** replaces the prior `Option<String>` return from `check_declared_outputs_exist`. Three variants: `Present`, `MissingAdvisory(String)` (emits `AuditEventKind::SubtaskOutputMissing` and continues), `MissingFatal(String)` (propagates as a subtask failure). Which applies depends on `role.require_declared_output`.
 
 ### 7. Human Supervision Layer
 
@@ -284,4 +300,4 @@ Computed-orchestration additions (2026-04-16):
 - `SubtaskStarted { subtask_id, role }` — emitted as each DAG node spawns.
 - `SubtaskCompleted { subtask_id, success }` — emitted when each DAG node exits.
 
-26 event kinds total.
+33 event kinds total (including `SubtaskOutputMissing` added in v0.1.0).
