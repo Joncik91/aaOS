@@ -79,6 +79,16 @@ pub struct RoleOrchestration {
     /// without burning an unbounded token budget.
     #[serde(default = "default_max_iterations")]
     pub max_iterations: u32,
+
+    /// Number of commit-nudges applied when the LLM emits EndTurn without a
+    /// tool call. Each nudge injects a short user-message ("your contract
+    /// requires you to call file_write — do it now or explain what's
+    /// blocking you") and loops. 0 preserves legacy behaviour (EndTurn is
+    /// terminal). Roles that must produce a side-effect at termination —
+    /// bug-hunt generalist, report-writer, etc. — set this to 1-3.
+    /// Default 0.
+    #[serde(default)]
+    pub commit_nudges: u32,
 }
 
 fn default_max_iterations() -> u32 {
@@ -89,6 +99,7 @@ impl Default for RoleOrchestration {
     fn default() -> Self {
         Self {
             max_iterations: default_max_iterations(),
+            commit_nudges: 0,
         }
     }
 }

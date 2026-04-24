@@ -46,3 +46,4 @@ retry:
   on: []
 orchestration:
   max_iterations: 50
+  commit_nudges: 2

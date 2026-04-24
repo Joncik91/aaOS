@@ -17,7 +17,12 @@ use agentd::server::Server;
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("agentd=info".parse()?))
+        .with_env_filter(
+            EnvFilter::from_default_env()
+                .add_directive("agentd=info".parse()?)
+                .add_directive("aaos_llm=info".parse()?)
+                .add_directive("aaos_runtime=info".parse()?),
+        )
         .init();
 
     // Bootstrap mode: when AAOS_BOOTSTRAP_MANIFEST and AAOS_BOOTSTRAP_GOAL are set,

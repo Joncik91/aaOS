@@ -711,6 +711,7 @@ impl Server {
             max_iterations: overrides.max_iterations,
             max_total_tokens: ExecutorConfig::default().max_total_tokens,
             max_output_tokens: overrides.max_output_tokens,
+            commit_nudges: overrides.commit_nudges,
         };
         let executor = AgentExecutor::new(llm, services, config);
         let result = executor.run(agent_id, manifest, first_message).await;
@@ -2172,6 +2173,7 @@ impl Server {
                                         "event": frame,
                                     });
                                     if write_ndjson(writer, &frame).await.is_err() {
+                                        tracing::warn!("client disconnected mid-stream — aborting exec_task");
                                         exec_task.abort();
                                         return;
                                     }
@@ -2431,12 +2433,33 @@ impl Server {
 /// it), whereas `fallback_generalist_plan` was a silent error-recovery path
 /// that could produce hallucinated reports.
 pub(crate) fn inline_direct_plan(goal: &str, _run_id: uuid::Uuid) -> aaos_runtime::plan::Plan {
+    // The Direct path runs a single multi-turn generalist. We wrap the
+    // goal with an explicit commit instruction because the generalist's
+    // base system prompt only enforces file_write when a `workspace`
+    // param is present — and by the time open-ended goals reach here
+    // the LLM often emits a reasoning-only turn and the executor treats
+    // it as completion. The wrapper forces the LLM to end every run
+    // with a file_write tool call.
+    let wrapped_goal = format!(
+        "{goal}\n\n\
+         ---\n\
+         EXECUTION CONTRACT (do not ignore):\n\
+         You MUST end this run by calling file_write(path=<the output path \
+         named in the task above, or {{workspace}} if none>, content=<your \
+         final report>).  Do NOT emit final text without that tool call.  \
+         If you need more turns to investigate, keep calling tools — but \
+         the last tool call in this run MUST be file_write, and you must \
+         write a substantive report (not a placeholder).  If you genuinely \
+         have no findings, still call file_write with \"No findings after \
+         N files read.\" as the content."
+    );
+
     aaos_runtime::plan::Plan {
         subtasks: vec![aaos_runtime::plan::Subtask {
             id: "generalist".into(),
             role: "generalist".into(),
             params: serde_json::json!({
-                "task_description": goal,
+                "task_description": wrapped_goal,
                 "workspace": "{run}/output.md",
             }),
             depends_on: vec![],

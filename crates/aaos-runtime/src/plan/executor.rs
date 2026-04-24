@@ -40,6 +40,9 @@ pub struct SubtaskExecutorOverrides {
     pub max_output_tokens: u32,
     /// Cap on LLM-loop iterations for this child.
     pub max_iterations: u32,
+    /// Number of commit-nudges when the LLM emits EndTurn without a tool
+    /// call. See `ExecutorConfig::commit_nudges`.
+    pub commit_nudges: u32,
 }
 
 impl Default for SubtaskExecutorOverrides {
@@ -47,6 +50,7 @@ impl Default for SubtaskExecutorOverrides {
         Self {
             max_output_tokens: 16_384,
             max_iterations: 50,
+            commit_nudges: 0,
         }
     }
 }
@@ -656,6 +660,7 @@ impl PlanExecutor {
         let overrides = SubtaskExecutorOverrides {
             max_output_tokens: role.budget.max_output_tokens as u32,
             max_iterations: role.orchestration.max_iterations,
+            commit_nudges: role.orchestration.commit_nudges,
         };
 
         let subtask_id_owned = subtask.id.clone();

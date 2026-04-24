@@ -15,6 +15,15 @@ pub struct ExecutorConfig {
     pub max_total_tokens: u64,
     /// Maximum output tokens per LLM call. Default: 16384.
     pub max_output_tokens: u32,
+    /// Number of times to nudge the LLM back into action when it emits an
+    /// `EndTurn` response with no tool calls. Each nudge injects a short
+    /// User message ("you haven't committed output — call file_write now
+    /// or explain what's blocking you") and loops. After `commit_nudges`
+    /// consecutive thought-only turns the loop terminates with `Complete`.
+    /// Default: 0 (no nudging — preserves legacy behaviour). Roles that
+    /// require a side-effect at termination (e.g. bug-hunt writing a
+    /// findings file) set this to 1-3.
+    pub commit_nudges: u32,
 }
 
 impl Default for ExecutorConfig {
@@ -23,6 +32,7 @@ impl Default for ExecutorConfig {
             max_iterations: 50,
             max_total_tokens: 1_000_000,
             max_output_tokens: 16_384,
+            commit_nudges: 0,
         }
     }
 }
@@ -131,6 +141,14 @@ impl AgentExecutor {
         let mut cumulative_usage = TokenUsage::default();
         let mut iterations: u32 = 0;
         let mut last_text = String::new();
+        let mut nudges_used: u32 = 0;
+
+        tracing::info!(
+            agent_id = %agent_id,
+            max_iterations = self.config.max_iterations,
+            commit_nudges = self.config.commit_nudges,
+            "executor.run: starting loop with config"
+        );
 
         loop {
             // Call LLM
@@ -146,6 +164,12 @@ impl AgentExecutor {
             let response = match self.llm.complete(request).await {
                 Ok(r) => r,
                 Err(e) => {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        iter = iterations,
+                        error = %e,
+                        "executor.run: LLM call failed — returning Error stop_reason"
+                    );
                     return ExecutionResult {
                         response: last_text,
                         usage: cumulative_usage,
@@ -156,6 +180,14 @@ impl AgentExecutor {
             };
 
             iterations += 1;
+
+            tracing::info!(
+                agent_id = %agent_id,
+                iter = iterations,
+                stop_reason = ?response.stop_reason,
+                content_blocks = response.content.len(),
+                "executor.run: LLM responded"
+            );
 
             // Verbose logging: full LLM response
             for block in &response.content {
@@ -202,6 +234,37 @@ impl AgentExecutor {
                             last_text = text.clone();
                         }
                     }
+
+                    // Commit-nudge: if the config allows nudges and we
+                    // haven't exhausted them, append the last assistant
+                    // turn to history, inject a nudge user-message, and
+                    // loop. Forces the LLM to actually call its output
+                    // tool (file_write etc.) instead of terminating mid-
+                    // investigation with thought-only text.
+                    if nudges_used < self.config.commit_nudges {
+                        nudges_used += 1;
+                        messages.push(Message::Assistant {
+                            content: response.content.clone(),
+                        });
+                        messages.push(Message::User {
+                            content: "You ended your turn without calling a tool. \
+                                 Your execution contract requires you to call \
+                                 file_write (or your designated output tool) with \
+                                 your final report. Either call it now with whatever \
+                                 findings you have, or explain in one sentence what \
+                                 is blocking you. Do not emit another thought-only \
+                                 response."
+                                .into(),
+                        });
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            nudge = nudges_used,
+                            "commit-nudge: LLM emitted EndTurn without tool call; \
+                             re-prompting"
+                        );
+                        continue;
+                    }
+
                     return ExecutionResult {
                         response: last_text,
                         usage: cumulative_usage,
@@ -270,6 +333,12 @@ impl AgentExecutor {
                             }
                         }
                     }
+
+                    tracing::info!(
+                        agent_id = %agent_id,
+                        iter = iterations,
+                        "executor.run: ToolUse arm complete — looping"
+                    );
 
                     // Check iteration limit
                     if iterations >= self.config.max_iterations {
@@ -810,6 +879,7 @@ capabilities:
             max_iterations: 3,
             max_total_tokens: 1_000_000,
             max_output_tokens: 16_384,
+            commit_nudges: 0,
         };
         let executor = AgentExecutor::new(llm, services, config);
 
@@ -842,6 +912,7 @@ capabilities:
             max_iterations: 50,
             max_total_tokens: 100, // Very low budget
             max_output_tokens: 16_384,
+            commit_nudges: 0,
         };
         let executor = AgentExecutor::new(llm, services, config);
 
