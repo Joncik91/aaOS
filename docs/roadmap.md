@@ -219,6 +219,28 @@ Commits `1beaf22`, `a9bbfe2`, `976aa95`, `5dc20fd`, `4ddc959`, `e1c3d73` (+relea
 
 Tagged as `v0.0.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0.5 — `aaos_0.0.5-1_amd64.deb`.
 
+### 20. v0.1.0 release — unified PlanExecutor path, Bug 9 closed
+*complete 2026-04-24*
+
+Architectural minor version.  The root diagnosis from the v0.0.3–v0.0.5 runs: **single-shot subtasks were the bug, not the DAG**.  Bumping iteration limits doesn't fix a model that exhausts its budget exploring and never commits — that's an execution model mismatch, not a count problem.  v0.1.0 changes the inside of each DAG node from a single LLM call (budget: `retry.max_attempts + 10`, floor 10) to a full multi-turn agent loop (budget: `role.orchestration.max_iterations`, default 50).
+
+**Three structural changes, in dependency order:**
+
+1. **`SubtaskOutputStatus` enum + advisory audit event** (`aaos-core`).  `check_declared_outputs_exist` now returns `Present` / `MissingAdvisory` / `MissingFatal` instead of `Option<String>`.  Advisory path emits `AuditEventKind::SubtaskOutputMissing` and marks the subtask succeeded; fatal path (only when `role.require_declared_output: true`) propagates as a subtask failure.  Fetcher declares `require_declared_output: true` — a fetcher that didn't write its file is always a hard failure.
+
+2. **Role YAML additions** (`aaos-runtime`).  `role.orchestration.max_iterations` (u32, default 50) replaces the old formula.  `role.require_declared_output` (bool, default false) controls the output-contract severity.  Bundled role budgets: fetcher 10, writer 30, analyzer 30, generalist 50, builder 50.  Both fields are optional and backward-compatible — existing YAMLs without them get the defaults.
+
+3. **Unified PlanExecutor path + Bug 9 closed** (`agentd`).  Both orchestration modes now route through PlanExecutor:
+   - `plan` / `decompose` → `PlanExecutor::run()` as before (Planner builds the multi-node DAG).
+   - `persistent` / `direct` → new `PlanExecutor::run_with_plan()` called with a 1-node inline plan built by `inline_direct_plan()`.  No Planner LLM call, no Bootstrap agent.
+   - `fallback_generalist_plan` deleted → Bug 9 closed.  A malformed Planner response propagates as `ExecutorError::Correctable`; the replan loop retries; after `max_replans` exhausted the run fails cleanly.  The hallucinated-report failure mode is structurally impossible.
+
+**Classifier change.**  Prompt updated from "plan or persistent?" to "does this goal have independent parallelisable subtasks?".  Output changed from `plan`/`persistent` to `decompose`/`direct`.  Fallback on LLM error changed from `plan` to `direct` (direct is cheaper — skips the Planner call).  Wire API (`--orchestration plan|persistent`) preserved; operator commands written for v0.0.5 still work.
+
+**Test delta:** 613 → 625 workspace-wide.  Bootstrap streaming integration test deleted (no longer a live path); replaced by new tests for `SubtaskOutputStatus` variants, `RoleOrchestration` defaults and round-trips, `run_with_plan` execution, and `decompose`/`direct` routing under all three source permutations (explicit plan, explicit persistent, auto-detect each direction).
+
+Tagged as `v0.1.0`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.0 — `aaos_0.1.0-1_amd64.deb`.
+
 ---
 
 ## Active milestones
@@ -226,7 +248,7 @@ Tagged as `v0.0.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0
 ### M1 — Debian-derivative reference image
 *next (was M2 before #15 shipped)*
 
-A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the build-history #15 `.deb`, enables the service, and bakes opinionated defaults.
+A Packer pipeline that starts from an upstream Debian 13 base image, preinstalls the v0.1.0 `.deb`, enables the service, and bakes opinionated defaults.
 
 **Deliverable.** Bootable ISO + cloud snapshots (Debian publishes official images on AWS, DigitalOcean, Hetzner — our derivative ships on the same targets).
 
