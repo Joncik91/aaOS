@@ -2430,7 +2430,7 @@ impl Server {
 /// function is called intentionally (classifier said Direct or operator forced
 /// it), whereas `fallback_generalist_plan` was a silent error-recovery path
 /// that could produce hallucinated reports.
-fn inline_direct_plan(goal: &str, _run_id: uuid::Uuid) -> aaos_runtime::plan::Plan {
+pub(crate) fn inline_direct_plan(goal: &str, _run_id: uuid::Uuid) -> aaos_runtime::plan::Plan {
     aaos_runtime::plan::Plan {
         subtasks: vec![aaos_runtime::plan::Subtask {
             id: "generalist".into(),
