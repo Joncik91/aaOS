@@ -1856,134 +1856,164 @@ impl Server {
             }
         };
 
-        // ===== PlanExecutor branch =====
-        // When a role catalog loaded at startup (/etc/aaos/roles/ or
-        // AAOS_ROLES_DIR), route the goal through the two-phase
-        // Planner → DAG walk path. When absent, fall through to the
-        // legacy Bootstrap path below.
-        if let Some(executor) = self.plan_executor.get().cloned() {
-            let run_id = uuid::Uuid::new_v4();
-            let started = std::time::Instant::now();
-            // Subscribe BEFORE spawning so we don't miss the earliest
-            // PlanProduced/SubtaskStarted events the executor emits.
-            let mut rx = self.broadcast_audit.subscribe();
+        // Parse the optional `orchestration` field.  Absent → Plan (backwards
+        // compatibility: old clients that predate this flag get current behaviour).
+        let orchestration: crate::orchestration::OrchestrationMode = params
+            .get("orchestration")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
-            let exec_task = tokio::spawn({
-                let goal = goal.clone();
-                async move { executor.run(&goal, run_id).await }
-            });
-            tokio::pin!(exec_task);
+        // ===== Orchestration gate =====
+        // Plan mode  + catalog loaded  → PlanExecutor DAG path.
+        // Plan mode  + catalog absent  → clear error (operator asked for plan but
+        //                                 catalog failed to load at startup).
+        // Persistent mode (any)        → Bootstrap persistent agent.
+        match (orchestration, self.plan_executor.get().cloned()) {
+            (crate::orchestration::OrchestrationMode::Plan, None) => {
+                let frame = json!({
+                    "kind": "end",
+                    "exit_code": 1,
+                    "error": "computed orchestration not available: role catalog failed to load at startup \
+                              — check `journalctl -u agentd` for details, or use --orchestration persistent",
+                    "input_tokens": 0u64,
+                    "output_tokens": 0u64,
+                    "elapsed_ms": 0u64,
+                });
+                let _ = write_ndjson(writer, &frame).await;
+                return;
+            }
+            (crate::orchestration::OrchestrationMode::Plan, Some(executor)) => {
+                // ===== PlanExecutor branch =====
+                // Route through the Planner + PlanExecutor DAG.
+                let run_id = uuid::Uuid::new_v4();
+                let started = std::time::Instant::now();
+                // Subscribe BEFORE spawning so we don't miss the earliest
+                // PlanProduced/SubtaskStarted events the executor emits.
+                let mut rx = self.broadcast_audit.subscribe();
 
-            loop {
-                tokio::select! {
-                    result = &mut exec_task => {
-                        match result {
-                            Ok(Ok(plan_result)) => {
-                                let (in_tok, out_tok) =
-                                    plan_result.results.values().fold(
-                                        (0u64, 0u64),
-                                        |(a, b), r| {
-                                            (a + r.input_tokens, b + r.output_tokens)
-                                        },
-                                    );
+                let exec_task = tokio::spawn({
+                    let goal = goal.clone();
+                    async move { executor.run(&goal, run_id).await }
+                });
+                tokio::pin!(exec_task);
 
-                                let plan_frame = json!({
-                                    "kind": "plan",
-                                    "plan": plan_result.plan,
-                                });
-                                let _ = write_ndjson(writer, &plan_frame).await;
+                loop {
+                    tokio::select! {
+                        result = &mut exec_task => {
+                            match result {
+                                Ok(Ok(plan_result)) => {
+                                    let (in_tok, out_tok) =
+                                        plan_result.results.values().fold(
+                                            (0u64, 0u64),
+                                            |(a, b), r| {
+                                                (a + r.input_tokens, b + r.output_tokens)
+                                            },
+                                        );
 
-                                if let Some(last) = plan_result.plan.subtasks.last() {
-                                    if let Some(r) = plan_result.results.get(&last.id) {
-                                        if !r.response.is_empty() {
-                                            let ft = json!({
-                                                "kind": "final_text",
-                                                "text": r.response,
-                                            });
-                                            let _ = write_ndjson(writer, &ft).await;
+                                    let plan_frame = json!({
+                                        "kind": "plan",
+                                        "plan": plan_result.plan,
+                                    });
+                                    let _ = write_ndjson(writer, &plan_frame).await;
+
+                                    if let Some(last) = plan_result.plan.subtasks.last() {
+                                        if let Some(r) = plan_result.results.get(&last.id) {
+                                            if !r.response.is_empty() {
+                                                let ft = json!({
+                                                    "kind": "final_text",
+                                                    "text": r.response,
+                                                });
+                                                let _ = write_ndjson(writer, &ft).await;
+                                            }
                                         }
                                     }
-                                }
 
-                                let end = json!({
-                                    "kind": "end",
-                                    "exit_code": 0,
-                                    "input_tokens": in_tok,
-                                    "output_tokens": out_tok,
-                                    "elapsed_ms": started.elapsed().as_millis() as u64,
-                                });
-                                let _ = write_ndjson(writer, &end).await;
+                                    let end = json!({
+                                        "kind": "end",
+                                        "exit_code": 0,
+                                        "input_tokens": in_tok,
+                                        "output_tokens": out_tok,
+                                        "elapsed_ms": started.elapsed().as_millis() as u64,
+                                    });
+                                    let _ = write_ndjson(writer, &end).await;
+                                }
+                                Ok(Err(e)) => {
+                                    // Log to journald so operators reading
+                                    // `journalctl -u agentd` after a failed
+                                    // submit can see *why* the plan failed (e.g.
+                                    // bad LLM key → Planner failed first call).
+                                    // The CLI also prints the error but stays
+                                    // short; journald carries the long form.
+                                    tracing::error!(error = %e, run_id = %run_id, "plan execution failed");
+                                    let frame = json!({
+                                        "kind": "end",
+                                        "exit_code": 1,
+                                        "error": format!("{e}"),
+                                        "input_tokens": 0,
+                                        "output_tokens": 0,
+                                        "elapsed_ms": started.elapsed().as_millis() as u64,
+                                    });
+                                    let _ = write_ndjson(writer, &frame).await;
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, run_id = %run_id, "plan executor task panicked");
+                                    let frame = json!({
+                                        "kind": "end",
+                                        "exit_code": 1,
+                                        "error": format!("executor task panic: {e}"),
+                                        "input_tokens": 0,
+                                        "output_tokens": 0,
+                                        "elapsed_ms": started.elapsed().as_millis() as u64,
+                                    });
+                                    let _ = write_ndjson(writer, &frame).await;
+                                }
                             }
-                            Ok(Err(e)) => {
-                                // Log to journald so operators reading
-                                // `journalctl -u agentd` after a failed
-                                // submit can see *why* the plan failed (e.g.
-                                // bad LLM key → Planner failed first call).
-                                // The CLI also prints the error but stays
-                                // short; journald carries the long form.
-                                tracing::error!(error = %e, run_id = %run_id, "plan execution failed");
-                                let frame = json!({
-                                    "kind": "end",
-                                    "exit_code": 1,
-                                    "error": format!("{e}"),
-                                    "input_tokens": 0,
-                                    "output_tokens": 0,
-                                    "elapsed_ms": started.elapsed().as_millis() as u64,
-                                });
-                                let _ = write_ndjson(writer, &frame).await;
-                            }
-                            Err(e) => {
-                                tracing::error!(error = %e, run_id = %run_id, "plan executor task panicked");
-                                let frame = json!({
-                                    "kind": "end",
-                                    "exit_code": 1,
-                                    "error": format!("executor task panic: {e}"),
-                                    "input_tokens": 0,
-                                    "output_tokens": 0,
-                                    "elapsed_ms": started.elapsed().as_millis() as u64,
-                                });
-                                let _ = write_ndjson(writer, &frame).await;
-                            }
+                            return;
                         }
-                        return;
-                    }
-                    evt = rx.recv() => {
-                        match evt {
-                            Ok(event) => {
-                                let frame = serde_json::to_value(&event)
-                                    .unwrap_or(serde_json::Value::Null);
-                                let frame = json!({
-                                    "kind": "event",
-                                    "event": frame,
-                                });
-                                if write_ndjson(writer, &frame).await.is_err() {
-                                    // Client disconnected mid-run (e.g. Ctrl-C
-                                    // at the CLI). Abort the executor task so
-                                    // its agent subtree does not keep running
-                                    // as an orphan. See run 12: a torn-down
-                                    // submit left a zombie builder churning
-                                    // in a scratch dir for ~10 minutes.
+                        evt = rx.recv() => {
+                            match evt {
+                                Ok(event) => {
+                                    let frame = serde_json::to_value(&event)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    let frame = json!({
+                                        "kind": "event",
+                                        "event": frame,
+                                    });
+                                    if write_ndjson(writer, &frame).await.is_err() {
+                                        // Client disconnected mid-run (e.g. Ctrl-C
+                                        // at the CLI). Abort the executor task so
+                                        // its agent subtree does not keep running
+                                        // as an orphan. See run 12: a torn-down
+                                        // submit left a zombie builder churning
+                                        // in a scratch dir for ~10 minutes.
+                                        exec_task.abort();
+                                        return;
+                                    }
+                                }
+                                Err(RecvError::Lagged(n)) => {
+                                    let frame = json!({
+                                        "kind": "lag",
+                                        "missed": n,
+                                    });
+                                    let _ = write_ndjson(writer, &frame).await;
+                                }
+                                Err(RecvError::Closed) => {
                                     exec_task.abort();
                                     return;
                                 }
                             }
-                            Err(RecvError::Lagged(n)) => {
-                                let frame = json!({
-                                    "kind": "lag",
-                                    "missed": n,
-                                });
-                                let _ = write_ndjson(writer, &frame).await;
-                            }
-                            Err(RecvError::Closed) => {
-                                exec_task.abort();
-                                return;
-                            }
                         }
                     }
                 }
+                // unreachable — all paths above return
             }
+            // ===== Bootstrap (persistent) branch =====
+            // OrchestrationMode::Persistent, or Plan with no executor (handled
+            // above as an error — this arm handles Persistent + either executor state).
+            (crate::orchestration::OrchestrationMode::Persistent, _) => {}
         }
-        // ===== End PlanExecutor branch — Bootstrap fallback below =====
+
+        // ===== Bootstrap fallback — reached only when orchestration == Persistent =====
 
         // Subscribe BEFORE routing the goal so we don't miss the first events
         // Bootstrap emits in response.
@@ -2778,11 +2808,14 @@ lifecycle: persistent
         }
 
         let mut client = UnixStream::connect(&socket_path).await.unwrap();
+        // Use `orchestration: "persistent"` so the request reaches Bootstrap even
+        // though no role catalog is loaded in this test. Absent orchestration field
+        // now defaults to Plan, which would return a catalog-missing error.
         let req = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "agent.submit_streaming",
-            "params": { "goal": "test goal" }
+            "params": { "goal": "test goal", "orchestration": "persistent" }
         });
         let mut line = serde_json::to_vec(&req).unwrap();
         line.push(b'\n');
@@ -3201,5 +3234,122 @@ retry: { max_attempts: 1, on: [] }
             "plan_executor should be built when AAOS_ROLES_DIR has valid roles"
         );
         std::env::remove_var("AAOS_ROLES_DIR");
+    }
+
+    // ---- orchestration routing tests ----
+
+    /// Plan mode with no catalog → end frame with exit_code 1 and a
+    /// "computed orchestration not available" error message.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn submit_streaming_plan_mode_without_catalog_returns_error() {
+        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Absent roles dir → plan_executor stays None.
+        let absent = "/nonexistent-roles-dir-for-test";
+        std::env::set_var("AAOS_ROLES_DIR", absent);
+
+        let server = Server::with_llm_client(Arc::new(HangingLlm));
+        assert!(
+            server.plan_executor.get().is_none(),
+            "plan_executor must be None when roles dir is absent"
+        );
+
+        let mut buf = Vec::<u8>::new();
+        let params = serde_json::json!({
+            "goal": "some goal",
+            "orchestration": "plan",
+        });
+        server.handle_submit_streaming(&params, &mut buf).await;
+
+        std::env::remove_var("AAOS_ROLES_DIR");
+
+        let text = String::from_utf8(buf).unwrap();
+        let frame: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(frame["kind"], "end", "must emit an end frame");
+        assert_eq!(frame["exit_code"], 1, "exit_code must be 1");
+        let err = frame["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("computed orchestration not available"),
+            "error message must mention 'computed orchestration not available', got: {err}"
+        );
+    }
+
+    /// Persistent mode with no catalog → Bootstrap branch runs (no catalog error).
+    /// We verify by checking that ensure_bootstrap_running is attempted: it will
+    /// fail if the bootstrap manifest is absent, producing a "failed to start
+    /// bootstrap" error — which is distinct from the "computed orchestration not
+    /// available" plan-mode error.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn submit_streaming_persistent_mode_bypasses_catalog_check() {
+        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Absent roles dir → plan_executor stays None.
+        let absent = "/nonexistent-roles-dir-for-test";
+        std::env::set_var("AAOS_ROLES_DIR", absent);
+        // Also absent bootstrap manifest so ensure_bootstrap_running fails fast.
+        std::env::set_var(
+            "AAOS_BOOTSTRAP_MANIFEST_PATH",
+            "/nonexistent-bootstrap-manifest-for-test.yaml",
+        );
+
+        let server = Server::with_llm_client(Arc::new(HangingLlm));
+        assert!(server.plan_executor.get().is_none());
+
+        let mut buf = Vec::<u8>::new();
+        let params = serde_json::json!({
+            "goal": "some open-ended goal",
+            "orchestration": "persistent",
+        });
+        server.handle_submit_streaming(&params, &mut buf).await;
+
+        std::env::remove_var("AAOS_ROLES_DIR");
+        std::env::remove_var("AAOS_BOOTSTRAP_MANIFEST_PATH");
+
+        let text = String::from_utf8(buf).unwrap();
+        let frame: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(frame["kind"], "end");
+        // Must NOT be the "computed orchestration not available" error.
+        let err = frame["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("computed orchestration not available"),
+            "persistent mode must not return a catalog-missing error, got: {err}"
+        );
+        // Should be a bootstrap-start failure instead.
+        assert!(
+            err.contains("failed to start bootstrap") || err.contains("cannot read bootstrap"),
+            "persistent mode without manifest must fail with bootstrap error, got: {err}"
+        );
+    }
+
+    /// Missing `orchestration` field defaults to Plan (backwards compat).
+    /// With no catalog loaded and no orchestration field, we should get
+    /// the "computed orchestration not available" error — same as
+    /// explicit plan mode with no catalog.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn submit_streaming_missing_orchestration_defaults_to_plan() {
+        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let absent = "/nonexistent-roles-dir-for-default-test";
+        std::env::set_var("AAOS_ROLES_DIR", absent);
+
+        let server = Server::with_llm_client(Arc::new(HangingLlm));
+        assert!(server.plan_executor.get().is_none());
+
+        let mut buf = Vec::<u8>::new();
+        // No `orchestration` key — must default to Plan.
+        let params = serde_json::json!({ "goal": "some goal" });
+        server.handle_submit_streaming(&params, &mut buf).await;
+
+        std::env::remove_var("AAOS_ROLES_DIR");
+
+        let text = String::from_utf8(buf).unwrap();
+        let frame: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(frame["kind"], "end");
+        assert_eq!(frame["exit_code"], 1);
+        let err = frame["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("computed orchestration not available"),
+            "missing orchestration must default to plan, got: {err}"
+        );
     }
 }
