@@ -55,6 +55,12 @@ pub struct Server {
     pub run_root_base: PathBuf,
     pub approval_queue: Arc<crate::approval::ApprovalQueue>,
     pub llm_client: Option<Arc<dyn LlmClient>>,
+    /// Orchestration classifier invoked when `agent.submit_streaming` is
+    /// called without an explicit `--orchestration` flag.  Defaults to
+    /// `NoopOrchestrationClassifier` (always Plan) when no LLM client is
+    /// configured; replaced with `LlmOrchestrationClassifier` when a client
+    /// is present.
+    pub(crate) classifier: Arc<dyn crate::orchestration_classifier::OrchestrationClassifier>,
     pub session_store: Arc<dyn aaos_runtime::SessionStore>,
     pub memory_store: Arc<dyn aaos_memory::MemoryStore>,
     pub embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
@@ -937,6 +943,7 @@ impl Server {
             run_root_base: Self::default_run_root_base(),
             approval_queue,
             llm_client: None,
+            classifier: Arc::new(crate::orchestration_classifier::NoopOrchestrationClassifier),
             session_store,
             memory_store,
             embedding_source,
@@ -974,6 +981,9 @@ impl Server {
                 server.registry.clone(),
             )));
         server.llm_client = Some(llm_client.clone());
+        server.classifier = Arc::new(
+            crate::orchestration_classifier::LlmOrchestrationClassifier::new(llm_client.clone()),
+        );
         let (catalog, planner) = Self::load_role_catalog(&llm_client);
         server.role_catalog = catalog;
         server.planner = planner;
@@ -1156,7 +1166,10 @@ impl Server {
             planner,
             run_root_base: Self::default_run_root_base(),
             approval_queue,
-            llm_client: Some(llm_client),
+            llm_client: Some(llm_client.clone()),
+            classifier: Arc::new(
+                crate::orchestration_classifier::LlmOrchestrationClassifier::new(llm_client),
+            ),
             session_store,
             memory_store,
             embedding_source,
@@ -1300,7 +1313,10 @@ impl Server {
             planner,
             run_root_base: Self::default_run_root_base(),
             approval_queue,
-            llm_client: Some(llm_client),
+            llm_client: Some(llm_client.clone()),
+            classifier: Arc::new(
+                crate::orchestration_classifier::LlmOrchestrationClassifier::new(llm_client),
+            ),
             session_store,
             memory_store,
             embedding_source,
@@ -1856,12 +1872,37 @@ impl Server {
             }
         };
 
-        // Parse the optional `orchestration` field.  Absent → Plan (backwards
-        // compatibility: old clients that predate this flag get current behaviour).
-        let orchestration: crate::orchestration::OrchestrationMode = params
+        // Resolve orchestration mode.
+        //
+        // Explicit `orchestration` field in the JSON-RPC params → operator override,
+        // bypass classifier.  Absent field → run the LLM classifier so the daemon
+        // auto-routes between plan and persistent based on the goal text.
+        let explicit_mode: Option<crate::orchestration::OrchestrationMode> = params
             .get("orchestration")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+        let (orchestration, source) = match explicit_mode {
+            Some(m) => (m, "explicit"),
+            None => (self.classifier.classify(&goal).await, "auto"),
+        };
+
+        // Emit an audit event so operators can see which mode was picked and why.
+        {
+            use aaos_core::{AgentId, AuditEvent, AuditEventKind};
+            let event = AuditEvent::new(
+                AgentId::new(),
+                AuditEventKind::OrchestrationSelected {
+                    mode: format!("{:?}", orchestration).to_lowercase(),
+                    source: source.to_string(),
+                },
+            );
+            self.audit_log.record(event);
+        }
+        tracing::info!(
+            mode = ?orchestration,
+            source = source,
+            "orchestration mode selected"
+        );
 
         // ===== Orchestration gate =====
         // Plan mode  + catalog loaded  → PlanExecutor DAG path.
@@ -3321,23 +3362,21 @@ retry: { max_attempts: 1, on: [] }
         );
     }
 
-    /// Missing `orchestration` field defaults to Plan (backwards compat).
-    /// With no catalog loaded and no orchestration field, we should get
-    /// the "computed orchestration not available" error — same as
-    /// explicit plan mode with no catalog.
+    /// Explicit `orchestration: "plan"` with no catalog loaded returns the
+    /// "computed orchestration not available" error (backwards compat path).
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn submit_streaming_missing_orchestration_defaults_to_plan() {
+    async fn submit_streaming_explicit_plan_without_catalog_returns_error() {
         let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let absent = "/nonexistent-roles-dir-for-default-test";
+        let absent = "/nonexistent-roles-dir-for-explicit-plan-test";
         std::env::set_var("AAOS_ROLES_DIR", absent);
 
         let server = Server::with_llm_client(Arc::new(HangingLlm));
         assert!(server.plan_executor.get().is_none());
 
         let mut buf = Vec::<u8>::new();
-        // No `orchestration` key — must default to Plan.
-        let params = serde_json::json!({ "goal": "some goal" });
+        // Explicit plan override — classifier bypassed.
+        let params = serde_json::json!({ "goal": "some goal", "orchestration": "plan" });
         server.handle_submit_streaming(&params, &mut buf).await;
 
         std::env::remove_var("AAOS_ROLES_DIR");
@@ -3349,7 +3388,105 @@ retry: { max_attempts: 1, on: [] }
         let err = frame["error"].as_str().unwrap_or("");
         assert!(
             err.contains("computed orchestration not available"),
-            "missing orchestration must default to plan, got: {err}"
+            "explicit plan with no catalog must return the catalog error, got: {err}"
+        );
+    }
+
+    /// Auto-detect: when classifier returns "plan" and no catalog is loaded,
+    /// the submit returns the same "computed orchestration not available" error.
+    /// Uses `MockLlm::text("plan")` so the classifier call doesn't hang.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn submit_streaming_auto_detect_plan_without_catalog_returns_error() {
+        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let absent = "/nonexistent-roles-dir-for-auto-plan-test";
+        std::env::set_var("AAOS_ROLES_DIR", absent);
+
+        // MockLlm returns "plan" — classifier will pick Plan.
+        let server = Server::with_llm_client(MockLlm::text("plan"));
+        assert!(server.plan_executor.get().is_none());
+
+        let mut buf = Vec::<u8>::new();
+        // No `orchestration` key — classifier runs.
+        let params = serde_json::json!({ "goal": "fetch HN top 5 and write to file" });
+        server.handle_submit_streaming(&params, &mut buf).await;
+
+        std::env::remove_var("AAOS_ROLES_DIR");
+
+        let text = String::from_utf8(buf).unwrap();
+        let frame: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(frame["kind"], "end");
+        assert_eq!(frame["exit_code"], 1);
+        let err = frame["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("computed orchestration not available"),
+            "auto-detect plan with no catalog must return catalog error, got: {err}"
+        );
+    }
+
+    /// Auto-detect: when classifier returns "persistent", the submit routes to
+    /// the Bootstrap path (bypassing the Plan gate entirely), even with no catalog.
+    /// Uses `MockLlm::text("persistent")` so the classifier returns quickly.
+    /// Bootstrap will fail (no manifest) but must NOT return "computed orchestration
+    /// not available" — that error is Plan-only.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn submit_streaming_auto_detect_persistent_bypasses_catalog_check() {
+        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let absent = "/nonexistent-roles-dir-for-auto-persistent-test";
+        std::env::set_var("AAOS_ROLES_DIR", absent);
+
+        // Two responses: first for the classifier call ("persistent"),
+        // second attempt by Bootstrap (won't actually reach LLM — Bootstrap
+        // fails at manifest load, but we need the queue non-empty to avoid panic).
+        let server = Server::with_llm_client(Arc::new(MockLlm {
+            responses: std::sync::Mutex::new(vec![
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "persistent".into(),
+                    }],
+                    stop_reason: LlmStopReason::EndTurn,
+                    usage: aaos_core::TokenUsage {
+                        input_tokens: 5,
+                        output_tokens: 1,
+                    },
+                }),
+                // Fallback in case Bootstrap tries to run — never reached if
+                // manifest is missing, but keeps the queue non-empty.
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "bootstrap response".into(),
+                    }],
+                    stop_reason: LlmStopReason::EndTurn,
+                    usage: aaos_core::TokenUsage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                }),
+            ]),
+        }));
+        assert!(server.plan_executor.get().is_none());
+
+        let mut buf = Vec::<u8>::new();
+        // No `orchestration` key — classifier returns "persistent".
+        let params = serde_json::json!({ "goal": "explore the codebase and find bugs" });
+        server.handle_submit_streaming(&params, &mut buf).await;
+
+        std::env::remove_var("AAOS_ROLES_DIR");
+
+        let text = String::from_utf8(buf).unwrap();
+        // There may be multiple NDJSON frames; take the last non-empty one.
+        let last_frame: serde_json::Value = text
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .next_back()
+            .expect("at least one frame");
+        assert_eq!(last_frame["kind"], "end");
+        let err = last_frame["error"].as_str().unwrap_or("");
+        assert!(
+            !err.contains("computed orchestration not available"),
+            "auto-detect persistent must NOT return catalog error, got: {err}"
         );
     }
 }

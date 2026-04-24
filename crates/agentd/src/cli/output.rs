@@ -20,7 +20,8 @@ pub fn is_operator_visible(event: &AuditEvent) -> bool {
         | AuditEventKind::CapabilityDenied { .. }
         | AuditEventKind::SubtaskTtlExpired { .. }
         | AuditEventKind::SubtaskModelEscalated { .. }
-        | AuditEventKind::ToolRepeatGuardFired { .. } => true,
+        | AuditEventKind::ToolRepeatGuardFired { .. }
+        | AuditEventKind::OrchestrationSelected { .. } => true,
         // Show only failed tool results — successes are implied by
         // the next event in the stream and would double the noise.
         AuditEventKind::ToolResult { success, .. } => !success,
@@ -144,6 +145,14 @@ pub fn format_operator_line(event: &AuditEvent, agent_name: &str, colorize: bool
             let label = format!("repeat guard: {tool} (attempt {attempt_count})");
             if colorize {
                 format!("\x1b[33m{label}\x1b[0m") // yellow — warning
+            } else {
+                label
+            }
+        }
+        AuditEventKind::OrchestrationSelected { mode, source } => {
+            let label = format!("orchestration: {mode} (source: {source})");
+            if colorize {
+                format!("\x1b[2m{label}\x1b[0m") // dim — informational
             } else {
                 label
             }

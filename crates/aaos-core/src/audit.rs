@@ -199,6 +199,16 @@ pub enum AuditEventKind {
         tool: String,
         attempt_count: u32,
     },
+    /// Emitted once per `agent.submit_streaming` call, immediately after the
+    /// orchestration mode is resolved.
+    ///
+    /// `mode` is `"plan"` or `"persistent"`.
+    /// `source` is `"explicit"` (operator passed `--orchestration`) or `"auto"`
+    /// (the LLM classifier picked the mode).
+    OrchestrationSelected {
+        mode: String,
+        source: String,
+    },
 }
 
 /// A single entry in the system-wide audit trail.
