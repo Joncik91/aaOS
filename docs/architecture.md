@@ -160,6 +160,17 @@ The system can run autonomously in a Docker container with `agentd` as PID 1. Tw
 - **StdoutAuditLog** — Audit events streamed as JSON-lines to stdout for `docker logs -f` observability.
 - **BroadcastAuditLog** — Fan-out wrapper over an inner `AuditLog`. Every recorded event goes to the inner sink AND to any subscribers (tokio `broadcast::channel`). The daemon's streaming JSON-RPC methods (`agent.submit_streaming`, `agent.logs_streaming`) subscribe and forward filtered events over the client's Unix socket as NDJSON frames.
 
+#### Orchestration modes
+
+`agentd submit` accepts `--orchestration [plan|persistent]` (default: `plan`) to select the orchestration path per submit rather than per daemon startup:
+
+- **`plan`** — Planner + PlanExecutor DAG. Right for structured goals with declared outputs per subtask (fetch → analyse → write). Requires a loaded role catalog at startup; returns a legible error if the catalog failed to load rather than silently falling back. Each run is stateless: no agent survives beyond the goal.
+- **`persistent`** — Bootstrap persistent agent. Right for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed. Does not require a role catalog.
+
+The routing gate lives in `server.rs:handle_submit_streaming`. Missing `orchestration` field on the wire defaults to `plan` for backwards compatibility with older clients.
+
+When to pick which: use `plan` for structured data pipelines with known output contracts; use `persistent` for investigation, reflection, or any goal where the agent must adapt its own strategy mid-run.
+
 ### 7. Human Supervision Layer
 
 Read-only observation plus an operator surface for driving the daemon. Deliberately last — the system must be functional without it.

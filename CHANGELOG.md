@@ -12,6 +12,14 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.4 `.deb` preinstalled).
 
+### Added
+
+- **`--orchestration [plan|persistent]` flag on `agentd submit`** — selects the orchestration path per submit rather than per startup.
+  - `plan` (default) routes through the Planner + PlanExecutor DAG. Best for structured goals with declared outputs per subtask (fetch, analyse, write). Requires a loaded role catalog; returns a clear error if the catalog is absent.
+  - `persistent` routes to the Bootstrap persistent agent. Best for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed.
+  - **Backwards compatible** — clients that omit the flag get `plan` behavior (same as v0.0.4 when a catalog is loaded). The old silent fallback from Plan to Bootstrap when no catalog is present is replaced by a clear error message pointing at `journalctl` or `--orchestration persistent`.
+  - The flag is serialized into the `agent.submit_streaming` JSON-RPC params as `"orchestration": "plan"` / `"orchestration": "persistent"`. Servers that predates this field ignore the unknown key; servers that support it route accordingly.
+
 ### Known — not yet fixed
 
 - **Bug 9 (high)** — when a subtask fails to produce its declared output (tools succeeded but LLM never wrote, or tools failed silently), the Planner's replan path spawns a fallback generalist that writes a plausible-looking but **hallucinated** failure report to the output file and marks the run `complete`.  Observed twice on the v0.0.4 verification run: a generalist wrote "target directory `/src/aaOS` was not found or could not be read" to `/data/report.md` moments after three other agents had successfully read 40+ files from that path.  Whether the operator sees the real error depends on retry-count arithmetic: `max_replans` exhausted → correct `bootstrap failed`; `max_replans` remaining → silent hallucinated success.  Severity raised from medium to high after v0.0.4 run showed the fallback actively writes false content, not just "NOT COMPLETED" markers.  Fix direction: the fallback agent must inherit the failed subtask's audit trail, or be replaced by a deterministic scaffold that writes an accurate failure summary without invoking an LLM.  Tracked in `docs/reflection/2026-04-24-v0.0.3-self-reflection.md`.
