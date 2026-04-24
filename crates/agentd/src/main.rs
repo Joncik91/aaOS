@@ -143,9 +143,10 @@ async fn main() -> anyhow::Result<()> {
         Command::Submit {
             goal,
             verbose,
+            orchestration,
             socket,
         } => {
-            return agentd::cli::submit::run(goal, verbose, socket).await;
+            return agentd::cli::submit::run(goal, verbose, orchestration, socket).await;
         }
         Command::List { json, socket } => {
             return agentd::cli::list::run(json, socket).await;

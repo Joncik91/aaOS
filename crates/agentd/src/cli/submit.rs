@@ -12,18 +12,27 @@ use tokio::signal::unix::{signal, SignalKind};
 use crate::cli::client;
 use crate::cli::errors::{exit_code, format_error, CliError};
 use crate::cli::output::{format_operator_line, is_operator_visible, is_stdout_tty};
+use crate::orchestration::OrchestrationMode;
 
-pub async fn run(goal: String, verbose: bool, socket: PathBuf) -> anyhow::Result<()> {
-    let mut reader =
-        match client::call_streaming(&socket, "agent.submit_streaming", json!({ "goal": goal }))
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprint!("{}", format_error(&e));
-                std::process::exit(exit_code(&e));
-            }
-        };
+pub async fn run(
+    goal: String,
+    verbose: bool,
+    orchestration: OrchestrationMode,
+    socket: PathBuf,
+) -> anyhow::Result<()> {
+    let mut reader = match client::call_streaming(
+        &socket,
+        "agent.submit_streaming",
+        json!({ "goal": goal, "orchestration": orchestration }),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprint!("{}", format_error(&e));
+            std::process::exit(exit_code(&e));
+        }
+    };
 
     let mut sigint = signal(SignalKind::interrupt())
         .map_err(|e| anyhow::anyhow!("failed to install SIGINT handler: {}", e))?;
