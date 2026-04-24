@@ -14,11 +14,12 @@ Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline 
 
 ### Added
 
-- **`--orchestration [plan|persistent]` flag on `agentd submit`** — selects the orchestration path per submit rather than per startup.
-  - `plan` (default) routes through the Planner + PlanExecutor DAG. Best for structured goals with declared outputs per subtask (fetch, analyse, write). Requires a loaded role catalog; returns a clear error if the catalog is absent.
-  - `persistent` routes to the Bootstrap persistent agent. Best for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed.
-  - **Backwards compatible** — clients that omit the flag get `plan` behavior (same as v0.0.4 when a catalog is loaded). The old silent fallback from Plan to Bootstrap when no catalog is present is replaced by a clear error message pointing at `journalctl` or `--orchestration persistent`.
-  - The flag is serialized into the `agent.submit_streaming` JSON-RPC params as `"orchestration": "plan"` / `"orchestration": "persistent"`. Servers that predates this field ignore the unknown key; servers that support it route accordingly.
+- **Auto-routing: `agentd submit` now classifies the goal and picks `plan` or `persistent` automatically.** A cheap single-shot LLM call (~50 input / 1 output token) inspects the goal text before any agent work begins and routes accordingly. Operators who want to force a specific mode can still pass `--orchestration [plan|persistent]` — explicit wins, classifier is bypassed.
+  - `plan` — Planner + PlanExecutor DAG. Best for structured goals with declared outputs per subtask (fetch, analyse, write). Requires a loaded role catalog; returns a clear error if the catalog is absent.
+  - `persistent` — Bootstrap persistent agent. Best for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed.
+  - Classifier falls back to `plan` on any LLM error. When no LLM client is configured, auto-routes to `plan` immediately (no network call).
+  - An `OrchestrationSelected { mode, source }` audit event is emitted on every submit so operators can see which path was chosen and why (`source: "explicit"` or `"auto"`).
+  - The `agent.submit_streaming` JSON-RPC `"orchestration"` field is still honoured when present; omitting it now triggers auto-detection instead of defaulting silently to `plan`.
 
 ### Known — not yet fixed
 

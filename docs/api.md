@@ -35,6 +35,18 @@ The response is a stream of NDJSON frames — one `{"kind":"event",...}`
 per audit event, followed by a terminal `{"kind":"end",...}` with
 aggregated token usage and wall-clock elapsed.
 
+The optional `"orchestration"` param (`"plan"` or `"persistent"`) overrides
+the daemon's auto-detection. When omitted, a cheap classifier call picks the
+mode based on the goal text. An `OrchestrationSelected` audit event is always
+emitted so operators can see which mode ran and whether it was explicit or auto.
+
+```bash
+# Force persistent mode regardless of goal shape
+echo '{"jsonrpc":"2.0","id":1,"method":"agent.submit_streaming",
+       "params":{"goal":"read the codebase and find bugs","orchestration":"persistent"}}' | \
+  nc -U /run/agentd/agentd.sock
+```
+
 ## Example — send a goal against a running Docker container
 
 ```bash

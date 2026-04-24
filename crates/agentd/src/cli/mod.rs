@@ -24,7 +24,7 @@ pub enum CliCommand {
     },
     /// Send a goal to Bootstrap and stream the result.
     #[command(
-        long_about = "Send a goal to Bootstrap, stream audit events live, exit when the goal completes.\n\nExample:\n    agentd submit \"fetch HN top 5 stories\"\n    agentd submit --orchestration persistent \"read the codebase and find bugs\""
+        long_about = "Send a goal to Bootstrap, stream audit events live, exit when the goal completes.\n\nThe daemon auto-detects whether to use plan or persistent mode based on the goal text.\nPass --orchestration to override the auto-detected mode.\n\nExample:\n    agentd submit \"fetch HN top 5 stories\"\n    agentd submit --orchestration persistent \"read the codebase and find bugs\"\n    agentd submit --orchestration plan \"summarise three URLs and write a report\""
     )]
     Submit {
         /// The goal text for Bootstrap.
@@ -32,12 +32,14 @@ pub enum CliCommand {
         /// Show every audit event (default: operator view only).
         #[arg(short, long)]
         verbose: bool,
-        /// Orchestration mode: `plan` routes through the Planner + PlanExecutor
-        /// DAG; `persistent` routes to the Bootstrap persistent agent.
-        /// Defaults to `plan`. Use `persistent` for open-ended, exploratory,
-        /// or long-context goals.
-        #[arg(long, value_enum, default_value = "plan")]
-        orchestration: crate::orchestration::OrchestrationMode,
+        /// Override auto-detection. By default the daemon classifies the goal
+        /// and picks `plan` or `persistent` automatically. Pass this flag to
+        /// force a specific mode: `plan` routes through the Planner +
+        /// PlanExecutor DAG; `persistent` routes to the Bootstrap persistent
+        /// agent. Use `persistent` for open-ended, exploratory, or
+        /// long-context goals where automatic routing might be wrong.
+        #[arg(long, value_enum)]
+        orchestration: Option<crate::orchestration::OrchestrationMode>,
         /// Unix socket path to connect to.
         #[arg(long, default_value = "/run/agentd/agentd.sock")]
         socket: PathBuf,
@@ -202,14 +204,13 @@ mod tests {
     // ---- orchestration flag tests ----
 
     #[test]
-    fn submit_orchestration_defaults_to_plan() {
+    fn submit_orchestration_absent_when_flag_omitted() {
         let c = TestCli::parse_from(["agentd", "submit", "some goal"]);
         match c.cmd {
             CliCommand::Submit { orchestration, .. } => {
                 assert_eq!(
-                    orchestration,
-                    crate::orchestration::OrchestrationMode::Plan,
-                    "default orchestration must be Plan"
+                    orchestration, None,
+                    "omitting --orchestration must leave it None (auto-detect)"
                 );
             }
             _ => panic!("expected Submit"),
@@ -221,7 +222,10 @@ mod tests {
         let c = TestCli::parse_from(["agentd", "submit", "--orchestration", "plan", "goal"]);
         match c.cmd {
             CliCommand::Submit { orchestration, .. } => {
-                assert_eq!(orchestration, crate::orchestration::OrchestrationMode::Plan);
+                assert_eq!(
+                    orchestration,
+                    Some(crate::orchestration::OrchestrationMode::Plan)
+                );
             }
             _ => panic!("expected Submit"),
         }
@@ -234,7 +238,7 @@ mod tests {
             CliCommand::Submit { orchestration, .. } => {
                 assert_eq!(
                     orchestration,
-                    crate::orchestration::OrchestrationMode::Persistent
+                    Some(crate::orchestration::OrchestrationMode::Persistent)
                 );
             }
             _ => panic!("expected Submit"),

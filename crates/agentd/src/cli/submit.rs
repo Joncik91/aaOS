@@ -17,16 +17,16 @@ use crate::orchestration::OrchestrationMode;
 pub async fn run(
     goal: String,
     verbose: bool,
-    orchestration: OrchestrationMode,
+    orchestration: Option<OrchestrationMode>,
     socket: PathBuf,
 ) -> anyhow::Result<()> {
-    let mut reader = match client::call_streaming(
-        &socket,
-        "agent.submit_streaming",
-        json!({ "goal": goal, "orchestration": orchestration }),
-    )
-    .await
-    {
+    // Build params: include `orchestration` only when the operator provided an
+    // explicit override. Omitting the field tells the daemon to auto-classify.
+    let params = match orchestration {
+        Some(mode) => json!({ "goal": goal, "orchestration": mode }),
+        None => json!({ "goal": goal }),
+    };
+    let mut reader = match client::call_streaming(&socket, "agent.submit_streaming", params).await {
         Ok(r) => r,
         Err(e) => {
             eprint!("{}", format_error(&e));

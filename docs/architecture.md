@@ -162,14 +162,14 @@ The system can run autonomously in a Docker container with `agentd` as PID 1. Tw
 
 #### Orchestration modes
 
-`agentd submit` accepts `--orchestration [plan|persistent]` (default: `plan`) to select the orchestration path per submit rather than per daemon startup:
+`agentd submit` auto-detects whether to use `plan` or `persistent` mode based on the goal text. A cheap single-shot LLM call (via `LlmOrchestrationClassifier`, ~50 input / 1 output token) inspects the goal and picks the mode before any agent work begins. Pass `--orchestration [plan|persistent]` to override the auto-detected mode; the classifier is bypassed when the flag is present.
 
 - **`plan`** — Planner + PlanExecutor DAG. Right for structured goals with declared outputs per subtask (fetch → analyse → write). Requires a loaded role catalog at startup; returns a legible error if the catalog failed to load rather than silently falling back. Each run is stateless: no agent survives beyond the goal.
 - **`persistent`** — Bootstrap persistent agent. Right for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed. Does not require a role catalog.
 
-The routing gate lives in `server.rs:handle_submit_streaming`. Missing `orchestration` field on the wire defaults to `plan` for backwards compatibility with older clients.
+The routing gate lives in `server.rs:handle_submit_streaming`. After mode resolution, an `AuditEventKind::OrchestrationSelected { mode, source }` event is emitted (`source: "explicit"` or `"auto"`) so operators can always see which path was chosen and why. The classifier falls back to `plan` on any LLM error; when no LLM client is configured, a `NoopOrchestrationClassifier` picks `plan` immediately without a network call.
 
-When to pick which: use `plan` for structured data pipelines with known output contracts; use `persistent` for investigation, reflection, or any goal where the agent must adapt its own strategy mid-run.
+When to pick which: use `plan` for structured data pipelines with known output contracts; use `persistent` for investigation, reflection, or any goal where the agent must adapt its own strategy mid-run. For most goals, leaving the flag absent and trusting the classifier is the right default.
 
 ### 7. Human Supervision Layer
 
