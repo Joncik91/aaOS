@@ -50,3 +50,6 @@ budget:
 retry:
   max_attempts: 2
   on: ["web_fetch_5xx", "timeout"]
+orchestration:
+  max_iterations: 10
+require_declared_output: true

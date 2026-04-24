@@ -19,8 +19,8 @@ pub use executor::{
 pub use placeholders::Substitutions;
 pub use planner::{validate_plan_structure, Planner, PlannerError};
 pub use role::{
-    ParameterSchema, ParameterType, Role, RoleBudget, RoleCatalog, RoleCatalogError, RoleRetry,
-    RoleScaffold,
+    ParameterSchema, ParameterType, Role, RoleBudget, RoleCatalog, RoleCatalogError,
+    RoleOrchestration, RoleRetry, RoleScaffold,
 };
 
 use serde::{Deserialize, Serialize};

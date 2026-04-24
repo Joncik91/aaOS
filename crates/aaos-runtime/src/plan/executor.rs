@@ -728,6 +728,8 @@ mod tests {
             model_ladder: vec![],
             escalate_on: default_escalation_signals(),
             scaffold: None,
+            orchestration: crate::plan::role::RoleOrchestration::default(),
+            require_declared_output: false,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("fetcher".into(), r);
@@ -888,6 +890,8 @@ mod tests {
             model_ladder: vec![],
             escalate_on: default_escalation_signals(),
             scaffold: None,
+            orchestration: crate::plan::role::RoleOrchestration::default(),
+            require_declared_output: false,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("generalist".into(), r);
@@ -1032,6 +1036,8 @@ mod tests {
             model_ladder: vec![],
             escalate_on: default_escalation_signals(),
             scaffold: None,
+            orchestration: crate::plan::role::RoleOrchestration::default(),
+            require_declared_output: false,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("reporter".into(), r);
@@ -1688,6 +1694,8 @@ mod tests {
             scaffold: None,
             model_ladder: vec![],
             escalate_on: default_escalation_signals(),
+            orchestration: crate::plan::role::RoleOrchestration::default(),
+            require_declared_output: false,
         }
     }
 
@@ -1719,6 +1727,8 @@ mod tests {
             scaffold: Some(RoleScaffold {
                 kind: "slow-test".into(),
             }),
+            orchestration: crate::plan::role::RoleOrchestration::default(),
+            require_declared_output: false,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("slow".into(), slow_role);

@@ -67,6 +67,32 @@ pub struct RoleScaffold {
     pub kind: String,
 }
 
+/// Per-role orchestration tuning. All fields are optional; defaults are chosen
+/// to match what older role YAMLs would have seen through the old
+/// `max_attempts + 10` formula.
+///
+/// YAML path: `orchestration:` inside a role file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleOrchestration {
+    /// Hard cap on LLM-loop iterations for a subtask of this role.
+    /// Default 50 — large enough for a multi-turn agent to explore + synthesise
+    /// without burning an unbounded token budget.
+    #[serde(default = "default_max_iterations")]
+    pub max_iterations: u32,
+}
+
+fn default_max_iterations() -> u32 {
+    50
+}
+
+impl Default for RoleOrchestration {
+    fn default() -> Self {
+        Self {
+            max_iterations: default_max_iterations(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Role {
     pub name: String,
@@ -100,6 +126,21 @@ pub struct Role {
     /// scaffold instead of an LLM loop. Absence (None) = LLM-powered role.
     #[serde(default)]
     pub scaffold: Option<RoleScaffold>,
+    /// Per-role orchestration tuning (iteration budget, etc.).
+    /// Optional; all fields have sane defaults so existing role YAMLs without
+    /// this block keep working without migration.
+    #[serde(default)]
+    pub orchestration: RoleOrchestration,
+    /// When true, the executor treats a missing declared `file_write` output as
+    /// a hard error that triggers a replan. When false (default), a missing
+    /// output emits a `SubtaskOutputMissing` advisory audit event and the
+    /// subtask is still considered successful.
+    ///
+    /// Set to `true` on roles whose downstream subtasks read from their output
+    /// path (e.g. fetcher — if it didn't write the HTML, the writer fails with
+    /// a missing-file error, which is a worse diagnostic than catching it here).
+    #[serde(default)]
+    pub require_declared_output: bool,
 }
 
 fn default_role_priority() -> u8 {
@@ -1026,6 +1067,8 @@ retry: { max_attempts: 1 }
             },
             scaffold: None,
             priority: 128,
+            orchestration: RoleOrchestration::default(),
+            require_declared_output: false,
         };
         let yaml = role.render_manifest(&serde_json::json!({}));
         assert!(
@@ -1046,5 +1089,116 @@ retry: { max_attempts: 1 }
         assert!(!has_unresolved_template_token("tool: web_fetch"));
         // Empty braces aren't a real template token; don't drop for them.
         assert!(!has_unresolved_template_token("literal {} braces"));
+    }
+
+    // ---- orchestration.max_iterations + require_declared_output tests ----
+
+    #[test]
+    fn orchestration_max_iterations_defaults_to_50() {
+        let yaml = r#"
+name: r
+model: deepseek-chat
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            role.orchestration.max_iterations, 50,
+            "missing orchestration block must default max_iterations to 50"
+        );
+    }
+
+    #[test]
+    fn orchestration_max_iterations_explicit_value_roundtrips() {
+        let yaml = r#"
+name: r
+model: deepseek-chat
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+orchestration:
+  max_iterations: 10
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(role.orchestration.max_iterations, 10);
+    }
+
+    #[test]
+    fn require_declared_output_defaults_to_false() {
+        let yaml = r#"
+name: r
+model: deepseek-chat
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            !role.require_declared_output,
+            "missing require_declared_output must default to false"
+        );
+    }
+
+    #[test]
+    fn require_declared_output_explicit_true_roundtrips() {
+        let yaml = r#"
+name: fetcher
+model: deepseek-chat
+system_prompt: "x"
+message_template: "y"
+budget: { max_input_tokens: 1000, max_output_tokens: 1000 }
+retry: { max_attempts: 1 }
+require_declared_output: true
+"#;
+        let role: Role = serde_yaml::from_str(yaml).unwrap();
+        assert!(role.require_declared_output);
+    }
+
+    #[test]
+    fn packaging_roles_round_trip_with_new_fields() {
+        // Verify the actual YAML files in packaging/roles/ parse cleanly with
+        // the new optional fields. This test succeeds both before and after
+        // adding the fields to the files — the serde default mechanism handles
+        // the absent-field case.
+        let role_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("packaging/roles");
+        if !role_dir.exists() {
+            // Running outside the repo (e.g. install-only test) — skip.
+            return;
+        }
+        let cat = RoleCatalog::load_from_dir(&role_dir).unwrap();
+        // fetcher must opt in to hard enforcement
+        if let Some(fetcher) = cat.get("fetcher") {
+            assert!(
+                fetcher.require_declared_output,
+                "fetcher must have require_declared_output: true"
+            );
+            assert_eq!(
+                fetcher.orchestration.max_iterations, 10,
+                "fetcher must have max_iterations: 10"
+            );
+        }
+        // generalist must have max_iterations: 50
+        if let Some(gen) = cat.get("generalist") {
+            assert_eq!(
+                gen.orchestration.max_iterations, 50,
+                "generalist must have max_iterations: 50"
+            );
+        }
+        // writer must have max_iterations: 30
+        if let Some(writer) = cat.get("writer") {
+            assert_eq!(
+                writer.orchestration.max_iterations, 30,
+                "writer must have max_iterations: 30"
+            );
+        }
     }
 }

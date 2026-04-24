@@ -427,6 +427,8 @@ mod tests {
             model_ladder: vec![],
             escalate_on: default_escalation_signals(),
             scaffold: None,
+            orchestration: crate::plan::role::RoleOrchestration::default(),
+            require_declared_output: false,
         };
         let mut cat = RoleCatalog::default();
         cat.roles_mut().insert("fetcher".into(), r);

@@ -108,3 +108,6 @@ retry:
   # blast radius.
   max_attempts: 60
   on: []
+
+orchestration:
+  max_iterations: 50

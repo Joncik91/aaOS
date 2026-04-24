@@ -44,3 +44,5 @@ budget:
 retry:
   max_attempts: 1
   on: []
+orchestration:
+  max_iterations: 50
