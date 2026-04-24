@@ -10,20 +10,38 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.4 `.deb` preinstalled).
-
-### Added
-
-- **Auto-routing: `agentd submit` now classifies the goal and picks `plan` or `persistent` automatically.** A cheap single-shot LLM call (~50 input / 1 output token) inspects the goal text before any agent work begins and routes accordingly. Operators who want to force a specific mode can still pass `--orchestration [plan|persistent]` — explicit wins, classifier is bypassed.
-  - `plan` — Planner + PlanExecutor DAG. Best for structured goals with declared outputs per subtask (fetch, analyse, write). Requires a loaded role catalog; returns a clear error if the catalog is absent.
-  - `persistent` — Bootstrap persistent agent. Best for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed.
-  - Classifier falls back to `plan` on any LLM error. When no LLM client is configured, auto-routes to `plan` immediately (no network call).
-  - An `OrchestrationSelected { mode, source }` audit event is emitted on every submit so operators can see which path was chosen and why (`source: "explicit"` or `"auto"`).
-  - The `agent.submit_streaming` JSON-RPC `"orchestration"` field is still honoured when present; omitting it now triggers auto-detection instead of defaulting silently to `plan`.
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.0.5 `.deb` preinstalled).
 
 ### Known — not yet fixed
 
-- **Bug 9 (high)** — when a subtask fails to produce its declared output (tools succeeded but LLM never wrote, or tools failed silently), the Planner's replan path spawns a fallback generalist that writes a plausible-looking but **hallucinated** failure report to the output file and marks the run `complete`.  Observed twice on the v0.0.4 verification run: a generalist wrote "target directory `/src/aaOS` was not found or could not be read" to `/data/report.md` moments after three other agents had successfully read 40+ files from that path.  Whether the operator sees the real error depends on retry-count arithmetic: `max_replans` exhausted → correct `bootstrap failed`; `max_replans` remaining → silent hallucinated success.  Severity raised from medium to high after v0.0.4 run showed the fallback actively writes false content, not just "NOT COMPLETED" markers.  Fix direction: the fallback agent must inherit the failed subtask's audit trail, or be replaced by a deterministic scaffold that writes an accurate failure summary without invoking an LLM.  Tracked in `docs/reflection/2026-04-24-v0.0.3-self-reflection.md`.
+- **Bug 9 (high)** — when a subtask fails to produce its declared output (tools succeeded but LLM never wrote, or tools failed silently), the Planner's replan path spawns a fallback generalist that writes a plausible-looking but **hallucinated** failure report to the output file and marks the run `complete`.  Observed twice on the v0.0.4 verification run: a generalist wrote "target directory `/src/aaOS` was not found or could not be read" to `/data/report.md` moments after three other agents had successfully read 40+ files from that path.  Whether the operator sees the real error depends on retry-count arithmetic: `max_replans` exhausted → correct `bootstrap failed`; `max_replans` remaining → silent hallucinated success.  The new `persistent` orchestration mode avoids this path entirely (Bootstrap has no output contract to miss); the bug remains for plan-mode failures.  Fix direction: the fallback agent must inherit the failed subtask's audit trail, or be replaced by a deterministic scaffold that writes an accurate failure summary without invoking an LLM.  Tracked in `docs/reflection/2026-04-24-v0.0.3-self-reflection.md`.
+
+---
+
+## [0.0.5] — 2026-04-24
+
+Third same-day release.  Adds per-submit orchestration routing with LLM-driven auto-detection as the default — `agentd submit` no longer forces every goal through the Planner + PlanExecutor DAG path.  Structured goals still take the DAG path; open-ended exploration / investigation goals route to a persistent Bootstrap agent that manages its own multi-turn context.
+
+Surfaced as a direct response to the v0.0.3 and v0.0.4 self-reflection droplet runs, which exposed the computed-orchestration path as architecturally unsuited to bug-hunting-class goals (per-subtask LLMs are single-shot with capped iteration budgets; they exhaust the budget exploring and never commit).  The Bootstrap persistent path still existed in the codebase but was only reachable by deleting the role catalog, an all-or-nothing switch.  v0.0.5 makes it a per-submit choice, default auto-detected.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.0.5> — `aaos_0.0.5-1_amd64.deb`.
+
+### Added
+
+- **Auto-routing: `agentd submit` now classifies the goal and picks `plan` or `persistent` automatically.** A cheap single-shot LLM call (~50 input / 1 output token, routes through the configured provider — DeepSeek `deepseek-chat` or Anthropic) inspects the goal text before any agent work begins and routes accordingly.  Classifier prompt is terse and asks for a single-word response; response parsing is forgiving (substring match on `plan` / `persistent`).
+  - `plan` — Planner + PlanExecutor DAG.  Best for structured goals with declared outputs per subtask (fetch, analyse, write).  Requires a loaded role catalog; returns a clear error if the catalog is absent.
+  - `persistent` — Bootstrap persistent agent.  Best for open-ended, exploratory, or long-context goals where a single multi-turn agent manages its own context and spawns children as needed.
+  - Classifier falls back to `plan` on any LLM error or unparseable response.  When no LLM client is configured, auto-routes to `plan` immediately (no network call, no hanging).
+  - **Override available**: `agentd submit --orchestration [plan|persistent] "<goal>"` bypasses the classifier.  Explicit wins.
+  - **Audit visible**: an `OrchestrationSelected { mode, source }` audit event fires on every submit so operators can see which path was chosen and why (`source: "explicit"` or `"auto"`).  A `tracing::info!` log line `orchestration mode selected mode=<Plan|Persistent> source=<auto|explicit>` also lands in journald.
+  - **JSON-RPC surface**: the `agent.submit_streaming` method accepts an optional `"orchestration"` field in its params.  Present → explicit; absent → classified.  Clients built against older servers that always defaulted to plan continue to work (they just don't get classification).
+- **Per-submit routing gate in `server.rs`** replaces the startup-time `if let Some(executor)` all-or-nothing gate.  Plan mode errors cleanly when no role catalog is loaded instead of silently falling through to Bootstrap.
+
+Commits: `1beaf22` (CLI flag), `a9bbfe2` (routing gate), `976aa95` (initial docs), `5dc20fd` (classifier module + tests), `4ddc959` (classifier wiring), `e1c3d73` (auto-detect docs).
+
+### Changed
+
+- Test count: 592 → 613 across the workspace.  +21 net: 12 new classifier unit tests, 4 new CLI tests, 5 new / updated server routing tests.
 
 ---
 
@@ -159,7 +177,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.5
 [0.0.4]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.4
 [0.0.3]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.3
 [0.0.2]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.2

@@ -12,7 +12,7 @@ Plus two ongoing strands — **AgentSkills** and **Self-reflection runs** — th
 
 Where an old label (e.g. "Phase F-b/3" or "C2") appears in reflection logs, commit messages, or external notes, the `ex-<old label>` line under each heading below preserves the mapping.
 
-For a release-by-release summary (what landed in `v0.0.1` through `v0.0.4` and the pre-tagged `0.0.0` body of work), see [`CHANGELOG.md`](../CHANGELOG.md).
+For a release-by-release summary (what landed in `v0.0.1` through `v0.0.5` and the pre-tagged `0.0.0` body of work), see [`CHANGELOG.md`](../CHANGELOG.md).
 
 ---
 
@@ -172,7 +172,7 @@ The 2026-04-19 `.deb` audit found that the package installed green but a fresh o
 - **Kernel-probe-driven backend default** (`9f18848`). `packaging/debian/postinst` now probes `/sys/kernel/security/lsm` for `landlock` + `/proc/sys/kernel/unprivileged_userns_clone` and generates `/etc/default/aaos.example` with `AAOS_DEFAULT_BACKEND=namespaced` + `AAOS_CONFINE_SUBTASKS=1` uncommented when both pass. Falls back to commented-out defaults with inline reason on older kernels.
 - **`agentd configure` subcommand** (`4bb5e38`). Interactive first-boot setup: prompts for a DeepSeek or Anthropic API key, atomically writes `/etc/default/aaos` mode 0600 root:root (tempfile + fsync + rename — no window at looser mode), runs `systemctl daemon-reload && restart agentd`. Non-interactive mode via `--key-from-env VAR`. Daemon's missing-key startup log now points at the command instead of a dead-end "unavailable" message. 5 new tests (107 agentd-lib tests total).
 
-**Deliverable met.** `apt install ./aaos_0.0.4-1_amd64.deb` followed by one `sudo agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from the installed template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
+**Deliverable met.** `apt install ./aaos_0.0.5-1_amd64.deb` followed by one `sudo agentd configure` produces a daemon that: (a) confines subtasks under Landlock + seccomp where the kernel supports it, (b) can register external MCP tools from the installed template, (c) exposes goals to external MCP clients on loopback, (d) has a skills catalog agents can actually query.
 
 ### 16. v0.0.2 release — droplet QA + six bug fixes
 *complete 2026-04-19*
@@ -205,6 +205,19 @@ Same-day patch.  The v0.0.3 self-reflection run (aaOS reading its own source tre
 Fix is the same pattern as Bug 7: move `"grep"` from `WORKER_SIDE_TOOLS` to `DAEMON_SIDE_TOOLS`, drop the `GrepTool` registration from `build_worker_registry`, flip the routing tests.  Commit `aaf82a3`.  The structural defect (two routing lists that can drift) remains; a refactor to a single source of truth is tracked as a watchlist item in `docs/reflection/2026-04-24-v0.0.3-self-reflection.md`.
 
 Tagged as `v0.0.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0.4 — `aaos_0.0.4-1_amd64.deb`.
+
+### 19. v0.0.5 release — per-submit orchestration with auto-detect
+*complete 2026-04-24*
+
+Third same-day release.  Adds the first real fork in the execution surface since computed-orchestration shipped in #14 — `agentd submit` now picks between the Planner + PlanExecutor DAG path (structured goals with clear inputs / outputs, like fetch-analyse-write) and the Bootstrap persistent agent path (open-ended exploration, investigation, code-reading) on a per-submit basis.
+
+The Bootstrap persistent path always existed in the source tree but was only reachable via docker `run-aaos.sh` or by deleting the role catalog — an all-or-nothing server-startup switch.  v0.0.5 exposes it per submit and, critically, makes the selection automatic by default.  A cheap single-shot LLM classifier (~50 input / 1 output token) inspects the goal text before any agent work begins and emits an `OrchestrationSelected { mode, source }` audit event so operators see which path was picked.  Operators who want to force a mode can still pass `--orchestration [plan|persistent]` — explicit overrides auto-detect.
+
+Motivated by the v0.0.3 and v0.0.4 self-reflection runs, which showed the computed-orchestration path was architecturally wrong for bug-hunting-class goals: per-subtask LLMs are single-shot with a capped iteration budget, they exhaust the budget exploring, and the output-contract enforcement + fallback-generalist path produces hallucinated "completion" without real findings.  Bootstrap avoids that path by owning its own multi-turn context.  The Run 9 (2026-04-14) pattern of Bootstrap spawning child code-reader agents and synthesising is restored as a first-class routing target, now *composable* with the structured DAG path rather than replacing it.
+
+Commits `1beaf22`, `a9bbfe2`, `976aa95`, `5dc20fd`, `4ddc959`, `e1c3d73` (+release-bump).  Test count 592 → 613.
+
+Tagged as `v0.0.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.0.5 — `aaos_0.0.5-1_amd64.deb`.
 
 ---
 

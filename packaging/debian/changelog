@@ -1,3 +1,18 @@
+aaos (0.0.5-1) trixie; urgency=medium
+
+  * Feature: agentd submit now auto-classifies the goal and routes
+    it to plan mode (Planner + PlanExecutor DAG) or persistent mode
+    (Bootstrap persistent agent) automatically.  A cheap single-shot
+    LLM call inspects the goal text before any agent work begins.
+    Operators can force a mode with --orchestration [plan|persistent];
+    the classifier is bypassed.  Surfaces which mode was picked via
+    a structured audit event and a journald log line.
+  * Previously a missing role catalog silently fell through to the
+    Bootstrap path; plan mode now errors cleanly with a pointer
+    at journalctl.
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 24 Apr 2026 20:30:00 +0000
+
 aaos (0.0.4-1) trixie; urgency=medium
 
   * Fix: grep tool now routes daemon-side under the namespaced
