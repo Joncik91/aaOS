@@ -202,12 +202,23 @@ pub enum AuditEventKind {
     /// Emitted once per `agent.submit_streaming` call, immediately after the
     /// orchestration mode is resolved.
     ///
-    /// `mode` is `"plan"` or `"persistent"`.
+    /// `mode` is `"decompose"` or `"direct"`.
     /// `source` is `"explicit"` (operator passed `--orchestration`) or `"auto"`
     /// (the LLM classifier picked the mode).
     OrchestrationSelected {
         mode: String,
         source: String,
+    },
+    /// Emitted when a subtask completes but its declared `file_write` output is
+    /// absent on disk, and the role has `require_declared_output: false` (the
+    /// default). The subtask is still considered successful; this event is an
+    /// advisory warning for operators reading the audit stream.
+    ///
+    /// Roles with `require_declared_output: true` (e.g. fetcher) produce a hard
+    /// `SubtaskCompleted { success: false }` instead of this advisory event.
+    SubtaskOutputMissing {
+        subtask_id: String,
+        declared_path: String,
     },
 }
 
@@ -619,6 +630,26 @@ mod tests {
             let original = serde_json::to_string(&e.event).unwrap();
             let rebuilt = serde_json::to_string(&back.event).unwrap();
             assert_eq!(original, rebuilt);
+        }
+    }
+
+    #[test]
+    fn subtask_output_missing_event_roundtrips_json() {
+        let e = AuditEventKind::SubtaskOutputMissing {
+            subtask_id: "fetch-hn".into(),
+            declared_path: "/data/hn.html".into(),
+        };
+        let s = serde_json::to_string(&e).unwrap();
+        let back: AuditEventKind = serde_json::from_str(&s).unwrap();
+        match back {
+            AuditEventKind::SubtaskOutputMissing {
+                subtask_id,
+                declared_path,
+            } => {
+                assert_eq!(subtask_id, "fetch-hn");
+                assert_eq!(declared_path, "/data/hn.html");
+            }
+            _ => panic!("wrong variant"),
         }
     }
 

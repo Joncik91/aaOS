@@ -28,6 +28,24 @@ use serde_json::Value;
 
 pub type SubtaskId = String;
 
+/// Outcome of checking whether a subtask produced its declared `file_write` outputs.
+///
+/// Returned by `check_declared_outputs_exist` in the executor and used by the
+/// caller to decide whether to raise a hard error (fatal), emit an advisory
+/// warning (advisory), or do nothing (present).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubtaskOutputStatus {
+    /// All declared outputs are on disk (or the role declares none).
+    Present,
+    /// A declared output is missing but `require_declared_output` is `false`
+    /// for this role. The caller emits a `SubtaskOutputMissing` audit event
+    /// and lets the subtask continue as successful.
+    MissingAdvisory(String),
+    /// A declared output is missing and `require_declared_output` is `true`
+    /// for this role. The caller raises `Correctable` + triggers a replan.
+    MissingFatal(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Subtask {
     pub id: SubtaskId,
@@ -271,5 +289,35 @@ mod plan_tests {
             "None ttl must be omitted from serialized JSON, got: {}",
             json_none
         );
+    }
+
+    // ---- SubtaskOutputStatus unit tests ----
+
+    #[test]
+    fn subtask_output_status_present_is_not_missing() {
+        let s = SubtaskOutputStatus::Present;
+        assert_eq!(s, SubtaskOutputStatus::Present);
+        assert_ne!(s, SubtaskOutputStatus::MissingAdvisory("x".into()));
+        assert_ne!(s, SubtaskOutputStatus::MissingFatal("x".into()));
+    }
+
+    #[test]
+    fn subtask_output_status_missing_advisory_carries_reason() {
+        let reason = "'/tmp/out.md' was not written".to_string();
+        let s = SubtaskOutputStatus::MissingAdvisory(reason.clone());
+        match s {
+            SubtaskOutputStatus::MissingAdvisory(r) => assert_eq!(r, reason),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn subtask_output_status_missing_fatal_carries_reason() {
+        let reason = "'/tmp/fetch.html' was not written".to_string();
+        let s = SubtaskOutputStatus::MissingFatal(reason.clone());
+        match s {
+            SubtaskOutputStatus::MissingFatal(r) => assert_eq!(r, reason),
+            _ => panic!("wrong variant"),
+        }
     }
 }
