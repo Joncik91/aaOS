@@ -1856,7 +1856,6 @@ impl Server {
         params: &serde_json::Value,
         writer: &mut W,
     ) {
-        use aaos_core::AuditEventKind;
         use tokio::sync::broadcast::error::RecvError;
 
         let goal = match params.get("goal").and_then(|g| g.as_str()) {
@@ -1872,45 +1871,59 @@ impl Server {
             }
         };
 
-        // Resolve orchestration mode.
+        // Resolve decomposition mode.
         //
         // Explicit `orchestration` field in the JSON-RPC params → operator override,
-        // bypass classifier.  Absent field → run the LLM classifier so the daemon
-        // auto-routes between plan and persistent based on the goal text.
+        // bypass classifier:
+        //   plan       → force Decompose (Planner + PlanExecutor multi-node DAG)
+        //   persistent → force Direct   (1-node inline plan through PlanExecutor)
+        // Absent field → run the LLM classifier so the daemon auto-routes.
+        use crate::orchestration_classifier::DecompositionMode;
         let explicit_mode: Option<crate::orchestration::OrchestrationMode> = params
             .get("orchestration")
             .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-        let (orchestration, source) = match explicit_mode {
-            Some(m) => (m, "explicit"),
+        let (decomposition, source) = match explicit_mode {
+            Some(crate::orchestration::OrchestrationMode::Plan) => {
+                (DecompositionMode::Decompose, "explicit")
+            }
+            Some(crate::orchestration::OrchestrationMode::Persistent) => {
+                (DecompositionMode::Direct, "explicit")
+            }
             None => (self.classifier.classify(&goal).await, "auto"),
         };
 
         // Emit an audit event so operators can see which mode was picked and why.
         {
             use aaos_core::{AgentId, AuditEvent, AuditEventKind};
+            let mode_str = match decomposition {
+                DecompositionMode::Decompose => "decompose",
+                DecompositionMode::Direct => "direct",
+            };
             let event = AuditEvent::new(
                 AgentId::new(),
                 AuditEventKind::OrchestrationSelected {
-                    mode: format!("{:?}", orchestration).to_lowercase(),
+                    mode: mode_str.to_string(),
                     source: source.to_string(),
                 },
             );
             self.audit_log.record(event);
         }
         tracing::info!(
-            mode = ?orchestration,
+            mode = ?decomposition,
             source = source,
             "orchestration mode selected"
         );
 
-        // ===== Orchestration gate =====
-        // Plan mode  + catalog loaded  → PlanExecutor DAG path.
-        // Plan mode  + catalog absent  → clear error (operator asked for plan but
-        //                                 catalog failed to load at startup).
-        // Persistent mode (any)        → Bootstrap persistent agent.
-        match (orchestration, self.plan_executor.get().cloned()) {
-            (crate::orchestration::OrchestrationMode::Plan, None) => {
+        // ===== Orchestration gate (v0.1.0 unified PlanExecutor path) =====
+        //
+        // Decompose + catalog loaded → Planner + PlanExecutor multi-node DAG.
+        // Decompose + catalog absent → clear error (operator forced decompose but
+        //                              catalog failed to load at startup).
+        // Direct (any)              → inline_direct_plan through PlanExecutor
+        //                             (no Bootstrap; 1-node generalist plan).
+        match (decomposition, self.plan_executor.get().cloned()) {
+            (DecompositionMode::Decompose, None) => {
                 let frame = json!({
                     "kind": "end",
                     "exit_code": 1,
@@ -1921,9 +1934,8 @@ impl Server {
                     "elapsed_ms": 0u64,
                 });
                 let _ = write_ndjson(writer, &frame).await;
-                return;
             }
-            (crate::orchestration::OrchestrationMode::Plan, Some(executor)) => {
+            (DecompositionMode::Decompose, Some(executor)) => {
                 // ===== PlanExecutor branch =====
                 // Route through the Planner + PlanExecutor DAG.
                 let run_id = uuid::Uuid::new_v4();
@@ -2048,118 +2060,146 @@ impl Server {
                 }
                 // unreachable — all paths above return
             }
-            // ===== Bootstrap (persistent) branch =====
-            // OrchestrationMode::Persistent, or Plan with no executor (handled
-            // above as an error — this arm handles Persistent + either executor state).
-            (crate::orchestration::OrchestrationMode::Persistent, _) => {}
-        }
-
-        // ===== Bootstrap fallback — reached only when orchestration == Persistent =====
-
-        // Subscribe BEFORE routing the goal so we don't miss the first events
-        // Bootstrap emits in response.
-        let mut rx = self.broadcast_audit.subscribe();
-
-        // Ensure Bootstrap is running (idempotent).
-        let bootstrap_id = match self.ensure_bootstrap_running().await {
-            Ok(id) => id,
-            Err(e) => {
-                let err = json!({
+            // ===== Direct branch (v0.1.0) =====
+            // Classifier said Direct, or operator passed --orchestration persistent.
+            // Build a 1-node inline plan and run it through PlanExecutor with the
+            // generalist role at full multi-turn iteration budget.
+            //
+            // If no plan_executor is loaded (catalog missing), attempt to fall
+            // through — the error path is the same "computed orchestration not
+            // available" response so the operator knows to check the catalog.
+            (DecompositionMode::Direct, None) => {
+                let frame = json!({
                     "kind": "end",
-                    "exit_code": 3,
-                    "error": format!("failed to start bootstrap: {e}"),
+                    "exit_code": 1,
+                    "error": "computed orchestration not available: role catalog failed to load at startup \
+                              — check `journalctl -u agentd` for details",
+                    "input_tokens": 0u64,
+                    "output_tokens": 0u64,
+                    "elapsed_ms": 0u64,
                 });
-                let _ = write_ndjson(writer, &err).await;
-                return;
+                let _ = write_ndjson(writer, &frame).await;
             }
-        };
+            (DecompositionMode::Direct, Some(executor)) => {
+                // Construct a 1-node Plan inline — no LLM Planner call needed.
+                let run_id = uuid::Uuid::new_v4();
+                let started = std::time::Instant::now();
+                let mut rx = self.broadcast_audit.subscribe();
 
-        // Deliver the goal to Bootstrap via the router — same path as
-        // `agent.run` takes for persistent agents.
-        if let Err(e) = self.route_goal_to(bootstrap_id, &goal).await {
-            let err = json!({
-                "kind": "end",
-                "exit_code": 3,
-                "error": format!("failed to route goal: {e}"),
-            });
-            let _ = write_ndjson(writer, &err).await;
-            return;
-        }
-
-        let started = std::time::Instant::now();
-        let mut input_tokens: u64 = 0;
-        let mut output_tokens: u64 = 0;
-        let mut exit_code: i32 = 0;
-
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if !self.event_in_subtree(event.agent_id, bootstrap_id) {
-                        continue;
+                let exec_task = tokio::spawn({
+                    let goal = goal.clone();
+                    async move {
+                        let plan = inline_direct_plan(&goal, run_id);
+                        executor.run_with_plan(plan, &goal, run_id).await
                     }
-                    // Aggregate usage; never forward.
-                    if let AuditEventKind::UsageReported {
-                        input_tokens: i,
-                        output_tokens: o,
-                    } = &event.event
-                    {
-                        input_tokens = input_tokens.saturating_add(*i);
-                        output_tokens = output_tokens.saturating_add(*o);
-                        continue;
-                    }
+                });
+                tokio::pin!(exec_task);
 
-                    let frame = serde_json::to_value(&event).unwrap_or(serde_json::Value::Null);
-                    let frame = json!({ "kind": "event", "event": frame });
-                    if write_ndjson(writer, &frame).await.is_err() {
-                        return;
-                    }
+                loop {
+                    tokio::select! {
+                        result = &mut exec_task => {
+                            match result {
+                                Ok(Ok(plan_result)) => {
+                                    let (in_tok, out_tok) =
+                                        plan_result.results.values().fold(
+                                            (0u64, 0u64),
+                                            |(a, b), r| {
+                                                (a + r.input_tokens, b + r.output_tokens)
+                                            },
+                                        );
 
-                    // Only Bootstrap's own terminal events close the stream.
-                    // Child failures don't escalate — Bootstrap decides.
-                    if event.agent_id == bootstrap_id {
-                        match &event.event {
-                            AuditEventKind::AgentExecutionCompleted { .. } => break,
-                            AuditEventKind::AgentLoopStopped { reason, .. } => {
-                                if reason == "error" || reason == "budget_exceeded" {
-                                    exit_code = 1;
+                                    let plan_frame = json!({
+                                        "kind": "plan",
+                                        "plan": plan_result.plan,
+                                    });
+                                    let _ = write_ndjson(writer, &plan_frame).await;
+
+                                    if let Some(last) = plan_result.plan.subtasks.last() {
+                                        if let Some(r) = plan_result.results.get(&last.id) {
+                                            if !r.response.is_empty() {
+                                                let ft = json!({
+                                                    "kind": "final_text",
+                                                    "text": r.response,
+                                                });
+                                                let _ = write_ndjson(writer, &ft).await;
+                                            }
+                                        }
+                                    }
+
+                                    let end = json!({
+                                        "kind": "end",
+                                        "exit_code": 0,
+                                        "input_tokens": in_tok,
+                                        "output_tokens": out_tok,
+                                        "elapsed_ms": started.elapsed().as_millis() as u64,
+                                    });
+                                    let _ = write_ndjson(writer, &end).await;
                                 }
-                                break;
+                                Ok(Err(e)) => {
+                                    tracing::error!(error = %e, run_id = %run_id, "direct plan execution failed");
+                                    let frame = json!({
+                                        "kind": "end",
+                                        "exit_code": 1,
+                                        "error": format!("{e}"),
+                                        "input_tokens": 0,
+                                        "output_tokens": 0,
+                                        "elapsed_ms": started.elapsed().as_millis() as u64,
+                                    });
+                                    let _ = write_ndjson(writer, &frame).await;
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, run_id = %run_id, "direct plan executor task panicked");
+                                    let frame = json!({
+                                        "kind": "end",
+                                        "exit_code": 1,
+                                        "error": format!("executor task panic: {e}"),
+                                        "input_tokens": 0,
+                                        "output_tokens": 0,
+                                        "elapsed_ms": started.elapsed().as_millis() as u64,
+                                    });
+                                    let _ = write_ndjson(writer, &frame).await;
+                                }
                             }
-                            _ => {}
+                            return;
+                        }
+                        evt = rx.recv() => {
+                            match evt {
+                                Ok(event) => {
+                                    let frame = serde_json::to_value(&event)
+                                        .unwrap_or(serde_json::Value::Null);
+                                    let frame = json!({
+                                        "kind": "event",
+                                        "event": frame,
+                                    });
+                                    if write_ndjson(writer, &frame).await.is_err() {
+                                        exec_task.abort();
+                                        return;
+                                    }
+                                }
+                                Err(RecvError::Lagged(n)) => {
+                                    let frame = json!({
+                                        "kind": "lag",
+                                        "missed": n,
+                                    });
+                                    let _ = write_ndjson(writer, &frame).await;
+                                }
+                                Err(RecvError::Closed) => {
+                                    exec_task.abort();
+                                    return;
+                                }
+                            }
                         }
                     }
                 }
-                Err(RecvError::Lagged(n)) => {
-                    let frame = json!({ "kind": "lag", "missed": n });
-                    let _ = write_ndjson(writer, &frame).await;
-                }
-                Err(RecvError::Closed) => break,
+                // unreachable — all paths above return
             }
         }
-
-        // Emit Bootstrap's last assistant-message text as a `final_text` frame
-        // before the `end` frame. Lets the CLI show the actual answer, not just
-        // the timing summary. Missing or empty → skip the frame.
-        if let Some(text) = self.last_assistant_text(bootstrap_id) {
-            if !text.is_empty() {
-                let frame = json!({ "kind": "final_text", "text": text });
-                let _ = write_ndjson(writer, &frame).await;
-            }
-        }
-
-        let end = json!({
-            "kind": "end",
-            "exit_code": exit_code,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "elapsed_ms": started.elapsed().as_millis() as u64,
-        });
-        let _ = write_ndjson(writer, &end).await;
     }
 
     /// Pull the most recent assistant message's text from the session store
-    /// for the given agent, concatenating any Text content blocks.
-    /// Returns None if there's no history, no assistant message, or the load fails.
+    /// for the given agent, concatenating any Text content blocks. Returns
+    /// None if there's no history, no assistant message, or the load fails.
+    #[allow(dead_code)] // kept for future re-use; Bootstrap path removed in v0.1.0
     fn last_assistant_text(&self, agent_id: aaos_core::AgentId) -> Option<String> {
         let history = self.session_store.load(&agent_id).ok()?;
         history.iter().rev().find_map(|msg| {
@@ -2307,87 +2347,6 @@ impl Server {
         let _ = write_ndjson(writer, &end).await;
     }
 
-    /// Walk from `event_agent` upward via `parent_agent` until root. Returns
-    /// true if any ancestor (or the node itself) is `bootstrap`.
-    fn event_in_subtree(
-        &self,
-        event_agent: aaos_core::AgentId,
-        bootstrap: aaos_core::AgentId,
-    ) -> bool {
-        let mut cur = Some(event_agent);
-        // Guard against pathological cycles (shouldn't happen, but a bad
-        // parent_agent link would otherwise spin forever).
-        for _ in 0..1024 {
-            let Some(id) = cur else { return false };
-            if id == bootstrap {
-                return true;
-            }
-            cur = self
-                .registry
-                .get_info(id)
-                .ok()
-                .and_then(|info| info.parent_agent);
-        }
-        false
-    }
-
-    /// Ensure a Bootstrap agent is running. If one is already in the registry
-    /// (by manifest name "bootstrap", in Running state), return its id.
-    /// Otherwise load `/etc/aaos/manifests/bootstrap.yaml` and spawn it.
-    pub(crate) async fn ensure_bootstrap_running(&self) -> anyhow::Result<aaos_core::AgentId> {
-        for info in self.registry.list() {
-            if info.name == "bootstrap" && info.state == AgentState::Running {
-                return Ok(info.id);
-            }
-        }
-
-        // Test-only override so the streaming-test harness can point at a
-        // pre-seeded bootstrap manifest without needing a file at the
-        // production install path.
-        let manifest_path = std::env::var("AAOS_BOOTSTRAP_MANIFEST_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/etc/aaos/manifests/bootstrap.yaml"));
-
-        // Read the YAML so we can reuse `spawn_from_yaml_with_id`, which
-        // handles the full spawn-and-launch path for persistent agents
-        // (identical to what `handle_agent_spawn` does for user-submitted
-        // manifests). Using a fresh UUID here — if a stable-ID policy is
-        // needed later it can flow in via env (matches main.rs's
-        // load_or_create_bootstrap_id behavior).
-        let yaml = std::fs::read_to_string(&manifest_path).map_err(|e| {
-            anyhow::anyhow!(
-                "cannot read bootstrap manifest at {}: {}",
-                manifest_path.display(),
-                e
-            )
-        })?;
-
-        let id = aaos_core::AgentId::new();
-        let resp = self
-            .spawn_from_yaml_with_id(&yaml, serde_json::Value::Null, Some(id))
-            .await;
-        if let Some(err) = resp.error {
-            return Err(anyhow::anyhow!("spawn bootstrap failed: {}", err.message));
-        }
-        Ok(id)
-    }
-
-    /// Deliver a goal message to an already-running agent via the router.
-    /// Mirrors the persistent-agent branch of `handle_agent_run`.
-    pub(crate) async fn route_goal_to(
-        &self,
-        target: aaos_core::AgentId,
-        goal: &str,
-    ) -> anyhow::Result<()> {
-        let msg =
-            aaos_ipc::McpMessage::new(target, target, "agent.run", json!({ "message": goal }));
-        self.router
-            .route(msg)
-            .await
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        Ok(())
-    }
-
     /// Start listening on a Unix socket.
     pub async fn listen(self: Arc<Self>, socket_path: &Path) -> anyhow::Result<()> {
         // Remove stale socket
@@ -2456,6 +2415,35 @@ impl Server {
                 }
             });
         }
+    }
+}
+
+/// Construct a 1-node inline Plan for the `direct` decomposition path.
+///
+/// Routes the whole goal to the `generalist` role with a concrete workspace
+/// path inside the run's directory so role capabilities that reference
+/// `{workspace}` resolve correctly. The `{run}` placeholder is substituted
+/// by the executor's `Substitutions` before the subtask spawns.
+///
+/// This replaces the `fallback_generalist_plan` path (removed in v0.1.0)
+/// for the *proactive* direct-route case; the key difference is that this
+/// function is called intentionally (classifier said Direct or operator forced
+/// it), whereas `fallback_generalist_plan` was a silent error-recovery path
+/// that could produce hallucinated reports.
+fn inline_direct_plan(goal: &str, _run_id: uuid::Uuid) -> aaos_runtime::plan::Plan {
+    aaos_runtime::plan::Plan {
+        subtasks: vec![aaos_runtime::plan::Subtask {
+            id: "generalist".into(),
+            role: "generalist".into(),
+            params: serde_json::json!({
+                "task_description": goal,
+                "workspace": "{run}/output.md",
+            }),
+            depends_on: vec![],
+            ttl: None,
+            current_model_tier: 0,
+        }],
+        final_output: "{run}/output.md".into(),
     }
 }
 
@@ -2774,195 +2762,6 @@ system_prompt: "You are helpful."
             .await;
         let result = resp.result.unwrap();
         assert_eq!(result["pending"].as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
-    async fn submit_streaming_writes_events_then_end_frame() {
-        use std::time::Duration;
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::UnixStream;
-
-        // The lock serializes test-wide access to AAOS_BOOTSTRAP_MANIFEST_PATH +
-        // AAOS_ROLES_DIR across the whole body; `tokio::sync::Mutex` would not
-        // fit because the lock is shared with synchronous #[test] callers.
-        let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let tmp = tempfile::tempdir().unwrap();
-        let socket_path = tmp.path().join("agentd.sock");
-        let manifest_path = tmp.path().join("bootstrap.yaml");
-        std::fs::write(
-            &manifest_path,
-            r#"
-name: bootstrap
-model: claude-haiku-4-5-20251001
-system_prompt: "bootstrap test"
-lifecycle: persistent
-"#,
-        )
-        .unwrap();
-
-        // Point ensure_bootstrap_running at our temp manifest.
-        // SAFETY: test-only, and each test runs in its own tokio runtime but
-        // the env var is process-global. The code reads it once per call so
-        // races are benign.
-        std::env::set_var(
-            "AAOS_BOOTSTRAP_MANIFEST_PATH",
-            manifest_path.to_string_lossy().to_string(),
-        );
-
-        // Isolate from host role catalog — without this, a host with a real
-        // /etc/aaos/roles/ directory (e.g. a Debian box with the .deb
-        // installed) causes load_role_catalog to build a PlanExecutor, and
-        // handle_submit_streaming takes the PlanExecutor branch instead of
-        // the Bootstrap branch this test asserts against. Surfaced by the
-        // 2026-04-17 self-build run on a DO droplet where /etc/aaos/roles/
-        // was populated.
-        //
-        // Point at a nonexistent subdir of the tempdir (not just an empty
-        // dir): load_from_dir on an empty dir returns Ok(empty_catalog) and
-        // still wires a PlanExecutor; we need the load to fail so
-        // plan_executor stays None.
-        let absent_roles = tmp.path().join("no-such-roles-dir");
-        std::env::set_var("AAOS_ROLES_DIR", absent_roles.to_string_lossy().to_string());
-
-        // Use a hanging LLM client so the persistent bootstrap agent launches
-        // but never actually completes execution on its own. That gives our
-        // directly-injected audit events deterministic ordering — only they
-        // reach the subscriber, never racing against a real AgentExecutionCompleted
-        // emitted by the agent loop.
-        let hanging: Arc<dyn LlmClient> = Arc::new(HangingLlm);
-        let server = Server::with_llm_client(hanging);
-        let audit = server.broadcast_audit.clone();
-
-        let server_for_listen = server.clone();
-        let socket_path_for_listen = socket_path.clone();
-        let listener_task = tokio::spawn(async move {
-            let _ = server_for_listen.listen(&socket_path_for_listen).await;
-        });
-
-        // Wait for socket to appear.
-        for _ in 0..50 {
-            if socket_path.exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-
-        let mut client = UnixStream::connect(&socket_path).await.unwrap();
-        // Use `orchestration: "persistent"` so the request reaches Bootstrap even
-        // though no role catalog is loaded in this test. Absent orchestration field
-        // now defaults to Plan, which would return a catalog-missing error.
-        let req = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "agent.submit_streaming",
-            "params": { "goal": "test goal", "orchestration": "persistent" }
-        });
-        let mut line = serde_json::to_vec(&req).unwrap();
-        line.push(b'\n');
-        client.write_all(&line).await.unwrap();
-        client.flush().await.unwrap();
-
-        // Give the server a moment to subscribe and ensure_bootstrap_running,
-        // then emit audit events tagged with the real bootstrap id.
-        let registry = server.registry.clone();
-        let emitter = tokio::spawn(async move {
-            // Poll the registry for the bootstrap agent the server just spawned.
-            let bid = {
-                let mut found = None;
-                for _ in 0..100 {
-                    if let Some(info) = registry.list().into_iter().find(|i| i.name == "bootstrap")
-                    {
-                        found = Some(info.id);
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                found.expect("bootstrap agent registered")
-            };
-
-            // Small extra delay so the server's subscribe() is definitely live.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-
-            use aaos_core::{AuditEvent, AuditEventKind, AuditLog};
-            audit.record(AuditEvent::new(
-                bid,
-                AuditEventKind::ToolInvoked {
-                    tool: "file_write".into(),
-                    input_hash: "h".into(),
-                    args_preview: None,
-                    execution_surface: aaos_core::ToolExecutionSurface::Daemon,
-                },
-            ));
-            audit.record(AuditEvent::new(
-                bid,
-                AuditEventKind::UsageReported {
-                    input_tokens: 100,
-                    output_tokens: 50,
-                },
-            ));
-            audit.record(AuditEvent::new(
-                bid,
-                AuditEventKind::AgentExecutionCompleted {
-                    stop_reason: "done".into(),
-                    total_iterations: 1,
-                },
-            ));
-        });
-
-        let (reader, _writer) = client.split();
-        let mut lines = BufReader::new(reader).lines();
-        let mut frames: Vec<serde_json::Value> = Vec::new();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while let Ok(Some(text)) = lines.next_line().await {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                    let is_end = v.get("kind").and_then(|k| k.as_str()) == Some("end");
-                    frames.push(v);
-                    if is_end {
-                        break;
-                    }
-                }
-            }
-        })
-        .await
-        .expect("should receive end frame within 5s");
-
-        emitter.await.unwrap();
-        listener_task.abort();
-
-        // Clean up env vars so other tests aren't affected.
-        std::env::remove_var("AAOS_BOOTSTRAP_MANIFEST_PATH");
-        std::env::remove_var("AAOS_ROLES_DIR");
-
-        let end = frames.last().unwrap();
-        assert_eq!(end["kind"], "end");
-        assert_eq!(end["exit_code"], 0);
-        assert_eq!(end["input_tokens"], 100);
-        assert_eq!(end["output_tokens"], 50);
-        assert!(end.get("elapsed_ms").is_some(), "elapsed_ms present");
-
-        // UsageReported is aggregated, not forwarded.
-        let has_usage = frames.iter().any(|f| {
-            f.get("event")
-                .and_then(|e| e.get("event"))
-                .and_then(|inner| inner.get("kind"))
-                .and_then(|k| k.as_str())
-                == Some("usage_reported")
-        });
-        assert!(
-            !has_usage,
-            "UsageReported should be aggregated, not forwarded"
-        );
-
-        // ToolInvoked should be forwarded as an event frame.
-        let has_tool = frames.iter().any(|f| {
-            f.get("event")
-                .and_then(|e| e.get("event"))
-                .and_then(|inner| inner.get("kind"))
-                .and_then(|k| k.as_str())
-                == Some("tool_invoked")
-        });
-        assert!(has_tool, "ToolInvoked should be forwarded");
     }
 
     #[tokio::test]
@@ -3315,11 +3114,9 @@ retry: { max_attempts: 1, on: [] }
         );
     }
 
-    /// Persistent mode with no catalog → Bootstrap branch runs (no catalog error).
-    /// We verify by checking that ensure_bootstrap_running is attempted: it will
-    /// fail if the bootstrap manifest is absent, producing a "failed to start
-    /// bootstrap" error — which is distinct from the "computed orchestration not
-    /// available" plan-mode error.
+    /// v0.1.0: `--orchestration persistent` maps to force-Direct mode, which
+    /// uses the unified PlanExecutor path (not Bootstrap). With no catalog,
+    /// direct mode returns the same catalog-missing error as decompose mode.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn submit_streaming_persistent_mode_bypasses_catalog_check() {
@@ -3327,11 +3124,6 @@ retry: { max_attempts: 1, on: [] }
         // Absent roles dir → plan_executor stays None.
         let absent = "/nonexistent-roles-dir-for-test";
         std::env::set_var("AAOS_ROLES_DIR", absent);
-        // Also absent bootstrap manifest so ensure_bootstrap_running fails fast.
-        std::env::set_var(
-            "AAOS_BOOTSTRAP_MANIFEST_PATH",
-            "/nonexistent-bootstrap-manifest-for-test.yaml",
-        );
 
         let server = Server::with_llm_client(Arc::new(HangingLlm));
         assert!(server.plan_executor.get().is_none());
@@ -3344,21 +3136,19 @@ retry: { max_attempts: 1, on: [] }
         server.handle_submit_streaming(&params, &mut buf).await;
 
         std::env::remove_var("AAOS_ROLES_DIR");
-        std::env::remove_var("AAOS_BOOTSTRAP_MANIFEST_PATH");
 
         let text = String::from_utf8(buf).unwrap();
         let frame: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(frame["kind"], "end");
-        // Must NOT be the "computed orchestration not available" error.
+        assert_eq!(
+            frame["exit_code"], 1,
+            "persistent/direct with no catalog must error; got: {frame:?}"
+        );
+        // In v0.1.0 both modes require the catalog. The error is the same.
         let err = frame["error"].as_str().unwrap_or("");
         assert!(
-            !err.contains("computed orchestration not available"),
-            "persistent mode must not return a catalog-missing error, got: {err}"
-        );
-        // Should be a bootstrap-start failure instead.
-        assert!(
-            err.contains("failed to start bootstrap") || err.contains("cannot read bootstrap"),
-            "persistent mode without manifest must fail with bootstrap error, got: {err}"
+            err.contains("computed orchestration not available"),
+            "persistent/direct mode with no catalog must return the catalog error, got: {err}"
         );
     }
 
@@ -3392,18 +3182,18 @@ retry: { max_attempts: 1, on: [] }
         );
     }
 
-    /// Auto-detect: when classifier returns "plan" and no catalog is loaded,
-    /// the submit returns the same "computed orchestration not available" error.
-    /// Uses `MockLlm::text("plan")` so the classifier call doesn't hang.
+    /// Auto-detect: when classifier returns "decompose" and no catalog is loaded,
+    /// the submit returns the "computed orchestration not available" error.
+    /// Uses `MockLlm::text("decompose")` so the classifier call doesn't hang.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn submit_streaming_auto_detect_plan_without_catalog_returns_error() {
+    async fn submit_streaming_auto_detect_decompose_without_catalog_returns_error() {
         let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let absent = "/nonexistent-roles-dir-for-auto-plan-test";
+        let absent = "/nonexistent-roles-dir-for-auto-decompose-test";
         std::env::set_var("AAOS_ROLES_DIR", absent);
 
-        // MockLlm returns "plan" — classifier will pick Plan.
-        let server = Server::with_llm_client(MockLlm::text("plan"));
+        // MockLlm returns "decompose" — classifier will pick Decompose.
+        let server = Server::with_llm_client(MockLlm::text("decompose"));
         assert!(server.plan_executor.get().is_none());
 
         let mut buf = Vec::<u8>::new();
@@ -3420,62 +3210,32 @@ retry: { max_attempts: 1, on: [] }
         let err = frame["error"].as_str().unwrap_or("");
         assert!(
             err.contains("computed orchestration not available"),
-            "auto-detect plan with no catalog must return catalog error, got: {err}"
+            "auto-detect decompose with no catalog must return catalog error, got: {err}"
         );
     }
 
-    /// Auto-detect: when classifier returns "persistent", the submit routes to
-    /// the Bootstrap path (bypassing the Plan gate entirely), even with no catalog.
-    /// Uses `MockLlm::text("persistent")` so the classifier returns quickly.
-    /// Bootstrap will fail (no manifest) but must NOT return "computed orchestration
-    /// not available" — that error is Plan-only.
+    /// Auto-detect: when classifier returns "direct" and no catalog is loaded,
+    /// v0.1.0 returns the same catalog-missing error (both paths need a catalog).
+    /// Previously ("persistent" → Bootstrap) this bypassed the catalog check;
+    /// under the unified PlanExecutor model both modes require the catalog.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn submit_streaming_auto_detect_persistent_bypasses_catalog_check() {
+    async fn submit_streaming_auto_detect_direct_without_catalog_returns_error() {
         let _guard = ROLES_DIR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let absent = "/nonexistent-roles-dir-for-auto-persistent-test";
+        let absent = "/nonexistent-roles-dir-for-auto-direct-test";
         std::env::set_var("AAOS_ROLES_DIR", absent);
 
-        // Two responses: first for the classifier call ("persistent"),
-        // second attempt by Bootstrap (won't actually reach LLM — Bootstrap
-        // fails at manifest load, but we need the queue non-empty to avoid panic).
-        let server = Server::with_llm_client(Arc::new(MockLlm {
-            responses: std::sync::Mutex::new(vec![
-                Ok(CompletionResponse {
-                    content: vec![ContentBlock::Text {
-                        text: "persistent".into(),
-                    }],
-                    stop_reason: LlmStopReason::EndTurn,
-                    usage: aaos_core::TokenUsage {
-                        input_tokens: 5,
-                        output_tokens: 1,
-                    },
-                }),
-                // Fallback in case Bootstrap tries to run — never reached if
-                // manifest is missing, but keeps the queue non-empty.
-                Ok(CompletionResponse {
-                    content: vec![ContentBlock::Text {
-                        text: "bootstrap response".into(),
-                    }],
-                    stop_reason: LlmStopReason::EndTurn,
-                    usage: aaos_core::TokenUsage {
-                        input_tokens: 10,
-                        output_tokens: 5,
-                    },
-                }),
-            ]),
-        }));
+        // MockLlm returns "direct" — classifier will pick Direct.
+        let server = Server::with_llm_client(MockLlm::text("direct"));
         assert!(server.plan_executor.get().is_none());
 
         let mut buf = Vec::<u8>::new();
-        // No `orchestration` key — classifier returns "persistent".
         let params = serde_json::json!({ "goal": "explore the codebase and find bugs" });
         server.handle_submit_streaming(&params, &mut buf).await;
 
         std::env::remove_var("AAOS_ROLES_DIR");
 
         let text = String::from_utf8(buf).unwrap();
-        // There may be multiple NDJSON frames; take the last non-empty one.
         let last_frame: serde_json::Value = text
             .lines()
             .filter(|l| !l.trim().is_empty())
@@ -3483,10 +3243,9 @@ retry: { max_attempts: 1, on: [] }
             .next_back()
             .expect("at least one frame");
         assert_eq!(last_frame["kind"], "end");
-        let err = last_frame["error"].as_str().unwrap_or("");
-        assert!(
-            !err.contains("computed orchestration not available"),
-            "auto-detect persistent must NOT return catalog error, got: {err}"
+        assert_eq!(
+            last_frame["exit_code"], 1,
+            "direct with no catalog must error, got: {last_frame:?}"
         );
     }
 }

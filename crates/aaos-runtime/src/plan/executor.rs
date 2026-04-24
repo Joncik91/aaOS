@@ -143,7 +143,10 @@ impl PlanExecutor {
 
         let mut plan = match self.planner.plan(goal, &self.catalog).await {
             Ok(p) => p,
-            Err(PlannerError::Malformed(_)) => fallback_generalist_plan(goal, &self.catalog)?,
+            // Malformed Planner output on a decompose goal: treat as Correctable
+            // so the replan loop handles it. After max_replans attempts the run
+            // errors cleanly. No silent fallback to a generalist any more (Bug 9
+            // closed — the fallback_generalist_plan path is deleted in v0.1.0).
             Err(e) => return Err(ExecutorError::from(e)),
         };
         self.write_plan_json(&run_root, &plan)?;
@@ -177,6 +180,117 @@ impl PlanExecutor {
                     ));
 
                     // Phase F-b/2: decide per-subtask escalation.
+                    let mut tier_bumps: std::collections::HashMap<String, u8> =
+                        std::collections::HashMap::new();
+                    for f in &failures {
+                        let Some(role) = self.catalog.get(&f.role) else {
+                            continue;
+                        };
+                        let ladder = role
+                            .resolved_ladder()
+                            .unwrap_or_else(|_| vec![role.model.clone()]);
+                        let current_tier = plan
+                            .subtasks
+                            .iter()
+                            .find(|s| s.id == f.subtask_id)
+                            .map(|s| s.current_model_tier)
+                            .unwrap_or(0);
+                        if let Some(signal) = crate::plan::escalation::decide_escalation(
+                            f,
+                            &role.escalate_on,
+                            ladder.len(),
+                            current_tier,
+                        ) {
+                            let new_tier = (current_tier + 1).min((ladder.len() - 1) as u8);
+                            tier_bumps.insert(f.subtask_id.clone(), new_tier);
+                            self.audit_log.record(AuditEvent::new(
+                                AgentId::from_uuid(uuid::Uuid::nil()),
+                                AuditEventKind::SubtaskModelEscalated {
+                                    subtask_id: f.subtask_id.clone(),
+                                    from_tier: current_tier,
+                                    to_tier: new_tier,
+                                    from_model: ladder[current_tier as usize].clone(),
+                                    to_model: ladder[new_tier as usize].clone(),
+                                    reason: signal.reason().to_string(),
+                                },
+                            ));
+                        }
+                    }
+
+                    let new_plan_from_planner = self
+                        .planner
+                        .replan(goal, &self.catalog, &plan, &reason)
+                        .await
+                        .map_err(ExecutorError::from)?;
+
+                    let mut new_plan = new_plan_from_planner;
+                    crate::plan::escalation::carry_tiers_forward(&mut new_plan, &plan, &tier_bumps);
+                    plan = new_plan;
+                    self.write_plan_json(&run_root, &plan)?;
+                    replans_used += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Execute a pre-built plan, skipping the Planner entirely.
+    ///
+    /// Used by the `direct` decomposition path where `inline_direct_plan` has
+    /// already produced a 1-node Plan and we want to execute it through the
+    /// same replan loop without calling the LLM for plan decomposition.
+    ///
+    /// On failure, the replan loop calls `self.planner.replan()` just like the
+    /// normal `run()` path — so if the 1-node generalist fails, we give the
+    /// Planner a chance to produce a better plan (which may become multi-node).
+    pub async fn run_with_plan(
+        &self,
+        initial_plan: Plan,
+        goal: &str,
+        run_id: uuid::Uuid,
+    ) -> Result<PlanResult, ExecutorError> {
+        let started = Instant::now();
+        let run_root = self.run_root_base.join(run_id.to_string());
+        std::fs::create_dir_all(&run_root).map_err(|e| {
+            ExecutorError::Terminal(CoreError::Ipc(format!(
+                "create workspace {}: {}",
+                run_root.display(),
+                e
+            )))
+        })?;
+
+        let mut plan = initial_plan;
+        self.write_plan_json(&run_root, &plan)?;
+
+        let mut replans_used: u32 = 0;
+        loop {
+            if started.elapsed() > self.total_deadline {
+                return Err(ExecutorError::Terminal(CoreError::Ipc(
+                    "planner deadline exhausted".into(),
+                )));
+            }
+            match self.execute_plan(&plan, &run_root).await {
+                Ok(result) => {
+                    self.audit_log.record(AuditEvent::new(
+                        AgentId::from_uuid(uuid::Uuid::nil()),
+                        AuditEventKind::PlanProduced {
+                            subtask_count: plan.subtasks.len() as u32,
+                            replans_used,
+                        },
+                    ));
+                    return Ok(result);
+                }
+                Err(ExecutorError::Correctable { reason, failures })
+                    if replans_used < self.max_replans =>
+                {
+                    self.audit_log.record(AuditEvent::new(
+                        AgentId::from_uuid(uuid::Uuid::nil()),
+                        AuditEventKind::PlanReplanned {
+                            reason: reason.clone(),
+                        },
+                    ));
+
+                    // Tier escalation logic mirrors run().
                     let mut tier_bumps: std::collections::HashMap<String, u8> =
                         std::collections::HashMap::new();
                     for f in &failures {
@@ -524,7 +638,7 @@ impl PlanExecutor {
         // (mis-configured YAML), but the catalog loader has already
         // validated every role at startup — the unwrap_or_else here is a
         // belt-and-braces fallback to `[role.model]` for code paths that
-        // build a RoleCatalog by hand (tests, fallback_generalist_plan).
+        // build a RoleCatalog by hand in tests.
         let ladder = role
             .resolved_ladder()
             .unwrap_or_else(|_| vec![role.model.clone()]);
@@ -690,39 +804,18 @@ fn check_declared_outputs_exist(
     SubtaskOutputStatus::Present
 }
 
-/// The generalist role is the broad-capability escape hatch for novel goals
-/// that don't match any specific role. With this fallback wired in, the
-/// planner is never a hard blocker: every goal produces some kind of
-/// execution, even if less efficient than a role-matched plan.
-///
-/// Returns `Terminal` with a clear diagnostic if the catalog has no
-/// `generalist` role — the operator needs to add one.
-pub fn fallback_generalist_plan(goal: &str, catalog: &RoleCatalog) -> Result<Plan, ExecutorError> {
-    if catalog.get("generalist").is_none() {
-        return Err(ExecutorError::Terminal(CoreError::Ipc(
-            "no 'generalist' role in catalog and planner failed to match".into(),
-        )));
-    }
-    // Give the generalist a concrete workspace path so role capabilities
-    // that reference {workspace} resolve instead of leaking the literal
-    // template string into the rendered manifest (soak-test Bug 5).
-    // `{run}` substitution happens in the PlanExecutor before spawn,
-    // resolving to `/var/lib/aaos/workspace/<run-id>/`.
-    Ok(Plan {
-        subtasks: vec![Subtask {
-            id: "generalist".into(),
-            role: "generalist".into(),
-            params: serde_json::json!({
-                "task_description": goal,
-                "workspace": "{run}/fallback-output.md",
-            }),
-            depends_on: vec![],
-            ttl: None,
-            current_model_tier: 0,
-        }],
-        final_output: "{run}/fallback-output.md".into(),
-    })
-}
+// fallback_generalist_plan deleted in v0.1.0 (Bug 9 closed).
+// The silent fallback path — triggered when the Planner emitted a Malformed
+// plan — could produce a hallucinated "not completed" report written by a
+// generalist with no context about why the original subtask failed.
+//
+// Under v0.1.0:
+//   - decompose goals: PlannerError::Malformed is now treated as Correctable
+//     (same as LlmCall), so the replan loop handles it; after max_replans
+//     the run errors cleanly with a clear diagnostic.
+//   - direct goals: the `inline_direct_plan` in server.rs intentionally
+//     constructs the same 1-node shape as the old fallback, but only when
+//     the *classifier* asks for it (not as a silent error recovery path).
 
 #[cfg(test)]
 mod tests {
@@ -941,25 +1034,72 @@ mod tests {
         cat
     }
 
-    #[test]
-    fn fallback_plan_targets_generalist() {
-        let cat = generalist_catalog();
-        let fb = fallback_generalist_plan("do the thing", &cat).unwrap();
-        assert_eq!(fb.subtasks.len(), 1);
-        assert_eq!(fb.subtasks[0].role, "generalist");
-        assert_eq!(
-            fb.subtasks[0]
-                .params
-                .get("task_description")
-                .and_then(|v| v.as_str()),
-            Some("do the thing")
+    /// PlannerError::Malformed on a decompose goal must now produce
+    /// Correctable (not fall back silently to a generalist). Bug 9 closed.
+    #[tokio::test]
+    async fn planner_malformed_produces_correctable_not_fallback() {
+        // A Planner backed by a Scripted LLM that returns garbage JSON so
+        // plan() returns Err(PlannerError::Malformed). We verify run() gives
+        // back ExecutorError::Correctable — not a silent generalist plan.
+        let cat = Arc::new(generalist_catalog());
+
+        // "garbage" triggers the extract_json path to fail → Malformed.
+        let llm = ScriptedLlm::new(vec!["garbage".into()]);
+        let planner = Arc::new(Planner::new(Arc::new(llm), "deepseek-chat".into()));
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(cat, planner, stub_runner(), audit, std::env::temp_dir());
+
+        let run_id = uuid::Uuid::new_v4();
+        let err = exec.run("do the thing", run_id).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ExecutorError::Correctable { .. } | ExecutorError::Terminal(_)
+            ),
+            "Malformed planner response must not silently succeed; got {:?}",
+            err
         );
     }
 
-    #[test]
-    fn fallback_errors_when_generalist_missing() {
-        let cat = fetcher_catalog(); // no generalist role
-        assert!(fallback_generalist_plan("do it", &cat).is_err());
+    /// run_with_plan uses the pre-built plan, not the Planner.
+    #[tokio::test]
+    async fn run_with_plan_executes_inline_plan() {
+        let cat = Arc::new(generalist_catalog());
+        let planner = Arc::new(Planner::new(Arc::new(MockLlm), "deepseek-chat".into()));
+        let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let runner: SubtaskRunner =
+            Arc::new(move |id, _m, _msg, _overrides, _deadline, _run_root| {
+                let c = counter_clone.clone();
+                Box::pin(async move {
+                    c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(SubtaskResult {
+                        subtask_id: id,
+                        agent_id: AgentId::new(),
+                        response: "done".into(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    })
+                })
+            });
+        let audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        let exec = PlanExecutor::new(cat, planner, runner, audit, std::env::temp_dir());
+
+        let plan = Plan {
+            subtasks: vec![Subtask {
+                id: "generalist".into(),
+                role: "generalist".into(),
+                params: serde_json::json!({ "task_description": "find bugs" }),
+                depends_on: vec![],
+                ttl: None,
+                current_model_tier: 0,
+            }],
+            final_output: "/out".into(),
+        };
+        let run_id = uuid::Uuid::new_v4();
+        let result = exec.run_with_plan(plan, "find bugs", run_id).await.unwrap();
+        assert_eq!(result.results.len(), 1);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     struct MockLlm;
