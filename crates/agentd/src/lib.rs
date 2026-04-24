@@ -6,6 +6,7 @@ pub mod config;
 #[cfg(feature = "mcp")]
 pub mod mcp_backend;
 pub mod orchestration;
+pub mod orchestration_classifier;
 pub mod server;
 pub mod spawn_agents_tool;
 pub mod spawn_tool;
