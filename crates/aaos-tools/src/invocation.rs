@@ -1211,4 +1211,48 @@ mod tests {
             fourth
         );
     }
+
+    // ---- Bug 11: resolve_tokens filters revoked tokens ----
+
+    #[test]
+    fn resolve_tokens_filters_revoked() {
+        let agent_id = AgentId::new();
+        let cap_registry = Arc::new(CapabilityRegistry::new());
+
+        // Issue two tokens.
+        let live_token = CapabilityToken::issue(
+            agent_id,
+            Capability::ToolInvoke {
+                tool_name: "echo".into(),
+            },
+            Constraints::default(),
+        );
+        let revoked_token = CapabilityToken::issue(
+            agent_id,
+            Capability::ToolInvoke {
+                tool_name: "echo".into(),
+            },
+            Constraints::default(),
+        );
+        let revoked_token_id = revoked_token.id;
+
+        let live_handle = cap_registry.insert(agent_id, live_token);
+        let revoked_handle = cap_registry.insert(agent_id, revoked_token);
+
+        // Revoke the second token.
+        assert!(cap_registry.revoke(revoked_token_id));
+
+        // resolve_tokens must skip the revoked one.
+        let resolved = cap_registry.resolve_tokens(&[live_handle, revoked_handle], agent_id);
+        assert_eq!(
+            resolved.len(),
+            1,
+            "resolve_tokens must return only the live token; got {} tokens",
+            resolved.len()
+        );
+        assert!(
+            !resolved[0].is_revoked(),
+            "returned token must not be revoked"
+        );
+    }
 }

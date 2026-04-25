@@ -193,6 +193,14 @@ impl CapabilityRegistry {
     /// `CapabilityToken` structs for the given agent. Handles that are
     /// unknown or belong to a different agent are silently skipped (fail-
     /// closed: the caller ends up with a smaller token set, not more).
+    /// Revoked and expired tokens are also filtered out so that workers
+    /// only ever receive tokens that are currently valid.
+    ///
+    /// Note: this is a point-in-time filter. A token revoked *after*
+    /// `resolve_tokens` returns but before the worker invokes the tool
+    /// will still be honoured by the in-flight worker call (residual race;
+    /// closing it fully requires a push-revocation protocol — queued for
+    /// v0.2.x as Bug 11 Option A).
     ///
     /// Used by `ToolInvocation` to collect the serializable token structs
     /// before forwarding them across the broker to a confined worker
@@ -210,6 +218,10 @@ impl CapabilityRegistry {
             .filter_map(|h| {
                 let entry = self.table.get(h)?;
                 if entry.agent_id != agent_id {
+                    return None;
+                }
+                // Filter out revoked or expired tokens before forwarding.
+                if entry.token.is_revoked() || entry.token.is_expired() {
                     return None;
                 }
                 Some(entry.token.clone())
