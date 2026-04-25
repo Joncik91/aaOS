@@ -6,10 +6,35 @@
 //!
 //! Sessions are **bound to the accepted fd**: after the initial
 //! peer-creds check at `accept()` time, no per-message re-validation
-//! happens. The kernel guarantees the other end of that fd is the
-//! same process that connected (unless the fd is duped — which, in
-//! a namespaced worker with seccomp denying `dup2`, isn't a vector
-//! we worry about).
+//! happens. SO_PEERCRED is fundamentally a connect-time check on
+//! Linux — the kernel does not track the originating process across
+//! the lifetime of the connection, so per-message re-auth is not
+//! achievable via this mechanism alone.
+//!
+//! Bug 24 doc correction (v0.1.5): an earlier comment claimed
+//! "seccomp denying `dup2`" was the mitigation against fd-handoff
+//! attacks.  That was wrong on two counts: (a) the seccomp policy
+//! at `seccomp_compile.rs` allows `dup3` (used by tokio for stdio
+//! plumbing) and does not list `dup2` at all, so `dup2` falls
+//! through to the default EPERM rather than SIGSYS — a weaker
+//! denial, and `dup3` provides equivalent fd duplication anyway.
+//!
+//! The actual mitigations are:
+//!   1. Landlock confines the worker's filesystem reach so a duped
+//!      fd cannot be passed to an unconstrained process.
+//!   2. The user namespace prevents the worker from spawning
+//!      processes outside its uid map.
+//!   3. The broker protocol's session-id check correlates each
+//!      message back to the agent_id the broker recorded at
+//!      `register_session()` time — even if an fd were handed off,
+//!      messages still need a valid session_id whose agent_id
+//!      matches the recorded mapping.
+//!
+//! `clone3` is allowed by the seccomp filter (so a worker can
+//! fork a child that inherits the authenticated socket fd), but
+//! the inherited child is still in the same user namespace and
+//! same Landlock domain — the inherited fd doesn't grant
+//! escalated privilege.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

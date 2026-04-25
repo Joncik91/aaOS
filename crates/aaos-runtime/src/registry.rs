@@ -264,9 +264,15 @@ impl AgentRegistry {
 
     /// Stop an agent (async version for persistent agents).
     pub async fn stop(&self, id: AgentId) -> Result<()> {
-        // Send stop command
-        if let Some(entry) = self.agents.get(&id) {
-            let _ = entry.value().command_tx.send(AgentCommand::Stop).await;
+        // Send stop command.  Bug 25 fix (v0.1.5): clone the channel
+        // sender BEFORE awaiting on it so we don't hold a DashMap
+        // shard guard across an .await.  Holding the guard while the
+        // mpsc buffer is full would block any other task contending
+        // on the same shard until the buffer drains — a latent stall
+        // vector under load.
+        let command_tx = self.agents.get(&id).map(|e| e.value().command_tx.clone());
+        if let Some(tx) = command_tx {
+            let _ = tx.send(AgentCommand::Stop).await;
         }
 
         // Await task handle
