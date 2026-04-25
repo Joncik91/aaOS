@@ -1,3 +1,19 @@
+aaos (0.1.6-1) trixie; urgency=medium
+
+  * Fix Bug 26 (medium): charge capability use BEFORE tool
+    invocation, not after.  The Bug 10 v0.1.1 fix had recorded
+    use post-invoke; if the token expired or was revoked between
+    permits() and the post-invoke record, the tool had already
+    run with no count recorded — a free invocation past
+    max_invocations.  New order: authorize_and_record before
+    invoke; on failure the tool doesn't run.  Charge-on-attempt
+    semantics, fail-closed.
+  * Filed two more findings to docs/ideas.md as deferred-
+    hardening entries (canonical_for_match TOCTOU, McpMessage
+    sender authentication).
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 25 Apr 2026 17:10:00 +0000
+
 aaos (0.1.5-1) trixie; urgency=medium
 
   * Fix Bug 24 (low — doc correctness): broker_session.rs module

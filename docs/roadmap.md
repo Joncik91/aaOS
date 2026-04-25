@@ -306,6 +306,17 @@ Investigation: agent's claim that Bug 21's fix introduced a deadlock was **dispr
 
 Tagged as `v0.1.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.5 — `aaos_0.1.5-1_amd64.deb`.
 
+### 26. v0.1.6 release — Bug 26 (charge capability before invoke)
+*complete 2026-04-25*
+
+Round-4 self-reflection on v0.1.5 source.  Three candidate findings; one shipped, two filed to `ideas.md` as deferred or future-architecture entries.
+
+Bug 26 (medium): the Bug 10 v0.1.1 fix had charged the capability use AFTER tool invocation.  If the token expired or was revoked between `permits()` and the post-invoke `authorize_and_record`, the tool had already run with no count recorded — a free invocation past `max_invocations`.  Fix: charge BEFORE invoke; on failure the tool doesn't run; on success the count stays charged regardless of whether the tool then succeeds or errors.  Charge-on-attempt semantics, fail-closed.
+
+Deferred: round-4 Finding 1 (`canonical_for_match` symlink-swap TOCTOU) is documented technical debt with a tracked entry; needs `O_NOFOLLOW`/proc-self-fd plumbing.  Round-4 Finding 2 (`McpMessage` sender spoofing) is theoretical under current architecture — becomes real when a wire protocol is added; filed as ideas.md entry with concrete reconsider signals.
+
+Tagged as `v0.1.6`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.6 — `aaos_0.1.6-1_amd64.deb`.
+
 ---
 
 ## Active milestones

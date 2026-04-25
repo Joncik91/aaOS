@@ -10,7 +10,31 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.5 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.6 `.deb` preinstalled).
+
+---
+
+## [0.1.6] — 2026-04-25
+
+Round-4 self-reflection on v0.1.5 source.  One finding shipped (Bug 26), two filed as deferred-hardening / future-architecture entries in `docs/ideas.md`.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.6> — `aaos_0.1.6-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 26 (medium — capability budget enforcement)** — `crates/aaos-tools/src/invocation.rs` charged the capability use *after* tool invocation (Bug 10's v0.1.1 fix).  If the token expired or was revoked between `permits()` and the post-invoke `authorize_and_record`, the tool had already executed with no count recorded — effectively a free invocation past the `max_invocations` budget cap.  **Fix**: charge BEFORE invoke.  `authorize_and_record` now runs after the `permits()` handle-find and BEFORE the surface-routing block.  On failure (race lost or token expired/revoked between permits and record), the tool does NOT run — fail-closed.  On success, the count stays charged regardless of whether the tool then succeeds or errors: charge-on-attempt semantics, the correct billing model for a capability budget.  Existing `max_invocations_enforced_through_invoke` test (Bug 10) still passes under the new ordering.  Commit `58f1460`.
+
+### Documentation
+
+- **`docs/ideas.md`** — added "Authenticated `McpMessage` sender (when a serialization boundary appears)" entry from the round-4 finding 2.  Theoretical under current architecture (no agent-controlled deserialization path); becomes real if a wire protocol is added.
+
+### Deferred (logged in ideas.md or already there)
+
+- **Round-4 Finding 1** — TOCTOU in `canonical_for_match` (capability bypass via symlink swap).  Real attack surface but documented technical debt at `crates/aaos-core/src/capability.rs:314-318` with an `ideas.md` entry.  Fix requires `O_NOFOLLOW` + `/proc/self/fd` re-open — Linux-specific, unsafe-FFI, separate hardening milestone.
+
+---
+
+## [0.1.5] — 2026-04-25
 
 ---
 
@@ -319,7 +343,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/Joncik91/aaOS/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Joncik91/aaOS/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Joncik91/aaOS/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Joncik91/aaOS/compare/v0.1.2...v0.1.3
