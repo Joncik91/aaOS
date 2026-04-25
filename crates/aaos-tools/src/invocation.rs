@@ -119,8 +119,7 @@ impl ToolInvocation {
         input: Value,
         token_handles: &[CapabilityHandle],
     ) -> Result<Value> {
-        // Check capability — find the first handle that satisfies the grant so
-        // we can call `authorize_and_record` on it after a successful invocation.
+        // Check capability — find the first handle that satisfies the grant.
         let required = Capability::ToolInvoke {
             tool_name: tool_name.to_string(),
         };
@@ -144,6 +143,45 @@ impl ToolInvocation {
                 },
                 reason: "tool invocation not permitted".into(),
             });
+        }
+
+        // Bug 26 fix (v0.1.6): charge the capability use BEFORE invoking the
+        // tool, not after.  The previous order (invoke → authorize_and_record
+        // on success) had a real gap: if the token expired or was revoked
+        // between `permits()` above and the post-invoke recording, the tool
+        // had already run with no count recorded — effectively a free
+        // invocation.  The agent's bug report flagged this as Bug 26.  New
+        // semantics: charge-on-attempt.  authorize_and_record atomically
+        // re-checks (under the DashMap shard write-lock) and increments
+        // invocation_count.  If it fails (race lost to a concurrent caller,
+        // token expired/revoked between permits and now), the tool does NOT
+        // run — fail-closed.  If it succeeds and the tool then errors,
+        // the count stays charged: that's the correct billing semantics for
+        // a capability budget (you spent the slot the moment you tried to
+        // use it).
+        if let Some(handle) = matching_handle {
+            if let Err(e) = self
+                .capability_registry
+                .authorize_and_record(handle, agent_id, &required)
+            {
+                self.audit_log.record(AuditEvent::new(
+                    agent_id,
+                    AuditEventKind::CapabilityDenied {
+                        capability: required.clone(),
+                        reason: format!(
+                            "authorize_and_record failed (race lost or token \
+                             expired/revoked between permits and record): {e:?}"
+                        ),
+                    },
+                ));
+                return Err(CoreError::CapabilityDenied {
+                    agent_id,
+                    capability: Capability::ToolInvoke {
+                        tool_name: tool_name.to_string(),
+                    },
+                    reason: format!("capability use record failed: {e:?}"),
+                });
+            }
         }
 
         // Determine the INTENDED execution surface. Actual surface may
@@ -291,28 +329,10 @@ impl ToolInvocation {
             },
         ));
 
-        // Record the capability use against the token that authorized this
-        // call.  `permits()` was a non-consuming check; `authorize_and_record`
-        // is the consuming one that enforces max_invocations.  Called only on
-        // success because the tool already ran — if the token expired or was
-        // revoked in the narrow window between `permits` and here we warn and
-        // continue (can't undo the execution).
-        if result.is_ok() {
-            if let Some(handle) = matching_handle {
-                if let Err(e) = self
-                    .capability_registry
-                    .authorize_and_record(handle, agent_id, &required)
-                {
-                    tracing::warn!(
-                        tool = tool_name,
-                        agent_id = %agent_id,
-                        reason = ?e,
-                        "authorize_and_record failed after successful tool invocation \
-                         (token expired/revoked mid-call); invocation count not recorded",
-                    );
-                }
-            }
-        }
+        // Capability use was already recorded BEFORE invoke (Bug 26 fix,
+        // v0.1.6).  Whether the tool succeeded or errored, the invocation
+        // slot has already been charged — that's correct billing semantics
+        // for a capability budget.
 
         // Log result (with a bounded preview for operator observability).
         let result_preview = match &result {
