@@ -407,7 +407,17 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     let canonical = canonical_for_match(path);
     if let Some(prefix) = pattern.strip_suffix('*') {
         let norm_prefix = normalize_path(prefix);
+        // Require that the match lands on a path-separator boundary so that
+        // a pattern like `/data/*` does NOT match `/data-foo/x` or `/data_foo/x`.
+        // After stripping `*`, `norm_prefix` ends with `/` (e.g. `/data/`);
+        // the canonical path must start with that exact prefix string.  The
+        // character immediately following the prefix (if any) is either absent
+        // (exact directory match) or a `/` — both are valid.  Any other
+        // character (dash, underscore, letter, …) means the path only shares
+        // a text prefix, not an ancestor relationship.
         canonical.starts_with(&norm_prefix)
+            && (canonical.len() == norm_prefix.len()
+                || canonical.as_bytes()[norm_prefix.len()] == b'/')
     } else {
         let norm_pattern = normalize_path(pattern);
         norm_pattern == canonical
@@ -802,6 +812,53 @@ mod tests {
         }));
         assert!(!token.permits(&Capability::GitCommit {
             workspace: "/elsewhere".into()
+        }));
+    }
+
+    // ---- Bug 12: glob separator-boundary tests ----
+
+    #[test]
+    fn glob_boundary_dash_prefix_denied() {
+        // `/data/*` must NOT match `/data-foo/x` — dash is not a path separator.
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::FileRead {
+                path_glob: "/data/*".into(),
+            },
+            Constraints::default(),
+        );
+        assert!(!token.permits(&Capability::FileRead {
+            path_glob: "/data-foo/x".into()
+        }));
+    }
+
+    #[test]
+    fn glob_boundary_underscore_prefix_denied() {
+        // `/data/*` must NOT match `/data_foo/x` — underscore is not a path separator.
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::FileRead {
+                path_glob: "/data/*".into(),
+            },
+            Constraints::default(),
+        );
+        assert!(!token.permits(&Capability::FileRead {
+            path_glob: "/data_foo/x".into()
+        }));
+    }
+
+    #[test]
+    fn glob_boundary_exact_match_allowed() {
+        // `/data/*` must match `/data/file.txt` — real child path.
+        let token = CapabilityToken::issue(
+            test_agent(),
+            Capability::FileRead {
+                path_glob: "/data/*".into(),
+            },
+            Constraints::default(),
+        );
+        assert!(token.permits(&Capability::FileRead {
+            path_glob: "/data/file.txt".into()
         }));
     }
 }
