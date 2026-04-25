@@ -276,6 +276,21 @@ Triaged Bugs 18/19/20 from the v0.1.2 reflection run via Sonnet sub-agent agains
 
 Tagged as `v0.1.3`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.3 — `aaos_0.1.3-1_amd64.deb`.
 
+### 24. v0.1.4 release — Bug 22 (workspace-GC symlink) + Bug 23 (approval timeout)
+*complete 2026-04-25*
+
+Same-day patch closing two real findings from the v0.1.2 self-reflection run that targeted v0.1.2 source.  The 79-second run produced three candidate findings; Sonnet triage identified two as real-and-shippable.
+
+Bug 22 (high) — **Privilege escalation via workspace GC.**  An agent with a legitimate `FileWrite: /var/lib/aaos/workspace/*` capability could plant a symlink at the workspace root pointing to any `aaos`-uid-writable path; the next GC tick chased the symlink via `path.is_dir()` and `remove_dir_all`, deleting the target.  Fix: `DirEntry::file_type()` (does not follow symlinks) + explicit `is_symlink()` rejection.
+
+Bug 23 (medium) — **Approval queue had no timeout.**  Agents blocked forever on operator absence; pending `DashMap` entries leaked across daemon lifetime.  Fix: `tokio::time::timeout(1h)` around the response oneshot; remove + deny on expiry.
+
+The third candidate (TOCTOU in `CapabilityToken::permits`) was already closed by Bug 10's v0.1.1 fix (atomic check-and-record via DashMap exclusive shard-lock); no action needed.  Approval-queue persistence (separate sub-issue) is REAL-DESIGN — needs storage-layer decision before fixing.
+
+This is the second iteration of the self-reflection-then-fix loop on v0.1.x: the system finds bugs, ships fixes, finds more bugs.  Bugs found by aaOS reading its own source this session: 10, 11, 12, 21, 22, 23.  Bugs from parallel Sonnet audit: 15, 16.  All eight closed within 24 hours of being found.
+
+Tagged as `v0.1.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.4 — `aaos_0.1.4-1_amd64.deb`.
+
 ---
 
 ## Active milestones

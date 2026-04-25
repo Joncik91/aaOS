@@ -1,3 +1,19 @@
+aaos (0.1.4-1) trixie; urgency=medium
+
+  * Fix Bug 22 (high): workspace GC follows symlinks, allowing
+    privilege escalation.  An agent with FileWrite to its workspace
+    could plant a symlink that the GC would chase to delete a
+    target under aaos:aaos.  Fix: DirEntry::file_type() instead of
+    path.is_dir(); explicitly reject symlinks.
+  * Fix Bug 23 (medium): approval requests had no timeout; agent
+    awaiting approval blocked forever on operator absence and the
+    pending entry leaked.  Fix: tokio::time::timeout(1h) around
+    the response oneshot; remove + deny on expiry.
+  * Triaged two more findings (CapabilityToken::permits TOCTOU,
+    approval-queue persistence) — neither ships in v0.1.4.
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 25 Apr 2026 16:40:00 +0000
+
 aaos (0.1.3-1) trixie; urgency=medium
 
   * Fix Bug 21: emit CapabilityRevoked audit events at agent

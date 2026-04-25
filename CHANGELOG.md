@@ -10,14 +10,30 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.3 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.4 `.deb` preinstalled).
 
 ### Known — still open (triaged 2026-04-25, none blocking)
 
 - **Bug 14 (informational)** — `commit_nudges` mechanism added in v0.1.0 (`cba106b`).  v0.1.2 expanded its trigger condition (`commit-nudges` now fires on empty `tool_uses` with `stop_reason=ToolUse`, not just `EndTurn`); both forms remain in place as safety nets.
-- **Bug 18 (theoretical, accepted-risk)** — TOCTOU in `CapabilityRegistry::narrow` (`crates/aaos-core/src/capability_registry.rs:61`).  Triaged 2026-04-25: same race class as Bug 11 (token revoked between resolve and use); residual risk acknowledged in v0.1.1 CHANGELOG and tracked under "Option A push-revocation protocol — queued for v0.2.x."  No separate v0.1.x action needed.
-- **Bug 19 (theoretical, deferred to ideas.md)** — Seccomp allowlist permits `clone3` without argument filtering.  Triaged 2026-04-25: defense-in-depth holds (worker in user-namespace with `PR_SET_NO_NEW_PRIVS`, seccomp kill-list denies `execve`/`execveat` so clone3-spawned children can't exec).  Tightening to `CLONE_THREAD`-only is cosmetic-correct hardening; tracked in [`docs/ideas.md`](docs/ideas.md) ("Tighten `clone3` seccomp filter to `CLONE_THREAD` only") with concrete reconsider signals.
-- **Bug 20 (theoretical, accepted-risk)** — `BudgetTracker::maybe_reset` TOCTOU (`crates/aaos-core/src/budget.rs:105`).  Triaged 2026-04-25: a double reset is benign (both threads write the same `now` to `period_start` and zero `used_tokens`); the `track` path uses CAS so no tokens are lost.  Worst outcome is the budget window resets slightly early — not an exploitable over-budget condition.  Closed as accepted-risk.
+- **Bug 18 (theoretical, accepted-risk)** — TOCTOU in `CapabilityRegistry::narrow`.  Same race class as Bug 11; tracked under v0.2.x Option-A push-revocation protocol.
+- **Bug 19 (theoretical, deferred to ideas.md)** — `clone3` seccomp allowlist gap.  Tracked in [`docs/ideas.md`](docs/ideas.md) with concrete reconsider signals.
+- **Bug 20 (theoretical, accepted-risk)** — `BudgetTracker::maybe_reset` benign double-reset.
+- **v0.1.4 Finding 1 (theoretical)** — claimed TOCTOU in `CapabilityToken::permits` was already closed by Bug 10's v0.1.1 fix (atomic check-and-record via DashMap exclusive shard-lock in `authorize_and_record`).  No action needed.
+- **v0.1.4 Finding 3 broader scope** — approval queue has no persistence across daemon restart.  REAL-DESIGN: needs a storage-layer decision before fixing.  v0.1.4 ships the timeout sub-issue (Bug 23); the persistence question is queued.
+
+---
+
+## [0.1.4] — 2026-04-25
+
+Same-day patch closing two real findings from the v0.1.2 self-reflection run that targeted the v0.1.2 source.  Both were triaged via Sonnet sub-agent against current source.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.4> — `aaos_0.1.4-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 22 (high)** — Workspace GC follows symlinks, allowing privilege escalation.  An agent with a legitimate `FileWrite: /var/lib/aaos/workspace/*` capability could plant a symlink at the workspace root pointing to `/etc/cron.d`, `/etc/sudoers.d`, or any `aaos`-uid-writable path; the next GC tick (`crates/agentd/src/workspace_gc.rs`) saw the symlink via `path.is_dir()` (which follows symlinks), passed it to `remove_dir_all` (also follows), and deleted the target under the `aaos` uid.  Real privilege boundary violation: agent capability scoped to workspace, GC elevates to arbitrary filesystem deletion.  **Fix**: use `DirEntry::file_type()` (does NOT follow symlinks, unlike `path.is_dir()`) and explicitly reject `ft.is_symlink()` before considering an entry for removal.  Commit `5ac9479`.
+
+- **Bug 23 (medium)** — Approval queue requests have no timeout.  `crates/agentd/src/approval.rs:112` awaited the response oneshot with no upper bound; if no operator responded, the agent blocked forever and the pending `DashMap` entry leaked across daemon lifetime (resource leak on operator absence).  **Fix**: wrap `rx.await` in `tokio::time::timeout(DEFAULT_APPROVAL_TIMEOUT = 1h)`.  On timeout the entry is removed, a warn is logged, and the call returns `ApprovalResult::Denied` with a timeout reason.  Commit `5ac9479`.
 
 ---
 
@@ -277,7 +293,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/Joncik91/aaOS/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Joncik91/aaOS/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Joncik91/aaOS/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Joncik91/aaOS/compare/v0.1.0...v0.1.1
