@@ -119,15 +119,17 @@ impl ToolInvocation {
         input: Value,
         token_handles: &[CapabilityHandle],
     ) -> Result<Value> {
-        // Check capability
+        // Check capability — find the first handle that satisfies the grant so
+        // we can call `authorize_and_record` on it after a successful invocation.
         let required = Capability::ToolInvoke {
             tool_name: tool_name.to_string(),
         };
-        let has_permission = token_handles
+        let matching_handle = token_handles
             .iter()
-            .any(|h| self.capability_registry.permits(*h, agent_id, &required));
+            .find(|h| self.capability_registry.permits(**h, agent_id, &required))
+            .copied();
 
-        if !has_permission {
+        if matching_handle.is_none() {
             self.audit_log.record(AuditEvent::new(
                 agent_id,
                 AuditEventKind::CapabilityDenied {
@@ -288,6 +290,29 @@ impl ToolInvocation {
                 execution_surface: actual_surface,
             },
         ));
+
+        // Record the capability use against the token that authorized this
+        // call.  `permits()` was a non-consuming check; `authorize_and_record`
+        // is the consuming one that enforces max_invocations.  Called only on
+        // success because the tool already ran — if the token expired or was
+        // revoked in the narrow window between `permits` and here we warn and
+        // continue (can't undo the execution).
+        if result.is_ok() {
+            if let Some(handle) = matching_handle {
+                if let Err(e) = self
+                    .capability_registry
+                    .authorize_and_record(handle, agent_id, &required)
+                {
+                    tracing::warn!(
+                        tool = tool_name,
+                        agent_id = %agent_id,
+                        reason = ?e,
+                        "authorize_and_record failed after successful tool invocation \
+                         (token expired/revoked mid-call); invocation count not recorded",
+                    );
+                }
+            }
+        }
 
         // Log result (with a bounded preview for operator observability).
         let result_preview = match &result {
@@ -1128,6 +1153,62 @@ mod tests {
                 .iter()
                 .map(|t| &t.capability)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    // ---- Bug 10: max_invocations enforced through invoke ----
+
+    #[tokio::test]
+    async fn max_invocations_enforced_through_invoke() {
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(Arc::new(EchoTool));
+        let log = Arc::new(InMemoryAuditLog::new());
+        let agent_id = AgentId::new();
+        let token = CapabilityToken::issue(
+            agent_id,
+            Capability::ToolInvoke {
+                tool_name: "echo".into(),
+            },
+            Constraints {
+                max_invocations: Some(3),
+                rate_limit: None,
+            },
+        );
+        let cap_registry = Arc::new(CapabilityRegistry::new());
+        let handle = cap_registry.insert(agent_id, token);
+        let invocation = ToolInvocation::new(registry, log.clone(), cap_registry.clone());
+        let handles = vec![handle];
+
+        // First three invocations must succeed.
+        for i in 0..3 {
+            let result = invocation
+                .invoke(
+                    agent_id,
+                    "echo",
+                    serde_json::json!({"message": format!("call-{i}")}),
+                    &handles,
+                )
+                .await;
+            assert!(
+                result.is_ok(),
+                "invocation {i} should succeed; got {:?}",
+                result
+            );
+        }
+
+        // Fourth invocation must fail with CapabilityDenied.
+        let fourth = invocation
+            .invoke(
+                agent_id,
+                "echo",
+                serde_json::json!({"message": "call-3"}),
+                &handles,
+            )
+            .await;
+        assert!(
+            matches!(fourth, Err(CoreError::CapabilityDenied { .. })),
+            "4th invocation must be denied; got {:?}",
+            fourth
         );
     }
 }
