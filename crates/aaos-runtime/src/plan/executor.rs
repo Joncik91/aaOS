@@ -711,6 +711,15 @@ where
             tokio::select! {
                 r = fut => r,
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(d)) => {
+                    // Bug 13 diagnostic: when this branch fires, it drops
+                    // the runner future at its current await point, which
+                    // can be inside a tool invocation — same cancel-mid-
+                    // tool-call problem as exec_task.abort().  Logging here
+                    // so post-mortem can distinguish TTL from client-
+                    // disconnect aborts.
+                    tracing::warn!(
+                        "race_deadline: TTL wall-clock fired — runner future dropped"
+                    );
                     Err(CoreError::Ipc(TTL_WALL_CLOCK_SENTINEL.into()))
                 }
             }

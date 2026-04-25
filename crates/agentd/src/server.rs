@@ -2035,11 +2035,20 @@ impl Server {
                                     });
                                     if write_ndjson(writer, &frame).await.is_err() {
                                         // Client disconnected mid-run (e.g. Ctrl-C
-                                        // at the CLI). Abort the executor task so
-                                        // its agent subtree does not keep running
-                                        // as an orphan. See run 12: a torn-down
-                                        // submit left a zombie builder churning
-                                        // in a scratch dir for ~10 minutes.
+                                        // at the CLI). Bug 13: immediate abort
+                                        // cancels in-flight tool calls (file_write,
+                                        // git_commit) and loses their side-effects.
+                                        // Drain up to 500 ms first to let pending
+                                        // tool invocations complete, THEN abort.
+                                        tracing::warn!(
+                                            "client disconnected mid-stream (plan branch) — \
+                                             draining exec_task (500 ms) before abort"
+                                        );
+                                        let _ = tokio::time::timeout(
+                                            std::time::Duration::from_millis(500),
+                                            &mut exec_task,
+                                        )
+                                        .await;
                                         exec_task.abort();
                                         return;
                                     }
@@ -2052,6 +2061,15 @@ impl Server {
                                     let _ = write_ndjson(writer, &frame).await;
                                 }
                                 Err(RecvError::Closed) => {
+                                    tracing::warn!(
+                                        "audit broadcast closed (plan branch) — \
+                                         draining exec_task (500 ms) before abort"
+                                    );
+                                    let _ = tokio::time::timeout(
+                                        std::time::Duration::from_millis(500),
+                                        &mut exec_task,
+                                    )
+                                    .await;
                                     exec_task.abort();
                                     return;
                                 }
@@ -2173,7 +2191,19 @@ impl Server {
                                         "event": frame,
                                     });
                                     if write_ndjson(writer, &frame).await.is_err() {
-                                        tracing::warn!("client disconnected mid-stream — aborting exec_task");
+                                        // Bug 13 fix: drain in-flight tool calls
+                                        // for up to 500 ms before abort, so a
+                                        // pending file_write/git_commit doesn't
+                                        // get its future dropped at the await.
+                                        tracing::warn!(
+                                            "client disconnected mid-stream (direct branch) — \
+                                             draining exec_task (500 ms) before abort"
+                                        );
+                                        let _ = tokio::time::timeout(
+                                            std::time::Duration::from_millis(500),
+                                            &mut exec_task,
+                                        )
+                                        .await;
                                         exec_task.abort();
                                         return;
                                     }
@@ -2186,6 +2216,15 @@ impl Server {
                                     let _ = write_ndjson(writer, &frame).await;
                                 }
                                 Err(RecvError::Closed) => {
+                                    tracing::warn!(
+                                        "audit broadcast closed (direct branch) — \
+                                         draining exec_task (500 ms) before abort"
+                                    );
+                                    let _ = tokio::time::timeout(
+                                        std::time::Duration::from_millis(500),
+                                        &mut exec_task,
+                                    )
+                                    .await;
                                     exec_task.abort();
                                     return;
                                 }
