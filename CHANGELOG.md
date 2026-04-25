@@ -22,6 +22,13 @@ The first successful self-reflection run on v0.1.0 produced 3 real bug findings 
 - **Bug 13 (high)** — Agent stop races with in-flight tool invocation.  The LLM emits a tool_use response and the executor logs it to the audit stream, but the agent can be stopped (running → stopping) within milliseconds, before `tool.invoke()` actually runs.  Visible failure: missing output file.  Invisible failure: a tool that runs side-effects (`git_commit`, `file_write`) executes but the agent is stopped before recording the audit event.
 - **Bug 14 (informational)** — `commit_nudges` mechanism added in v0.1.0 (`cba106b`) is correctly plumbed end-to-end (`role.orchestration.commit_nudges` → `RoleOrchestration` → `SubtaskExecutorOverrides` → `ExecutorConfig`) but the failure mode that motivated it (LLM emitting thought-only `EndTurn` mid-investigation) didn't manifest in the v0.1.0 self-reflection run.  The mechanism stays as a safety net.
 
+### Known — surfaced by independent senior-engineer audit (Sonnet, same day)
+
+A parallel audit by an external Sonnet model (instructed to skip Bugs 1-14) found two additional verified production defects.  Combined yield for the day: **5 confirmed bugs from aaOS reading itself + a fresh Sonnet review.**
+
+- **Bug 15 (medium-high)** — `send_and_wait` leaks `pending_responses` entries on route failure and on timeout.  `crates/aaos-runtime/src/services.rs:229-245` calls `router.register_pending(trace_id, tx)` before `route()`.  If `route()` returns Err (recipient unregistered, capability denied, full channel) the `?` early-returns leaving the `(trace_id, tx)` entry in the `DashMap` permanently.  The timeout arm at line 245 has the same leak.  In a long-running daemon, every timed-out or routed-to-dead-agent `send_and_wait` adds a permanently-leaked oneshot::Sender; `pending_count()` becomes monotonically growing.  Fix: RAII guard or explicit `remove_pending(trace_id)` on both error paths.
+- **Bug 16 (medium)** — `SqliteMemoryStore::store` is documented as "atomic replace" but is not transactional.  `crates/aaos-memory/src/sqlite.rs:143-181` runs DELETE then INSERT as separate auto-commits.  If INSERT fails (PRIMARY KEY collision, schema constraint, I/O error) the old record is permanently gone and the new one was never written.  Safe today only because `MemoryRecord.id` is `Uuid::new_v4()` (collision-near-zero), but the atomicity invariant is not enforced structurally.  Fix: wrap both statements in `conn.transaction()` + `tx.commit()`.
+
 ---
 
 ## [0.1.0] — 2026-04-24
