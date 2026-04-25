@@ -12,6 +12,16 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.0 `.deb` preinstalled).
 
+### Known — surfaced by v0.1.0 self-reflection run (2026-04-25)
+
+The first successful self-reflection run on v0.1.0 produced 3 real bug findings + surfaced 2 infrastructure bugs.  All queued for v0.1.1+.  Full report: [`docs/reflection/2026-04-25-v0.1.0-first-real-findings.md`](docs/reflection/2026-04-25-v0.1.0-first-real-findings.md).
+
+- **Bug 10 (high)** — `max_invocations` capability constraint is silently non-functional.  `crates/aaos-tools/src/invocation.rs:237-275` only calls `permits()` (the read-only check), never `authorize_and_record()`.  An agent with `max_invocations: Some(1)` for any specific capability can invoke that capability unlimited times.  The `invocation_count` field on `CapabilityToken` is dead code for enforcement.
+- **Bug 11 (high)** — Worker per-call `CapabilityRegistry` defeats revocation + invocation_count.  `crates/aaos-backend-linux/src/worker.rs:245-249` rebuilds a fresh registry per call from cloned tokens, so daemon-side revocations are invisible to in-flight worker calls and invocation counts never propagate back.
+- **Bug 12 (medium)** — `glob_matches` prefix bug.  `crates/aaos-core/src/capability.rs:403-415` checks `canonical.starts_with(&norm_prefix)` without verifying the next character is a path separator.  Pattern `/data/*` incorrectly matches `/data-foo/secret.txt` because `"/data-foo/secret.txt".starts_with("/data")` is true.
+- **Bug 13 (high)** — Agent stop races with in-flight tool invocation.  The LLM emits a tool_use response and the executor logs it to the audit stream, but the agent can be stopped (running → stopping) within milliseconds, before `tool.invoke()` actually runs.  Visible failure: missing output file.  Invisible failure: a tool that runs side-effects (`git_commit`, `file_write`) executes but the agent is stopped before recording the audit event.
+- **Bug 14 (informational)** — `commit_nudges` mechanism added in v0.1.0 (`cba106b`) is correctly plumbed end-to-end (`role.orchestration.commit_nudges` → `RoleOrchestration` → `SubtaskExecutorOverrides` → `ExecutorConfig`) but the failure mode that motivated it (LLM emitting thought-only `EndTurn` mid-investigation) didn't manifest in the v0.1.0 self-reflection run.  The mechanism stays as a safety net.
+
 ---
 
 ## [0.1.0] — 2026-04-24
