@@ -138,8 +138,14 @@ impl AgentRegistry {
     fn remove_agent(&self, id: AgentId) -> Option<AgentProcess> {
         let removed = self.agents.remove(&id);
         if removed.is_some() {
-            // Revoke all capabilities in the capability registry first
-            self.capability_registry.revoke_all_for_agent(id);
+            // Bug 21 fix: route through revoke_all_capabilities so the
+            // CapabilityRevoked audit event fires.  Previously this called
+            // `capability_registry.revoke_all_for_agent(id)` directly,
+            // bypassing the audit-emitting wrapper at line 408 — every
+            // CapabilityGranted event at spawn-time had no matching
+            // CapabilityRevoked at shutdown, leaving the audit trail
+            // incomplete for security forensics.
+            let _ = self.revoke_all_capabilities(id);
             // Then remove all handles from the capability registry's table
             self.capability_registry.remove_agent(id);
             self.active_count.fetch_sub(1, Ordering::AcqRel);
@@ -405,18 +411,20 @@ impl AgentRegistry {
     }
 
     /// Revoke all capabilities for an agent.
+    ///
+    /// Emits a single `CapabilityRevoked` audit event with a nil `token_id`
+    /// summarising the bulk revocation when at least one token was revoked.
+    /// Per-token audit events would require iterating the agent's handles
+    /// before the wholesale revoke; today's registry doesn't expose that
+    /// without an extra walk, so the bulk event is the contract.
     pub fn revoke_all_capabilities(&self, agent_id: AgentId) -> Result<usize> {
         let count = self.capability_registry.revoke_all_for_agent(agent_id);
         if count > 0 {
-            // Record one audit event per revoked capability
-            for i in 0..count {
-                let _ = i; // We don't have per-token IDs here, just record once
-            }
             self.audit_log.record(aaos_core::AuditEvent::new(
                 agent_id,
                 aaos_core::AuditEventKind::CapabilityRevoked {
                     token_id: uuid::Uuid::nil(),
-                    capability: "all capabilities revoked".into(),
+                    capability: format!("all {count} capabilities revoked"),
                 },
             ));
         }
