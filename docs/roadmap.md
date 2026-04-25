@@ -291,6 +291,21 @@ This is the second iteration of the self-reflection-then-fix loop on v0.1.x: the
 
 Tagged as `v0.1.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.4 — `aaos_0.1.4-1_amd64.deb`.
 
+### 25. v0.1.5 release — Bug 24 (broker_session doc) + Bug 25 (DashMap guard across await)
+*complete 2026-04-25*
+
+Round-3 self-reflection on v0.1.4 source.  Three candidate findings; two real-and-shippable, one deferred.
+
+Bug 24 (low): `broker_session.rs` module doc made a false security claim that "seccomp denying `dup2`" was the post-`SO_PEERCRED` mitigation against fd-handoff attacks.  Wrong on two counts — `seccomp_compile.rs:99` allows `dup3` (tokio uses it for stdio) and `dup2` falls through to EPERM, not the SIGSYS the comment implied.  Corrected doc to reflect real mitigations (Landlock + user-ns + broker session-id correlation).  Runtime unchanged.
+
+Bug 25 (low-medium): `registry.rs::stop()` held a DashMap shard guard across an `mpsc::send().await` — could stall any other task on the same shard under buffer pressure.  Fix: clone `command_tx` before the guard scope ends.  Standard async-Rust pattern.
+
+Deferred: FileWriteTool TOCTOU between `create_dir_all` and `write`.  Real race window but constrained by Landlock + user-ns at the deployment layer; proper fix needs `openat`/`O_PATH` component-walk rewrite, not v0.1.x material.
+
+Investigation: agent's claim that Bug 21's fix introduced a deadlock was **disproved** by source review.  `registry.rs:252` explicitly drops the entry guard before `remove_agent` runs; no re-entrant lock.
+
+Tagged as `v0.1.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.5 — `aaos_0.1.5-1_amd64.deb`.
+
 ---
 
 ## Active milestones

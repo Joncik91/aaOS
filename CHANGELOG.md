@@ -10,7 +10,33 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.4 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.5 `.deb` preinstalled).
+
+---
+
+## [0.1.5] — 2026-04-25
+
+Same-day patch closing two findings from the round-3 v0.1.4 self-reflection run.  Third finding deferred (FileWriteTool TOCTOU — theoretical under current threat model).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.5> — `aaos_0.1.5-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 24 (low — security doc correctness)** — `crates/aaos-backend-linux/src/broker_session.rs` module-level documentation claimed "seccomp denying `dup2`" was the mitigation against fd-handoff attacks after `SO_PEERCRED` validation.  Two factually wrong claims: (a) `seccomp_compile.rs:99` explicitly *allows* `dup3` (tokio uses it for stdio plumbing), and (b) `dup2` is not on either list — it falls through to default EPERM, not the SIGSYS the comment implied.  Corrected the doc to reflect the actual mitigations: Landlock (filesystem confinement) + user namespace (process scope) + broker session-id correlation at `register_session()` time.  Runtime behaviour is unchanged — only the documentation was misleading.  Commit `5f8b7c5`.
+
+- **Bug 25 (low-medium — async correctness)** — `crates/aaos-runtime/src/registry.rs::stop()` held a `DashMap` shard guard across an `mpsc::send().await`.  Under heavy mpsc-buffer pressure (a slow agent loop draining commands), the await would stall until the buffer drained, blocking any other task contending on the same shard.  Fixed: clone `command_tx` before the guard's scope ends, await outside.  Standard async-Rust pattern.  Commit `5f8b7c5`.
+
+### Investigation
+
+- The agent's claim that the Bug 21 fix (`7d8db0f`) introduced a deadlock was **disproved** by source review: `registry.rs:252` explicitly `drop(entry)` releases the `agents`-DashMap lock before `remove_agent` is called at line 260, and `remove_agent`'s `revoke_all_capabilities` call hits `capability_registry` (a separate `Arc`) — no re-entrant lock.  Bug 21's fix is correct; no revert needed.
+
+### Deferred
+
+- **Finding 1 — FileWriteTool parent-dir-then-write TOCTOU.**  Real race window between `fs::create_dir_all(parent)` and `fs::write(path, content)` in `crates/aaos-tools/src/file_write.rs`, but an attacker requires both a capability token AND independent filesystem write access to the workspace.  Worker confinement (Landlock + user namespace) constrains the symlink-redirect surface.  Proper fix needs `openat`/`O_PATH` component-walk; out of scope for v0.1.x.  Logged as a future hardening item.
+
+---
+
+## [0.1.4] — 2026-04-25
 
 ### Known — still open (triaged 2026-04-25, none blocking)
 
@@ -293,7 +319,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/Joncik91/aaOS/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Joncik91/aaOS/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Joncik91/aaOS/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Joncik91/aaOS/compare/v0.1.1...v0.1.2

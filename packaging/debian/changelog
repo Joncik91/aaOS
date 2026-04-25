@@ -1,3 +1,19 @@
+aaos (0.1.5-1) trixie; urgency=medium
+
+  * Fix Bug 24 (low — doc correctness): broker_session.rs module
+    doc made a false security claim about "seccomp denying dup2"
+    — actually dup3 is allowed and dup2 falls through to EPERM.
+    Corrected doc to reflect the real mitigations (Landlock +
+    user-ns + session-id correlation).  No runtime change.
+  * Fix Bug 25 (low-medium): registry.rs::stop held a DashMap
+    shard guard across an mpsc::send().await — could stall any
+    other task on the same shard under buffer pressure.  Cloned
+    the channel sender before the guard scope ends.
+  * Disproved a deadlock claim against the v0.1.3 Bug 21 fix
+    via source review; Bug 21 fix is correct.
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 25 Apr 2026 16:50:00 +0000
+
 aaos (0.1.4-1) trixie; urgency=medium
 
   * Fix Bug 22 (high): workspace GC follows symlinks, allowing
