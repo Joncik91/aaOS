@@ -1,3 +1,20 @@
+aaos (0.1.2-1) trixie; urgency=medium
+
+  * Fix Bug 13: agent-stop race with in-flight tool invocation.
+    exec_task.abort() at all 4 streaming-handler sites now drains
+    via tokio::time::timeout(&mut exec_task) for up to 500 ms before
+    aborting, so pending file_write/git_commit calls complete
+    before cancellation drops their futures.  race_deadline gains
+    a tracing::warn so TTL-triggered drops are visible.
+  * Fix Bug 17: inline_direct_plan no longer hardcodes the
+    workspace param.  Direct-mode goals now write to the path
+    the operator's goal text names instead of a workspace-internal
+    output.md the operator can't easily find.
+  * No new tests — both fixes verified end-to-end via droplet
+    self-reflection runs.
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 25 Apr 2026 15:30:00 +0000
+
 aaos (0.1.1-1) trixie; urgency=medium
 
   * Fix Bug 12: glob_matches separator-boundary check. Pattern /data/*

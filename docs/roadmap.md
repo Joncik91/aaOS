@@ -254,6 +254,19 @@ Patch release closing all 5 bugs surfaced by the first successful v0.1.0 self-re
 
 Tagged as `v0.1.1`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.1 — `aaos_0.1.1-1_amd64.deb`.
 
+### 22. v0.1.2 release — Bug 13 drain fix verified, Bug 17 surfaced and fixed
+*complete 2026-04-25*
+
+Same-day continuation.  Bug 13 (agent-stop race) had been queued from yesterday's v0.1.0 self-reflection run; diagnosis took one Sonnet sub-agent call that traced tokio cancellation propagating from `exec_task.abort()` through `.await` at `invoke_tool`, dropping the in-flight tool future and firing the scopeguard-stop before the side-effect ran.  Fix: 500 ms drain window via `tokio::time::timeout(&mut exec_task)` at all four `exec_task.abort()` sites in `crates/agentd/src/server.rs` (plan + direct branches, write-failure + RecvError::Closed cases) so pending tool invocations complete before cancellation.  Plus a `tracing::warn!` in `race_deadline` so TTL-triggered drops are visible in journald.
+
+Verified end-to-end on the droplet: a v0.1.0-source bug-hunt that previously lost its findings.md to the abort cancel succeeded — a 10.9 KB self-reflection report with three new candidate bug findings (TOCTOU in `narrow`, `clone3` seccomp allowlist gap, `BudgetTracker::maybe_reset` race) landed on disk for the first time.  Commit `34b018e`.
+
+The same verification run surfaced **Bug 17** — `inline_direct_plan` hardcoded `workspace: "{run}/output.md"` so the file landed at the workspace path instead of where the operator's goal text said ("/data/findings.md").  Same silent-misdelivery class as Bug 9 was, at the workspace-path layer.  Fix: omit the workspace param entirely from `inline_direct_plan`; the generalist's "if no workspace, follow the task description" fallback path then triggers and the LLM writes to whatever path the goal text named.  Commit `77bbe9d`.
+
+Three candidate bug findings (Bugs 18/19/20) from the agent's report queued in CHANGELOG `[Unreleased]` for triage.  Full reflection: [`reflection/2026-04-25-v0.1.2-bug-13-and-17.md`](reflection/2026-04-25-v0.1.2-bug-13-and-17.md).
+
+Tagged as `v0.1.2`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.2 — `aaos_0.1.2-1_amd64.deb`.
+
 ---
 
 ## Active milestones

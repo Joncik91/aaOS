@@ -10,12 +10,37 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.1 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.2 `.deb` preinstalled).
 
-### Known — still open, carried from v0.1.0 self-reflection run (2026-04-25)
+### Known — still open
 
-- **Bug 13 (high)** — Agent stop races with in-flight tool invocation.  The LLM emits a tool_use response and the executor logs it to the audit stream, but the agent can be stopped (running → stopping) within milliseconds, before `tool.invoke()` actually runs.  Visible failure: missing output file.  Invisible failure: a tool that runs side-effects (`git_commit`, `file_write`) executes but the agent is stopped before recording the audit event.  Needs a separate diagnosis pass; not fixed in v0.1.1.
 - **Bug 14 (informational)** — `commit_nudges` mechanism added in v0.1.0 (`cba106b`) is correctly plumbed end-to-end (`role.orchestration.commit_nudges` → `RoleOrchestration` → `SubtaskExecutorOverrides` → `ExecutorConfig`) but the failure mode that motivated it (LLM emitting thought-only `EndTurn` mid-investigation) didn't manifest in the v0.1.0 self-reflection run.  The mechanism stays as a safety net.
+- **Bug 18 (candidate, needs triage)** — TOCTOU in `CapabilityRegistry::narrow` (`crates/aaos-core/src/capability_registry.rs:61`).  Surfaced by the v0.1.2 self-reflection run.  Needs read-through against existing locking structure to confirm severity and whether it's a real exploit or theoretical race.
+- **Bug 19 (candidate, needs triage)** — Seccomp allowlist permits `clone3` without argument filtering (`crates/aaos-backend-linux/src/seccomp_compile.rs:182`).  Source comment at line 19 self-acknowledges "simplify: clone3 is allowed unconditionally."  Surfaced by the v0.1.2 self-reflection run.  Question: severity of the resulting worker-to-host process injection surface.
+- **Bug 20 (candidate, needs triage)** — `BudgetTracker::maybe_reset` TOCTOU (`crates/aaos-core/src/budget.rs:105`).  Race between time-elapsed check and reset, allowing a small window where an agent could exceed its budget.  Surfaced by the v0.1.2 self-reflection run.
+- **Bug 21 (verified, queued)** — Missing `CapabilityRevoked` audit events during agent shutdown.  `crates/aaos-runtime/src/registry.rs::remove_agent` (line 138) calls `capability_registry.revoke_all_for_agent(id)` directly, bypassing the public `revoke_all_capabilities()` method (line 408) which is the only path that emits the `CapabilityRevoked` audit event.  Result: every agent's `CapabilityGranted` events at spawn have no matching `CapabilityRevoked` events at shutdown — audit trail incomplete for security forensics.  Fix: have `remove_agent` call `revoke_all_capabilities()` instead of the raw registry method.  Surfaced by the second v0.1.2 self-reflection run; finding verified against current source.  Queued for v0.1.3.
+
+---
+
+## [0.1.2] — 2026-04-25
+
+Same-day patch closing two bugs uncovered while verifying v0.1.1.  Bug 13 (agent-stop race) had been queued from yesterday's v0.1.0 run; Bug 17 (workspace path mismatch) was surfaced by the same run that verified Bug 13's fix.  Full reflection: [`docs/reflection/2026-04-25-v0.1.2-bug-13-and-17.md`](docs/reflection/2026-04-25-v0.1.2-bug-13-and-17.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.2> — `aaos_0.1.2-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 13 (high)** — Agent stop races with in-flight tool invocation.  When the streaming JSON-RPC client disconnected (Ctrl-C from CLI, broken pipe, broadcast channel closed), `crates/agentd/src/server.rs` immediately called `exec_task.abort()`.  Tokio cancellation propagated inward to the nearest `.await` — which is `invoke_tool(...).await` inside the executor's ToolUse arm.  The future was dropped, the scopeguard fired `stop_sync(agent)`, the in-flight `file_write`/`git_commit` side-effect was lost.  Visible failure: missing output file.  Invisible failure (more dangerous): tool with side-effects executes but agent is stopped before recording the audit event.  **Fix**: 500 ms drain window via `tokio::time::timeout(&mut exec_task)` at all four `exec_task.abort()` sites (plan + direct branches, write-failure + RecvError::Closed cases) so pending tool invocations complete before cancellation.  Also added a `tracing::warn!` to `race_deadline` in `crates/aaos-runtime/src/plan/executor.rs` so TTL-triggered drops are visible in journald (same drop-mid-tool-call mechanism, just triggered by wall-clock instead of disconnect).  Diagnosis took one Sonnet sub-agent call; verified end-to-end on a fresh-clone droplet — a 10.9 KB self-reflection report landed on disk for the first time.  Commit `34b018e`.
+
+- **Bug 17 (medium-high)** — `inline_direct_plan` hardcoded the workspace path, ignoring operator-stated output paths.  The Direct orchestration path (`--orchestration persistent`) constructed a 1-node Plan with `workspace: "{run}/output.md"` always set.  The generalist's system_prompt at `packaging/roles/generalist.yaml` prioritises the workspace param over the goal text — so when the operator's goal said "write to /data/findings.md," the LLM dutifully wrote to the workspace path instead.  Operator never saw the file at the path they asked for.  Same silent-misdelivery class as Bug 9 was, just at a different layer.  Concretely: the v0.1.2 self-reflection run wrote a 10.9 KB findings report to `/var/lib/aaos/workspace/<run-id>/output.md` instead of `/data/findings.md`.  **Fix**: omit the workspace param entirely from `inline_direct_plan`; the generalist's "if no workspace, follow the task description" fallback path then triggers and the LLM writes to whatever path the goal text named.  Tightened the EXECUTION CONTRACT block to explicitly say "the operator-specified path."  Risk if the LLM picks a path the generalist's caps don't cover: a clean capability-denied error rather than silent misdelivery — the better failure mode.  Commit `77bbe9d`.
+
+- **Bug 14 (escalated, narrowed)** — Empty `tool_uses` with `stop_reason=ToolUse` now counts as an `EndTurn` for commit-nudge purposes.  DeepSeek (v3/v4) emits `stop_reason=ToolUse` even when the response contains zero `tool_use` blocks (thought-only text).  The existing `EndTurn`-arm nudge never fired for these.  Fix: when `tool_uses` is empty AND commit_nudges remain, inject the same nudge user-message and loop; once nudges exhausted, accept as `Complete`.  This is what made multi-turn bug-hunt runs actually commit findings on v0.1.2 — without it, the LLM would emit thought-only text under stop_reason=ToolUse and the executor would loop until token budget exhausted with no file_write call.  Bug 14 was previously informational; this v0.1.2 fix promotes it to an active failure mode that's now closed.  Commit `5dd0e09`.
+
+- **Default `ExecutorConfig.max_total_tokens` raised 1M → 5M.**  Multi-turn investigation agents accumulate ~50-100k tokens per turn (full message history re-sent each call).  20-iteration runs routinely hit 1M on v4-priced runs and silently returned `MaxTokens`.  5M gives ~50-turn headroom; cost is unaffected (charged per-API-call, not per-config-value).  Also added a `tracing::warn!` log for the budget-exhaustion path (was silent) and a `tracing::info!` at the loop top for diagnosing stuck runs.  Commit `5dd0e09`.
+
+### Known issues (fixed in 0.1.2)
+
+The v0.1.1 release shipped with Bug 13 still open; that's now closed.
 
 ---
 
@@ -237,7 +262,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Joncik91/aaOS/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Joncik91/aaOS/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Joncik91/aaOS/releases/tag/v0.1.0
 [0.0.5]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.5
