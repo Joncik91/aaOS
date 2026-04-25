@@ -241,6 +241,19 @@ Architectural minor version.  The root diagnosis from the v0.0.3–v0.0.5 runs: 
 
 Tagged as `v0.1.0`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.0 — `aaos_0.1.0-1_amd64.deb`.
 
+### 21. v0.1.1 release — 5-bug patch from self-reflection run
+*complete 2026-04-25*
+
+Patch release closing all 5 bugs surfaced by the first successful v0.1.0 self-reflection run and a parallel Sonnet audit on the same day.  No new features; no API or wire-protocol changes.  625 → 631 tests.
+
+- **Bug 12 closed** — `glob_matches` separator-boundary check.  `/data/*` no longer matches `/data-foo/x`.  Fix: require the byte after the normalized prefix to be absent or `/`.
+- **Bug 15 closed** — `pending_responses` RAII cleanup.  `send_and_wait` leaked a `DashMap` entry on every route error or timeout.  Fix: `MessageRouter::cancel_pending` + a `PendingGuard` that removes the entry on any early return.
+- **Bug 16 closed** — `SqliteMemoryStore::store` atomic replace.  DELETE + INSERT were separate auto-commits; a failed INSERT permanently deleted the old record.  Fix: wrap both in `conn.transaction()` + `tx.commit()`.
+- **Bug 10 closed** — `max_invocations` enforced at the `ToolInvocation` layer.  `permits()` was called (read-only) but `authorize_and_record()` was never called; capability constraints were dead code.  Fix: call `authorize_and_record` on the matching handle after a successful tool execution.
+- **Bug 11 narrowed** — Revoked/expired tokens filtered before forwarding to workers.  `resolve_tokens` previously forwarded all tokens including revoked ones.  Fix: filter `is_revoked() || is_expired()` in `resolve_tokens`.  Residual race (token revoked after resolve but before worker invokes) requires Option A push-revocation protocol — queued for v0.2.x.
+
+Tagged as `v0.1.1`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.1 — `aaos_0.1.1-1_amd64.deb`.
+
 ---
 
 ## Active milestones

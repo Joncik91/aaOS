@@ -1,3 +1,23 @@
+aaos (0.1.1-1) trixie; urgency=medium
+
+  * Fix Bug 12: glob_matches separator-boundary check. Pattern /data/*
+    no longer matches /data-foo/x or /data_foo/x.
+  * Fix Bug 15: pending_responses RAII cleanup in send_and_wait. Adds
+    MessageRouter::cancel_pending; a guard removes leaked entries on
+    route error or timeout.
+  * Fix Bug 16: SqliteMemoryStore::store now wraps DELETE+INSERT in an
+    explicit rusqlite transaction. A failed INSERT no longer permanently
+    deletes the replaced record.
+  * Fix Bug 10: ToolInvocation::invoke now calls authorize_and_record
+    after a successful tool invocation. max_invocations constraints are
+    enforced at the invocation layer.
+  * Narrow Bug 11: resolve_tokens filters revoked and expired tokens
+    before forwarding to workers. Tokens revoked mid-call are still
+    honoured by in-flight worker invocations (residual race; full fix
+    requires push-revocation protocol, queued for v0.2.x).
+
+ -- Jounes <jounes.ds@gmail.com>  Fri, 25 Apr 2026 14:00:00 +0000
+
 aaos (0.1.0-1) trixie; urgency=medium
 
   * Architecture: both orchestration modes (plan/decompose and

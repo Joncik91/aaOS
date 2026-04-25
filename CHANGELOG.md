@@ -10,24 +10,36 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.0 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.1 `.deb` preinstalled).
 
-### Known — surfaced by v0.1.0 self-reflection run (2026-04-25)
+### Known — still open, carried from v0.1.0 self-reflection run (2026-04-25)
 
-The first successful self-reflection run on v0.1.0 produced 3 real bug findings + surfaced 2 infrastructure bugs.  All queued for v0.1.1+.  Full report: [`docs/reflection/2026-04-25-v0.1.0-first-real-findings.md`](docs/reflection/2026-04-25-v0.1.0-first-real-findings.md).
-
-- **Bug 10 (high)** — `max_invocations` capability constraint is silently non-functional.  `crates/aaos-tools/src/invocation.rs:237-275` only calls `permits()` (the read-only check), never `authorize_and_record()`.  An agent with `max_invocations: Some(1)` for any specific capability can invoke that capability unlimited times.  The `invocation_count` field on `CapabilityToken` is dead code for enforcement.
-- **Bug 11 (high)** — Worker per-call `CapabilityRegistry` defeats revocation + invocation_count.  `crates/aaos-backend-linux/src/worker.rs:245-249` rebuilds a fresh registry per call from cloned tokens, so daemon-side revocations are invisible to in-flight worker calls and invocation counts never propagate back.
-- **Bug 12 (medium)** — `glob_matches` prefix bug.  `crates/aaos-core/src/capability.rs:403-415` checks `canonical.starts_with(&norm_prefix)` without verifying the next character is a path separator.  Pattern `/data/*` incorrectly matches `/data-foo/secret.txt` because `"/data-foo/secret.txt".starts_with("/data")` is true.
-- **Bug 13 (high)** — Agent stop races with in-flight tool invocation.  The LLM emits a tool_use response and the executor logs it to the audit stream, but the agent can be stopped (running → stopping) within milliseconds, before `tool.invoke()` actually runs.  Visible failure: missing output file.  Invisible failure: a tool that runs side-effects (`git_commit`, `file_write`) executes but the agent is stopped before recording the audit event.
+- **Bug 13 (high)** — Agent stop races with in-flight tool invocation.  The LLM emits a tool_use response and the executor logs it to the audit stream, but the agent can be stopped (running → stopping) within milliseconds, before `tool.invoke()` actually runs.  Visible failure: missing output file.  Invisible failure: a tool that runs side-effects (`git_commit`, `file_write`) executes but the agent is stopped before recording the audit event.  Needs a separate diagnosis pass; not fixed in v0.1.1.
 - **Bug 14 (informational)** — `commit_nudges` mechanism added in v0.1.0 (`cba106b`) is correctly plumbed end-to-end (`role.orchestration.commit_nudges` → `RoleOrchestration` → `SubtaskExecutorOverrides` → `ExecutorConfig`) but the failure mode that motivated it (LLM emitting thought-only `EndTurn` mid-investigation) didn't manifest in the v0.1.0 self-reflection run.  The mechanism stays as a safety net.
 
-### Known — surfaced by independent senior-engineer audit (Sonnet, same day)
+---
 
-A parallel audit by an external Sonnet model (instructed to skip Bugs 1-14) found two additional verified production defects.  Combined yield for the day: **5 confirmed bugs from aaOS reading itself + a fresh Sonnet review.**
+## [0.1.1] — 2026-04-25
 
-- **Bug 15 (medium-high)** — `send_and_wait` leaks `pending_responses` entries on route failure and on timeout.  `crates/aaos-runtime/src/services.rs:229-245` calls `router.register_pending(trace_id, tx)` before `route()`.  If `route()` returns Err (recipient unregistered, capability denied, full channel) the `?` early-returns leaving the `(trace_id, tx)` entry in the `DashMap` permanently.  The timeout arm at line 245 has the same leak.  In a long-running daemon, every timed-out or routed-to-dead-agent `send_and_wait` adds a permanently-leaked oneshot::Sender; `pending_count()` becomes monotonically growing.  Fix: RAII guard or explicit `remove_pending(trace_id)` on both error paths.
-- **Bug 16 (medium)** — `SqliteMemoryStore::store` is documented as "atomic replace" but is not transactional.  `crates/aaos-memory/src/sqlite.rs:143-181` runs DELETE then INSERT as separate auto-commits.  If INSERT fails (PRIMARY KEY collision, schema constraint, I/O error) the old record is permanently gone and the new one was never written.  Safe today only because `MemoryRecord.id` is `Uuid::new_v4()` (collision-near-zero), but the atomicity invariant is not enforced structurally.  Fix: wrap both statements in `conn.transaction()` + `tx.commit()`.
+Patch release closing 5 production bugs surfaced by the v0.1.0 self-reflection run and a parallel senior-engineer audit.  No new features; no API or wire-protocol changes.  Full report: [`docs/reflection/2026-04-25-v0.1.0-first-real-findings.md`](docs/reflection/2026-04-25-v0.1.0-first-real-findings.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.1> — `aaos_0.1.1-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 12 (medium)** — `glob_matches` separator-boundary check.  `crates/aaos-core/src/capability.rs` checked `canonical.starts_with(&norm_prefix)` without verifying the following byte is a path separator.  Pattern `/data/*` incorrectly accepted `/data-foo/x` and `/data_foo/x`.  Fixed: require that the character immediately after the prefix is absent (exact-dir match) or `/`.  Two new regression tests: `glob_boundary_dash_prefix_denied` and `glob_boundary_underscore_prefix_denied`.
+
+- **Bug 15 (medium-high)** — `pending_responses` RAII cleanup.  `crates/aaos-runtime/src/services.rs` registered a oneshot sender before `route()` and did not clean it up on route error or timeout.  Every timed-out or routed-to-dead-agent `send_and_wait` permanently leaked a `DashMap` entry; `pending_count()` grew monotonically.  Fixed: added `MessageRouter::cancel_pending` + a RAII `PendingGuard` inside `send_and_wait` that removes the entry on any early return.  New regression test: `send_and_wait_timeout_cleans_up_pending` asserts `pending_count() == 0` after a timeout.
+
+- **Bug 16 (medium)** — `SqliteMemoryStore::store` explicit transaction.  `crates/aaos-memory/src/sqlite.rs` ran DELETE then INSERT as separate auto-commits.  A failed INSERT left the old record permanently deleted.  Fixed: wrapped both statements in `conn.transaction()` + `tx.commit()`.  Existing `replaces_is_atomic` test continues to pass.
+
+- **Bug 10 (high)** — `max_invocations` now enforced at the `ToolInvocation` layer.  `crates/aaos-tools/src/invocation.rs` called `permits()` (read-only) but never `authorize_and_record()`.  Capability `max_invocations` constraints were dead code — an agent could invoke any tool unlimited times regardless.  Fixed: replaced `any()` scan with `find()` to retain the matching handle, then calls `authorize_and_record` after a successful tool execution.  If the token is revoked or expired in the window between the two calls, a warning is logged and the already-completed invocation is not failed (can't undo).  New test: `max_invocations_enforced_through_invoke`.
+
+- **Bug 11 (narrowed, not closed)** — Revoked and expired tokens filtered before forwarding to workers.  `crates/aaos-core/src/capability_registry.rs::resolve_tokens` previously forwarded all tokens regardless of revocation status; workers received and honoured revoked tokens in their per-call registry.  Fixed: filter out `is_revoked() || is_expired()` tokens in `resolve_tokens` so workers only receive currently-valid tokens at dispatch time.  **Residual race:** a token revoked *after* `resolve_tokens` runs but *before* the worker invokes the tool is still honoured by the in-flight call.  Closing this fully requires a push-revocation protocol (Option A) — queued for v0.2.x.  New test: `resolve_tokens_filters_revoked`.
+
+### Test count
+
+625 (v0.1.0) → 631 (+6 new regression tests across `aaos-core`, `aaos-ipc`/`aaos-runtime`, and `aaos-tools`).
 
 ---
 
@@ -225,7 +237,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Joncik91/aaOS/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Joncik91/aaOS/releases/tag/v0.1.0
 [0.0.5]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.5
 [0.0.4]: https://github.com/Joncik91/aaOS/releases/tag/v0.0.4
