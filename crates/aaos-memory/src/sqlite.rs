@@ -141,25 +141,33 @@ fn scope_to_str(scope: &MemoryScope) -> &'static str {
 #[async_trait]
 impl MemoryStore for SqliteMemoryStore {
     async fn store(&self, record: MemoryRecord) -> MemoryStoreResult<Uuid> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
+        let blob = embedding_to_blob(&record.embedding);
+        let metadata_json = serde_json::to_string(&record.metadata)
+            .map_err(|e| MemoryError::Storage(format!("failed to serialize metadata: {e}")))?;
+
+        // Wrap DELETE + INSERT in an explicit transaction so that if the
+        // INSERT fails the old record is not lost.  Without this, the two
+        // statements ran as separate auto-commits: a failed INSERT left the
+        // store permanently empty for the replaced record's key.
+        let tx = conn
+            .transaction()
+            .map_err(|e| MemoryError::Storage(format!("failed to begin transaction: {e}")))?;
+
         // Atomic replace: delete old record if this one replaces it
         if let Some(replaces_id) = &record.replaces {
-            conn.execute(
+            tx.execute(
                 "DELETE FROM memories WHERE id = ?1 AND agent_id = ?2",
                 rusqlite::params![replaces_id.to_string(), record.agent_id.to_string()],
             )
             .map_err(|e| MemoryError::Storage(format!("failed to delete replaced: {e}")))?;
         }
 
-        let blob = embedding_to_blob(&record.embedding);
-        let metadata_json = serde_json::to_string(&record.metadata)
-            .map_err(|e| MemoryError::Storage(format!("failed to serialize metadata: {e}")))?;
-
-        conn.execute(
+        tx.execute(
             "INSERT INTO memories (id, agent_id, content, category, scope, metadata, created_at, replaces, embedding, embedding_model)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             rusqlite::params![
@@ -176,6 +184,9 @@ impl MemoryStore for SqliteMemoryStore {
             ],
         )
         .map_err(|e| MemoryError::Storage(format!("failed to insert: {e}")))?;
+
+        tx.commit()
+            .map_err(|e| MemoryError::Storage(format!("failed to commit transaction: {e}")))?;
 
         Ok(record.id)
     }
