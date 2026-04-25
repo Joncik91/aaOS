@@ -11,7 +11,10 @@ use crate::types::{CompletionRequest, ContentBlock, LlmStopReason, Message};
 pub struct ExecutorConfig {
     /// Maximum LLM API calls per execution. Default: 50.
     pub max_iterations: u32,
-    /// Maximum total tokens (input + output) across all iterations. Default: 1_000_000.
+    /// Maximum total tokens (input + output) across all iterations.  Default:
+    /// 5_000_000.  Bumped from 1M (v0.1.2) because multi-turn investigation
+    /// agents accumulate ~50-100k tokens per turn (full message history
+    /// re-sent each call) and 20 turns hit 1M routinely on v4-priced runs.
     pub max_total_tokens: u64,
     /// Maximum output tokens per LLM call. Default: 16384.
     pub max_output_tokens: u32,
@@ -30,7 +33,7 @@ impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
             max_iterations: 50,
-            max_total_tokens: 1_000_000,
+            max_total_tokens: 5_000_000,
             max_output_tokens: 16_384,
             commit_nudges: 0,
         }
@@ -151,6 +154,13 @@ impl AgentExecutor {
         );
 
         loop {
+            tracing::info!(
+                agent_id = %agent_id,
+                next_iter = iterations + 1,
+                msg_count = messages.len(),
+                "executor.run: top-of-loop, about to call LLM"
+            );
+
             // Call LLM
             let request = CompletionRequest {
                 agent_id,
@@ -211,6 +221,13 @@ impl AgentExecutor {
 
             // Check token budget
             if cumulative_usage.total() > self.config.max_total_tokens {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    iter = iterations,
+                    cumulative_total = cumulative_usage.total(),
+                    max_total = self.config.max_total_tokens,
+                    "executor.run: token budget exhausted — returning MaxTokens stop_reason"
+                );
                 // Extract any text from this response before stopping
                 for block in &response.content {
                     if let ContentBlock::Text { text } = block {
@@ -303,6 +320,48 @@ impl AgentExecutor {
                         if let ContentBlock::Text { text } = block {
                             last_text = text.clone();
                         }
+                    }
+
+                    // Bug 14 escalation (v0.1.2): some providers (DeepSeek
+                    // observed) return stop_reason=ToolUse even when the
+                    // response contains zero tool_use blocks — the LLM
+                    // emitted thought-only text and signalled end-of-turn
+                    // via a stop_reason that LOOKS like a tool call.  The
+                    // EndTurn-arm nudge logic never fires for these.  Treat
+                    // an empty tool_uses Vec the same as EndTurn: nudge if
+                    // budget allows, else accept as terminal.
+                    if tool_uses.is_empty() {
+                        if nudges_used < self.config.commit_nudges {
+                            nudges_used += 1;
+                            messages.push(Message::Assistant {
+                                content: response.content.clone(),
+                            });
+                            messages.push(Message::User {
+                                content: "You ended your turn without calling a tool. \
+                                     Your execution contract requires you to call \
+                                     file_write (or your designated output tool) with \
+                                     your final report. Either call it now with whatever \
+                                     findings you have, or explain in one sentence what \
+                                     is blocking you. Do not emit another thought-only \
+                                     response."
+                                    .into(),
+                            });
+                            tracing::warn!(
+                                agent_id = %agent_id,
+                                nudge = nudges_used,
+                                trigger = "tooluse_empty",
+                                "commit-nudge: ToolUse stop_reason but zero tool_use \
+                                 blocks (likely thought-only); re-prompting"
+                            );
+                            continue;
+                        }
+                        // Nudges exhausted — accept as terminal Complete.
+                        return ExecutionResult {
+                            response: last_text,
+                            usage: cumulative_usage,
+                            iterations,
+                            stop_reason: ExecutionStopReason::Complete,
+                        };
                     }
 
                     // Append assistant message
