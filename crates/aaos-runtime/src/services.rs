@@ -229,9 +229,30 @@ impl AgentServices for InProcessAgentServices {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.router.register_pending(trace_id, tx);
 
+        // RAII guard: removes the pending entry on any early return (route
+        // error, timeout, panic) so the DashMap never leaks entries.
+        struct PendingGuard<'r> {
+            router: &'r MessageRouter,
+            trace_id: uuid::Uuid,
+            /// Disarmed on the success path so the normal `respond` removal wins.
+            armed: bool,
+        }
+        impl Drop for PendingGuard<'_> {
+            fn drop(&mut self) {
+                if self.armed {
+                    self.router.cancel_pending(self.trace_id);
+                }
+            }
+        }
+        let mut guard = PendingGuard {
+            router: &self.router,
+            trace_id,
+            armed: true,
+        };
+
         self.router.route(msg).await?;
 
-        match tokio::time::timeout(timeout, rx).await {
+        let outcome = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(response)) => {
                 if let Some(result) = response.result {
                     Ok(result)
@@ -243,7 +264,17 @@ impl AgentServices for InProcessAgentServices {
             }
             Ok(Err(_)) => Err(CoreError::Ipc("responder dropped".into())),
             Err(_) => Err(CoreError::Timeout(timeout)),
+        };
+
+        // Disarm: on the success path the entry was already removed by
+        // `MessageRouter::respond`; on error the guard's Drop will remove it.
+        // Either way we must not double-remove on success, so only disarm when
+        // we got an `Ok` response (the entry is already gone from the DashMap).
+        if outcome.is_ok() {
+            guard.armed = false;
         }
+
+        outcome
     }
 }
 
@@ -401,5 +432,30 @@ approval_required:
             .await
             .unwrap();
         assert_eq!(result, serde_json::json!({"message": "hello"}));
+    }
+
+    // ---- Bug 15: pending_responses cleanup on timeout ----
+
+    #[tokio::test]
+    async fn send_and_wait_timeout_cleans_up_pending() {
+        let (services, agent_id, _log) = setup();
+        // Send to a non-existent recipient — route succeeds (no error on
+        // unknown recipient in InMemoryAuditLog setup) but no one ever
+        // responds, so the timeout fires.  After that the pending entry
+        // must be gone.
+        let nonexistent = AgentId::new();
+        let result = services
+            .send_and_wait(
+                agent_id,
+                nonexistent,
+                "ping".into(),
+                serde_json::json!({}),
+                Duration::from_millis(50),
+            )
+            .await;
+        // The call should fail (timeout or routing error) — either is fine.
+        assert!(result.is_err());
+        // The RAII guard must have cleaned up.
+        assert_eq!(services.router.pending_count(), 0);
     }
 }

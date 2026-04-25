@@ -145,6 +145,13 @@ impl MessageRouter {
     pub fn pending_count(&self) -> usize {
         self.pending_responses.len()
     }
+
+    /// Remove a pending response entry by trace_id without sending a reply.
+    /// Used by callers that registered a pending slot but need to clean up
+    /// on error or timeout (RAII guard path in `send_and_wait`).
+    pub fn cancel_pending(&self, trace_id: Uuid) {
+        self.pending_responses.remove(&trace_id);
+    }
 }
 
 #[cfg(test)]
