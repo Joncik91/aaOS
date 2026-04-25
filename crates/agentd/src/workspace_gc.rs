@@ -61,7 +61,21 @@ pub fn sweep_once(root: &Path, ttl_days: u64) -> (usize, usize) {
     let mut total = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() {
+        // Bug 22 fix: use DirEntry::file_type() which does NOT follow
+        // symlinks, then explicitly reject symlinks.  path.is_dir() (as
+        // used previously) follows symlinks; combined with
+        // remove_dir_all that also follows them, an agent with a
+        // legitimate FileWrite: /var/lib/aaos/workspace/* capability
+        // could plant a symlink and the GC would delete the target
+        // (e.g. /etc/cron.d or /etc/sudoers.d) under the aaos uid.
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "workspace-gc: file_type failed");
+                continue;
+            }
+        };
+        if ft.is_symlink() || !ft.is_dir() {
             continue;
         }
         total += 1;

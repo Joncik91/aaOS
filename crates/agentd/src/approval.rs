@@ -4,8 +4,22 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Serialize;
 use serde_json::Value;
+use std::time::Duration;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+/// Default timeout for an approval request.  After this elapses with no
+/// human response, the request is removed from the queue and the
+/// blocking `request()` call returns `ApprovalResult::Denied` with a
+/// timeout reason.  Bug 23 fix: previously requests blocked forever on
+/// `rx.await` with no upper bound — orphaned pending entries
+/// accumulated indefinitely on operator absence.
+///
+/// 1 hour is long enough for a typical operator to notice the request
+/// and respond, short enough that genuinely-abandoned requests don't
+/// leak resources.  Override per-request via `request_with_timeout` if
+/// needed; the basic `request()` always uses this default.
+pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(3600);
 
 pub struct ApprovalQueue {
     pending: DashMap<Uuid, PendingApproval>,
@@ -109,12 +123,30 @@ impl ApprovalService for ApprovalQueue {
             },
         );
 
-        match rx.await {
-            Ok(result) => Ok(result),
-            Err(_) => {
+        match tokio::time::timeout(DEFAULT_APPROVAL_TIMEOUT, rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => {
                 self.pending.remove(&id);
                 Ok(ApprovalResult::Denied {
                     reason: "approval service unavailable".into(),
+                })
+            }
+            Err(_elapsed) => {
+                // Bug 23: request timed out with no human response.
+                // Remove the orphaned pending entry and deny the call;
+                // otherwise the agent blocks forever and the entry
+                // leaks across daemon lifetime.
+                self.pending.remove(&id);
+                tracing::warn!(
+                    approval_id = %id,
+                    timeout_secs = DEFAULT_APPROVAL_TIMEOUT.as_secs(),
+                    "approval request timed out — denying"
+                );
+                Ok(ApprovalResult::Denied {
+                    reason: format!(
+                        "approval request timed out after {}s",
+                        DEFAULT_APPROVAL_TIMEOUT.as_secs()
+                    ),
                 })
             }
         }
