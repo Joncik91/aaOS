@@ -2473,24 +2473,36 @@ impl Server {
 /// that could produce hallucinated reports.
 pub(crate) fn inline_direct_plan(goal: &str, _run_id: uuid::Uuid) -> aaos_runtime::plan::Plan {
     // The Direct path runs a single multi-turn generalist. We wrap the
-    // goal with an explicit commit instruction because the generalist's
-    // base system prompt only enforces file_write when a `workspace`
-    // param is present — and by the time open-ended goals reach here
-    // the LLM often emits a reasoning-only turn and the executor treats
-    // it as completion. The wrapper forces the LLM to end every run
-    // with a file_write tool call.
+    // goal with an explicit commit instruction because by the time open-
+    // ended goals reach here the LLM often emits a reasoning-only turn
+    // and the executor treats it as completion. The wrapper forces the
+    // LLM to end every run with a file_write tool call to the path
+    // named in the operator's goal text.
+    //
+    // Bug 17 fix (v0.1.2): we used to set `workspace: "{run}/output.md"`
+    // which the generalist's system prompt treats as authoritative — so
+    // the LLM wrote to the workspace path even when the operator's goal
+    // text said "write to /data/findings.md".  The operator never saw
+    // the output at the path they asked for.  Now we omit the workspace
+    // param entirely; the generalist's "if no workspace, do what the
+    // task says" fallback path triggers and the LLM writes to the path
+    // the operator named.
+    //
+    // `final_output` stays at `{run}/output.md` because PlanExecutor
+    // uses it for final-text aggregation; the actual file landing on
+    // disk goes wherever the LLM's file_write call targets.
     let wrapped_goal = format!(
         "{goal}\n\n\
          ---\n\
          EXECUTION CONTRACT (do not ignore):\n\
          You MUST end this run by calling file_write(path=<the output path \
-         named in the task above, or {{workspace}} if none>, content=<your \
-         final report>).  Do NOT emit final text without that tool call.  \
-         If you need more turns to investigate, keep calling tools — but \
-         the last tool call in this run MUST be file_write, and you must \
-         write a substantive report (not a placeholder).  If you genuinely \
-         have no findings, still call file_write with \"No findings after \
-         N files read.\" as the content."
+         named in the task above>, content=<your final report>).  Do NOT \
+         emit final text without that tool call.  If you need more turns \
+         to investigate, keep calling tools — but the last tool call in \
+         this run MUST be file_write to the operator-specified path, and \
+         you must write a substantive report (not a placeholder).  If you \
+         genuinely have no findings, still call file_write at that path \
+         with \"No findings after N files read.\" as the content."
     );
 
     aaos_runtime::plan::Plan {
@@ -2499,7 +2511,6 @@ pub(crate) fn inline_direct_plan(goal: &str, _run_id: uuid::Uuid) -> aaos_runtim
             role: "generalist".into(),
             params: serde_json::json!({
                 "task_description": wrapped_goal,
-                "workspace": "{run}/output.md",
             }),
             depends_on: vec![],
             ttl: None,
