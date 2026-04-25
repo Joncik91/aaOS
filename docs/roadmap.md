@@ -267,6 +267,15 @@ Three candidate bug findings (Bugs 18/19/20) from the agent's report queued in C
 
 Tagged as `v0.1.2`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.2 — `aaos_0.1.2-1_amd64.deb`.
 
+### 23. v0.1.3 release — Bug 21 fix + triage of v0.1.2 candidates
+*complete 2026-04-25*
+
+Same-day patch closing Bug 21 (missing `CapabilityRevoked` audit events at agent shutdown — surfaced by aaOS reading its own source on v0.1.2).  `remove_agent` now routes through `revoke_all_capabilities()` instead of the raw registry call, so the audit event fires.  Also tightened `revoke_all_capabilities` itself by replacing a dead placeholder loop.  Commit `7d8db0f`.
+
+Triaged Bugs 18/19/20 from the v0.1.2 reflection run via Sonnet sub-agent against current source: all three are theoretical or accepted-risk under the existing design.  Bug 18 (TOCTOU in `narrow`) is the same race class as Bug 11 — already tracked as v0.2.x Option-A protocol work.  Bug 19 (`clone3` seccomp) is contained by defense-in-depth (user-namespace + `PR_SET_NO_NEW_PRIVS` + `execve` kill-list); tightening filed to [`docs/ideas.md`](ideas.md) with concrete reconsider signals.  Bug 20 (`BudgetTracker` TOCTOU) — double reset is benign, no token loss possible due to CAS on `used_tokens`; closed as accepted-risk.
+
+Tagged as `v0.1.3`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.3 — `aaos_0.1.3-1_amd64.deb`.
+
 ---
 
 ## Active milestones

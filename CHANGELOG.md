@@ -10,15 +10,30 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.2 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.3 `.deb` preinstalled).
 
-### Known — still open
+### Known — still open (triaged 2026-04-25, none blocking)
 
-- **Bug 14 (informational)** — `commit_nudges` mechanism added in v0.1.0 (`cba106b`) is correctly plumbed end-to-end (`role.orchestration.commit_nudges` → `RoleOrchestration` → `SubtaskExecutorOverrides` → `ExecutorConfig`) but the failure mode that motivated it (LLM emitting thought-only `EndTurn` mid-investigation) didn't manifest in the v0.1.0 self-reflection run.  The mechanism stays as a safety net.
-- **Bug 18 (candidate, needs triage)** — TOCTOU in `CapabilityRegistry::narrow` (`crates/aaos-core/src/capability_registry.rs:61`).  Surfaced by the v0.1.2 self-reflection run.  Needs read-through against existing locking structure to confirm severity and whether it's a real exploit or theoretical race.
-- **Bug 19 (candidate, needs triage)** — Seccomp allowlist permits `clone3` without argument filtering (`crates/aaos-backend-linux/src/seccomp_compile.rs:182`).  Source comment at line 19 self-acknowledges "simplify: clone3 is allowed unconditionally."  Surfaced by the v0.1.2 self-reflection run.  Question: severity of the resulting worker-to-host process injection surface.
-- **Bug 20 (candidate, needs triage)** — `BudgetTracker::maybe_reset` TOCTOU (`crates/aaos-core/src/budget.rs:105`).  Race between time-elapsed check and reset, allowing a small window where an agent could exceed its budget.  Surfaced by the v0.1.2 self-reflection run.
-- **Bug 21 (verified, queued)** — Missing `CapabilityRevoked` audit events during agent shutdown.  `crates/aaos-runtime/src/registry.rs::remove_agent` (line 138) calls `capability_registry.revoke_all_for_agent(id)` directly, bypassing the public `revoke_all_capabilities()` method (line 408) which is the only path that emits the `CapabilityRevoked` audit event.  Result: every agent's `CapabilityGranted` events at spawn have no matching `CapabilityRevoked` events at shutdown — audit trail incomplete for security forensics.  Fix: have `remove_agent` call `revoke_all_capabilities()` instead of the raw registry method.  Surfaced by the second v0.1.2 self-reflection run; finding verified against current source.  Queued for v0.1.3.
+- **Bug 14 (informational)** — `commit_nudges` mechanism added in v0.1.0 (`cba106b`).  v0.1.2 expanded its trigger condition (`commit-nudges` now fires on empty `tool_uses` with `stop_reason=ToolUse`, not just `EndTurn`); both forms remain in place as safety nets.
+- **Bug 18 (theoretical, accepted-risk)** — TOCTOU in `CapabilityRegistry::narrow` (`crates/aaos-core/src/capability_registry.rs:61`).  Triaged 2026-04-25: same race class as Bug 11 (token revoked between resolve and use); residual risk acknowledged in v0.1.1 CHANGELOG and tracked under "Option A push-revocation protocol — queued for v0.2.x."  No separate v0.1.x action needed.
+- **Bug 19 (theoretical, deferred to ideas.md)** — Seccomp allowlist permits `clone3` without argument filtering.  Triaged 2026-04-25: defense-in-depth holds (worker in user-namespace with `PR_SET_NO_NEW_PRIVS`, seccomp kill-list denies `execve`/`execveat` so clone3-spawned children can't exec).  Tightening to `CLONE_THREAD`-only is cosmetic-correct hardening; tracked in [`docs/ideas.md`](docs/ideas.md) ("Tighten `clone3` seccomp filter to `CLONE_THREAD` only") with concrete reconsider signals.
+- **Bug 20 (theoretical, accepted-risk)** — `BudgetTracker::maybe_reset` TOCTOU (`crates/aaos-core/src/budget.rs:105`).  Triaged 2026-04-25: a double reset is benign (both threads write the same `now` to `period_start` and zero `used_tokens`); the `track` path uses CAS so no tokens are lost.  Worst outcome is the budget window resets slightly early — not an exploitable over-budget condition.  Closed as accepted-risk.
+
+---
+
+## [0.1.3] — 2026-04-25
+
+Same-day patch closing Bug 21, surfaced by the v0.1.2 self-reflection run that verified the Bug 13 + Bug 17 fixes.  Plus triage of Bugs 18/19/20 (all theoretical, no fixes needed) and a new `docs/ideas.md` entry for the `clone3` seccomp tightening.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.3> — `aaos_0.1.3-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 21 (medium)** — Missing `CapabilityRevoked` audit events during agent shutdown.  `crates/aaos-runtime/src/registry.rs::remove_agent` (line 138) called `capability_registry.revoke_all_for_agent(id)` directly, bypassing the public `revoke_all_capabilities()` wrapper (line 408) which is the only path that emits the `CapabilityRevoked` audit event.  Result: every agent's `CapabilityGranted` events at spawn-time had no matching `CapabilityRevoked` events at shutdown — audit trail incomplete for security forensics.  Fix: route `remove_agent` through `revoke_all_capabilities()`.  Also tightened `revoke_all_capabilities` itself: replaced the dead `for i in 0..count { let _ = i; }` placeholder loop with a single bulk audit event whose `capability` string carries the count.  Surfaced by aaOS reading its own source on v0.1.2.  Commit `7d8db0f`.
+
+### Documentation
+
+- **`docs/ideas.md`** — added "Tighten `clone3` seccomp filter to `CLONE_THREAD` only" with concrete reconsider signals (third-party audit recommendation, M1 Debian-derivative milestone, or a demonstrated escape).
 
 ---
 
@@ -262,7 +277,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/Joncik91/aaOS/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Joncik91/aaOS/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Joncik91/aaOS/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Joncik91/aaOS/releases/tag/v0.1.0
