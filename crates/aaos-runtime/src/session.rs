@@ -23,6 +23,21 @@ pub trait SessionStore: Send + Sync {
     /// Append new messages to the agent's history.
     fn append(&self, agent_id: &AgentId, messages: &[Message]) -> Result<()>;
 
+    /// Atomically replace the agent's entire history.  On success the old
+    /// data is gone and the new data is fully persisted.  On failure the
+    /// old data MUST still be intact.  Used by the persistent-agent loop's
+    /// summarization path so a crash mid-rewrite cannot lose history (Bug
+    /// 30 fix in v0.2.2).
+    ///
+    /// Default implementation is `clear` then `append` for stores that
+    /// don't expose atomic replace (in-memory and tests); the production
+    /// `JsonlSessionStore` overrides this with a write-temp + rename
+    /// pattern.
+    fn replace(&self, agent_id: &AgentId, messages: &[Message]) -> Result<()> {
+        self.clear(agent_id)?;
+        self.append(agent_id, messages)
+    }
+
     /// Clear all history for an agent.
     fn clear(&self, agent_id: &AgentId) -> Result<()>;
 
@@ -104,6 +119,51 @@ impl SessionStore for JsonlSessionStore {
             fs::write(&path, b"")
                 .map_err(|e| CoreError::Ipc(format!("failed to clear session file: {e}")))?;
         }
+        Ok(())
+    }
+
+    /// Atomic replacement: write the full new history to a sibling
+    /// `.tmp` file, fsync, then `rename(2)`.  POSIX guarantees rename
+    /// is atomic on the same filesystem — readers see either the old
+    /// file or the new file, never an interleaving.  This closes the
+    /// Bug 30 race where the prior `clear()` + `append()` sequence
+    /// could silently destroy session history if the process crashed
+    /// or the append failed mid-write.
+    fn replace(&self, agent_id: &AgentId, messages: &[Message]) -> Result<()> {
+        let path = self.path_for(agent_id);
+        let tmp = path.with_extension("jsonl.tmp");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&tmp)
+            .map_err(|e| {
+                CoreError::Ipc(format!(
+                    "failed to open temp session file {}: {e}",
+                    tmp.display()
+                ))
+            })?;
+        for msg in messages {
+            let json = serde_json::to_string(msg)?;
+            writeln!(file, "{json}").map_err(|e| {
+                CoreError::Ipc(format!("failed to write session line to temp: {e}"))
+            })?;
+        }
+        // Flush and sync to disk before the rename so a crash AFTER the
+        // rename but BEFORE writeback can't leave the renamed file
+        // partially populated.
+        file.sync_all()
+            .map_err(|e| CoreError::Ipc(format!("failed to fsync temp session file: {e}")))?;
+        drop(file);
+        fs::rename(&tmp, &path).map_err(|e| {
+            // Best-effort cleanup of the orphaned temp file.
+            let _ = fs::remove_file(&tmp);
+            CoreError::Ipc(format!(
+                "failed to atomically rename {} to {}: {e}",
+                tmp.display(),
+                path.display()
+            ))
+        })?;
         Ok(())
     }
 
@@ -256,6 +316,66 @@ mod tests {
     use super::*;
     use aaos_llm::ContentBlock;
     use tempfile::TempDir;
+
+    #[test]
+    fn jsonl_replace_is_atomic_swap() {
+        let dir = TempDir::new().unwrap();
+        let store = JsonlSessionStore::new(dir.path().to_path_buf()).unwrap();
+        let agent_id = AgentId::new();
+
+        // Seed with three messages.
+        store
+            .append(
+                &agent_id,
+                &[
+                    Message::User {
+                        content: "a".into(),
+                    },
+                    Message::User {
+                        content: "b".into(),
+                    },
+                    Message::User {
+                        content: "c".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(store.load(&agent_id).unwrap().len(), 3);
+
+        // Replace with two messages — old file should be gone.
+        store
+            .replace(
+                &agent_id,
+                &[
+                    Message::User {
+                        content: "x".into(),
+                    },
+                    Message::User {
+                        content: "y".into(),
+                    },
+                ],
+            )
+            .unwrap();
+        let loaded = store.load(&agent_id).unwrap();
+        assert_eq!(loaded.len(), 2);
+        match &loaded[0] {
+            Message::User { content } => assert_eq!(content, "x"),
+            _ => panic!("expected User"),
+        }
+
+        // No leftover .tmp file.
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(
+            !entries.iter().any(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")
+            }),
+            "atomic replace must clean up its temp file"
+        );
+    }
 
     #[test]
     fn jsonl_append_and_load() {

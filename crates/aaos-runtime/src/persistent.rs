@@ -94,39 +94,33 @@ pub async fn persistent_agent_loop(
                                 history.drain(..=end);
                                 history.insert(0, summ.summary.clone());
 
-                                // 3. Clear and rewrite session store with new history.
-                                // NOTE: clear+append is not atomic. If append partially persists
-                                // before failing, the on-disk store can diverge from the in-memory
-                                // history until the next summarization cycle. A transactional
-                                // replace() on the SessionStore trait would close this; deferred
-                                // as a follow-up.
+                                // 3. Atomically replace the session store with the new history.
+                                // Bug 30 fix (v0.2.2): the previous clear()+append() sequence was
+                                // not atomic — a crash or partial-write between the two could
+                                // permanently destroy the agent's session history (in-memory
+                                // history was still intact, but a daemon restart would load an
+                                // empty file).  SessionStore::replace is now a transactional
+                                // primitive (write-temp + fsync + rename(2) on JsonlSessionStore)
+                                // so the on-disk file either holds the prior history or the new
+                                // history — never an empty intermediate state.
                                 let should_emit = match last_session_store_error {
                                     Some(prev) if prev.elapsed() < SESSION_STORE_ERROR_THROTTLE => false,
                                     _ => { last_session_store_error = Some(Instant::now()); true }
                                 };
-                                if let Err(e) = session_store.clear(&agent_id) {
+                                if let Err(e) = session_store.replace(&agent_id, &history) {
                                     if should_emit {
                                         audit_log.record(AuditEvent::new(
                                             agent_id,
                                             AuditEventKind::SessionStoreError {
-                                                operation: "clear".to_string(),
+                                                operation: "replace".to_string(),
                                                 message: e.to_string(),
                                             },
                                         ));
                                     }
-                                    // Do NOT append — writing over a non-cleared store would
-                                    // mix old and new history. The in-memory history is still
-                                    // intact and will be rewritten next cycle.
-                                } else if let Err(e) = session_store.append(&agent_id, &history) {
-                                    if should_emit {
-                                        audit_log.record(AuditEvent::new(
-                                            agent_id,
-                                            AuditEventKind::SessionStoreError {
-                                                operation: "append".to_string(),
-                                                message: e.to_string(),
-                                            },
-                                        ));
-                                    }
+                                    // The atomic primitive failed BEFORE the rename, so the
+                                    // on-disk file still contains the prior (un-summarized)
+                                    // history.  In-memory history holds the summarized form;
+                                    // the next summarization cycle will retry the rewrite.
                                 }
 
                                 // 4. Emit audit event
