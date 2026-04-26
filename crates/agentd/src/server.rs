@@ -333,16 +333,13 @@ impl Server {
             use aaos_backend_linux::broker_session::SessionMapNotifier;
             let notifier = Arc::new(SessionMapNotifier::new(nb.sessions()))
                 as Arc<dyn aaos_core::RevokeNotifier>;
-            if registry
-                .capability_registry()
-                .set_notifier(notifier)
-                .is_err()
-            {
-                tracing::warn!(
-                    "wire_revocation_notifier: notifier already installed on \
-                     CapabilityRegistry — ignoring duplicate install"
-                );
-            }
+            // Constructors call this twice on the same registry
+            // (Server::new() first, then again after build_in_process_backend
+            // is rebuilt with an LLM client). The OnceLock makes the second
+            // install a no-op; we don't log it because the first wired the
+            // SessionMapNotifier from the same SessionMap, so the registry
+            // is correctly attached either way.
+            let _ = registry.capability_registry().set_notifier(notifier);
         }
     }
 
