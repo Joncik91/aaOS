@@ -1,3 +1,18 @@
+aaos (0.1.7-1) trixie; urgency=medium
+
+  * Fix Bug 27 (high): both spawn paths in spawn_tool.rs issued
+    child capability tokens with Constraints::default(), silently
+    dropping parent max_invocations / rate_limit / expiry.  Phase
+    A's run-1 finding #3 had regressed in a later refactor when
+    the spawn paths needed capability substitution that the
+    existing CapabilityToken::narrow() couldn't provide.  Fix:
+    new narrow_with_capability() method that substitutes the
+    narrower capability AND inherits parent constraints
+    atomically.  Both spawn paths refactored to use it.
+  * Surfaced by round-5 v0.1.6 self-reflection on a fresh droplet.
+
+ -- Jounes <jounes.ds@gmail.com>  Sat, 26 Apr 2026 11:30:00 +0000
+
 aaos (0.1.6-1) trixie; urgency=medium
 
   * Fix Bug 26 (medium): charge capability use BEFORE tool

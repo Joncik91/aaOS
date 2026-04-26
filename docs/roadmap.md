@@ -317,6 +317,15 @@ Deferred: round-4 Finding 1 (`canonical_for_match` symlink-swap TOCTOU) is docum
 
 Tagged as `v0.1.6`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.6 — `aaos_0.1.6-1_amd64.deb`.
 
+### 27. v0.1.7 release — Bug 27 (parent constraint inheritance on spawn)
+*complete 2026-04-26*
+
+Round-5 self-reflection on v0.1.6 source on a fresh droplet (the v0.0.5–v0.1.5 droplet had been destroyed; a re-launch attempt against the recycled IP was correctly rejected by ssh host-key verification before any payload landed).  Three findings reported; one new and real, two reproduced from earlier rounds and already filed in `docs/ideas.md`.
+
+Bug 27 (high): both spawn paths in `spawn_tool.rs` issued child capability tokens with `Constraints::default()`, silently dropping parent `max_invocations` / rate_limit / expiry.  Phase A's run-1 finding #3 had originally fixed this; it regressed in a later refactor when the spawn paths needed capability substitution (parent's `file_read: /src/*` → child's `file_read: /src/crates/*`) that the existing `CapabilityToken::narrow()` couldn't provide.  Fix: new `narrow_with_capability()` method that substitutes the narrower capability AND inherits parent constraints atomically.  Both spawn paths refactored to use it.  Commit `c064531`.
+
+Tagged as `v0.1.7`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.7 — `aaos_0.1.7-1_amd64.deb`.
+
 ---
 
 ## Active milestones

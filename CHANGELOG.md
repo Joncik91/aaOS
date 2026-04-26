@@ -10,7 +10,23 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.6 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.7 `.deb` preinstalled).
+
+---
+
+## [0.1.7] — 2026-04-26
+
+Round-5 self-reflection on v0.1.6 source on a fresh droplet.  One real new finding (Bug 27); two findings reproduced from earlier rounds and correctly skipped (already in `docs/ideas.md`).  Full reflection: [`docs/reflection/2026-04-26-v0.1.6-round-5.md`](docs/reflection/2026-04-26-v0.1.6-round-5.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.1.7> — `aaos_0.1.7-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 27 (high — capability-budget enforcement on spawn)** — `crates/agentd/src/spawn_tool.rs` issued child capability tokens via `CapabilityToken::issue(... Constraints::default())` on BOTH the first-attempt and retry paths, silently dropping parent `max_invocations`, `rate_limit`, and `expires_at`.  Phase A's run-1 finding #3 had originally fixed this; the fix regressed when the spawn paths needed to issue child tokens with a NARROWER capability than the parent (e.g., parent holds `file_read: /src/*`, child asks for `file_read: /src/crates/*`).  The existing `CapabilityToken::narrow()` only tightens constraints — can't substitute the capability identity — so the spawn code worked around it by issuing fresh tokens, bypassing constraint inheritance entirely.  Concrete impact: a parent with `WebSearch { max_invocations: Some(1) }` could spawn a child with `web_search` capability whose token had no invocation cap.  **Fix**: added `CapabilityToken::narrow_with_capability(child_agent, child_capability, additional)` that verifies the child's capability is a subset of the parent's via `capability_matches()`, clones the parent token preserving its constraints, substitutes the narrower capability, and layers any additional constraints on top.  Plus a registry wrapper.  Both spawn paths refactored to use the new method.  Surfaced by aaOS reading its own source.  Commit `c064531`.
+
+---
+
+## [0.1.6] — 2026-04-25
 
 ---
 
@@ -343,7 +359,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/Joncik91/aaOS/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Joncik91/aaOS/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Joncik91/aaOS/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Joncik91/aaOS/compare/v0.1.3...v0.1.4
