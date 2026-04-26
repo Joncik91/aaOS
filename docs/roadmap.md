@@ -396,6 +396,27 @@ The findings:
 
 Tagged as `v0.2.3`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.3 — `aaos_0.2.3-1_amd64.deb`.
 
+### 32. v0.2.4 release — round 8 self-reflection on v0.2.3 (1/3 fixed, 2/3 deferred)
+*complete 2026-04-26*
+
+Eighth iteration of the loop, third on the v0.2.x line.  Same droplet, `AAOS_DEFAULT_BACKEND` unset for the source-reading agent (rounds-1-7 protocol).  **First round where some findings genuinely deferred rather than fixed.**  Rounds 6 and 7 each produced 3 fixable findings; round 8 produced 1 fixable + 2 filed to `docs/ideas.md` with concrete reconsider signals.  Wall clock 97 s — quickest v0.2.x round.
+
+The fixed bug:
+
+- **Bug 34 (medium) — seccomp socket allowlist over-permissive + lying docs.**  `SYS_socket` and `SYS_socketpair` were allowed unconditionally; server-side primitives (`bind`/`listen`/`accept`/`accept4`) were also in the allowlist even though the worker is a Unix-socket client only.  Two downstream doc comments claimed "no socket/connect syscalls" — factually wrong.  Argument-filter `SYS_socket`/`SYS_socketpair` to `AF_UNIX` only via `SeccompCondition`, drop the server primitives, rewrite both doc comments to be honest about what's allowed (commit `<TBD>`).
+
+The deferred findings, both filed in `docs/ideas.md`:
+
+- **Token-generation counter to close the `resolve_tokens` wire race.**  v0.2.0's push-revocation protocol closes the *post-dispatch* race for the worker's session-level registry but does NOT close the *wire-race* window where an `InvokeTool` and a `RevokeToken` cross on the broker stream.  The fix (sequence/generation counter on every token, verified at result-return) is heavyweight: touches wire format, broker schema, audit shape, adds latency to every tool call.  Race is microsecond-scale and requires the attacker to be already inside the daemon.  Cost-vs-value ratio poor at v0.2.x size; reconsider when (a) multi-operator daemon needs sub-call revocation latency, OR (b) broker protocol gains synchronous result-ack for other reasons.
+
+- **Replace hand-rolled `SchemaValidator` with the `jsonschema` crate.**  Validator is shallow — accepts `{"path": 42}` against a `"type": "string"` schema.  Tools defend their own inputs today; validator is a developer ergonomic, not a trust boundary.  Reconsider when externally-authored manifests need pre-tool-body schema enforcement, or MCP integration honours remote schemas locally.
+
+**Pattern reinforced.**  v0.2.4's `resolve_tokens` doc rewrite explicitly cites `docs/ideas.md` instead of "queued for v0.N+1" — comments that defer must point at an external paper trail, never as in-code TODOs.  Round 8 deletes the last surviving such comment.  Future rounds: any inline `// queued for ...` without a corresponding `ideas.md` entry is a finding waiting to happen.
+
+If round 9 on v0.2.4 source produces 0 real fixable findings, the v0.2.x patch surface is depleted and the pivot to M1 (Debian-derivative reference image) becomes the right move.
+
+Tagged as `v0.2.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.4 — `aaos_0.2.4-1_amd64.deb`.
+
 ---
 
 ## Active milestones

@@ -315,11 +315,22 @@ impl CapabilityRegistry {
     /// Revoked and expired tokens are also filtered out so that workers
     /// only ever receive tokens that are currently valid.
     ///
-    /// Note: this is a point-in-time filter. A token revoked *after*
-    /// `resolve_tokens` returns but before the worker invokes the tool
-    /// will still be honoured by the in-flight worker call (residual race;
-    /// closing it fully requires a push-revocation protocol — queued for
-    /// v0.2.x as Bug 11 Option A).
+    /// Note: this is a point-in-time filter.  v0.2.0 added a push-
+    /// revocation protocol (`Request::RevokeToken` frames sent to active
+    /// worker sessions) that closes the *post-dispatch* race for the
+    /// session-level registry the worker maintains across calls — the
+    /// registry sees the revocation before subsequent invocations.
+    ///
+    /// The protocol does NOT close the *wire-race* window: an
+    /// `InvokeTool` request and a `RevokeToken` frame can cross on the
+    /// broker stream.  If the daemon revokes a token after a worker has
+    /// already started executing a tool with it, the in-flight call
+    /// completes with the revoked token honored.  Closing the wire race
+    /// fully requires either a sequence/generation counter on every
+    /// token (compared at the daemon when results return) or a synchronous
+    /// "drain in-flight calls" handshake at revoke time — both heavier
+    /// than the current architecture warrants.  See `docs/ideas.md` for
+    /// the reconsider signal.
     ///
     /// Used by `ToolInvocation` to collect the serializable token structs
     /// before forwarding them across the broker to a confined worker

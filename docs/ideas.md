@@ -189,6 +189,22 @@ The monolithic "cryptographically unforgeable tokens" item from earlier rounds c
   - (c) Switch the worker to a runtime that doesn't use `clone3` (musl-based, custom syscall wrapper).  Significant rewrite for marginal gain.
 - **Signal to reconsider:** a concrete demonstration that the unrestricted `clone3` is a real escape vector under current confinement.  Today's threat model says it isn't (defense-in-depth above).  If a third-party audit recommends a different mitigation, evaluate (a)/(b)/(c) against the audit's threat model.
 
+## Token-generation counter to close the resolve_tokens wire race
+
+- **Idea:** add a monotonically-increasing `generation: u64` to every `CapabilityToken` and to `CapabilityRegistry::revoke()`.  The daemon includes the generation in each `InvokeTool` frame and verifies it again when the tool result returns; if the token was revoked during flight, the result is rejected before being returned to the calling agent.  Closes the wire-race window that v0.2.0's push-revocation protocol leaves open (the residual race documented in `capability_registry.rs::resolve_tokens`).
+- **Where seen:** standard pattern in distributed authorization (Macaroons' caveats with sequence numbers, Spanner's commit-wait, vault-style token versioning).
+- **Why deferred:** the wire race today is a microsecond-scale window between the daemon thread that revokes and the daemon thread that has already serialized + sent an `InvokeTool`.  An attacker who can call `revoke()` at the right moment is already inside the daemon — at which point the result-rejection layer they would defeat next is the same trust boundary that already failed.  The fix touches every cross-component pathway (token wire format, broker frame schema, audit shape) and adds latency to every tool call; the security-vs-cost ratio is poor today.
+- **Signal to reconsider:** (a) a deployment scenario emerges where two operators share the same daemon and one needs to revoke the other's tokens with sub-call latency, OR (b) the broker protocol gains a synchronous result-acknowledgement step for *other* reasons (back-pressure, exactly-once delivery) — at which point sequence-number checks come along for free.
+
+## Replace hand-rolled SchemaValidator with the `jsonschema` crate
+
+- **Idea:** swap `aaos-ipc::validator::SchemaValidator`'s ad-hoc structural matching for a proper JSON Schema implementation (`jsonschema = "0.20"` or similar).  Today the validator does shallow type-checks on the top-level payload only — no recursive `properties`, no `items` for arrays, no `pattern`/`enum`/`format` enforcement.  A real JSON Schema validator would catch type-confused inputs like `{"path": true}` against a `"type": "string"` schema.
+- **Where seen:** `jsonschema` and `valico` are the standard Rust JSON Schema crates; the MCP spec itself uses draft-2020-12 schemas.
+- **Why deferred:** every tool already validates its own inputs via `input.get("path").and_then(|v| v.as_str()).ok_or(...)` patterns — type confusion produces a structured tool error, not a security bypass.  The validator is currently a developer ergonomic, not a trust-boundary enforcement layer.  Adding a new dep + rewriting all error shapes for a hardening that closes no known-real bug is a bad ratio at the v0.2.x size.
+- **Signal to reconsider:** (a) externally-authored manifests start declaring tool schemas that need to be enforced *before* the tool body runs (i.e., schema becomes a trust boundary), OR (b) MCP integration matures to the point where remote MCP servers' schemas are honoured for input validation locally — at which point a hand-rolled validator is no longer the right tool.
+
+---
+
 ## Deterministic scaffold roles (runtime-side execution for mechanical work) — **SIGNAL FIRED** (2026-04-17)
 
 - **Idea:** roles whose work is purely mechanical (fetcher: `web_fetch → file_write → return path`) should not run through the LLM loop at all. Runtime detects a `scaffold: true` marker on the role YAML (or a `scaffold_kind: "fetcher"` discriminator) and dispatches directly via Rust code that calls `ToolInvocation::invoke` for each step. LLM-shaped roles (analyzer, writer) stay untouched.

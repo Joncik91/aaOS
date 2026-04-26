@@ -1,3 +1,24 @@
+aaos (0.2.4-1) trixie; urgency=medium
+
+  * Round-8 self-reflection on v0.2.3.
+  * Fix Bug 34 (medium): worker seccomp allowlist allowed SYS_socket
+    and SYS_socketpair unconditionally + included server-side
+    primitives (bind/listen/accept/accept4).  Two downstream doc
+    comments claimed "no socket/connect syscalls" — factually wrong.
+    Argument-filter socket()/socketpair() to AF_UNIX only via
+    SeccompCondition.  Drop bind/listen/accept primitives from the
+    allowlist (worker is a Unix-socket client, never a server).
+    Doc comments rewritten to be honest.
+  * Update resolve_tokens doc-comment to be honest about what
+    v0.2.0's push-revocation protocol does and doesn't close.
+  * File two findings as docs/ideas.md entries with concrete
+    reconsider signals (token-generation counter for wire race;
+    proper jsonschema crate for SchemaValidator) — round-6/7/8
+    convention: deferred work goes in ideas.md, not as TODOs in
+    code.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 14:45:00 +0000
+
 aaos (0.2.3-1) trixie; urgency=medium
 
   * Round-7 self-reflection on v0.2.2 produced three real findings.

@@ -10,14 +10,24 @@
 //! invocation checked against the agent's handle set. Seccomp just
 //! ensures a compromised worker cannot pivot to arbitrary syscalls.
 //!
-//! ## Simplification for commit 2
+//! ## Argument filtering (Bug 34, v0.2.4)
 //!
-//! The plan calls for argument-filtering on `socket` (allow only
-//! `AF_UNIX`) and `clone3` (allow only `CLONE_THREAD`). seccompiler 0.5
-//! supports that via `SeccompCondition`, but getting the precise
-//! register widths right is fiddly and out of scope for commit 2. We
-//! simplify: `socket` is allowed unconditionally, `clone3` is allowed
-//! unconditionally. Tightening these is a follow-up.
+//! `SYS_socket` and `SYS_socketpair` are restricted to `AF_UNIX` via a
+//! `SeccompCondition` on arg0.  This rejects `AF_INET`, `AF_INET6`,
+//! `AF_NETLINK`, etc.  A compromised worker that retains the broker IPC
+//! capability cannot pivot to TCP/UDP/raw-network sockets.
+//!
+//! Server-side socket primitives (`SYS_bind`, `SYS_listen`,
+//! `SYS_accept4`, `SYS_accept`) were removed from the allowlist
+//! entirely — the worker is a Unix-socket *client* (it `connect()`s to
+//! the broker session socket once and then reads/writes), never a
+//! server.
+//!
+//! `SYS_clone3` remains unconditionally allowed.  Filtering its flags
+//! is structurally infeasible: clone3 takes a pointer to
+//! `struct clone_args` and seccomp-BPF can only read syscall registers,
+//! not pointed-to memory.  See `docs/ideas.md` for the reconsider
+//! signal.
 
 #[cfg(target_os = "linux")]
 pub use linux_impl::*;
@@ -29,7 +39,10 @@ pub use stub_impl::*;
 mod linux_impl {
     use std::collections::BTreeMap;
 
-    use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, TargetArch};
+    use seccompiler::{
+        BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+        SeccompRule, TargetArch,
+    };
 
     #[derive(Debug, thiserror::Error)]
     pub enum SeccompCompileError {
@@ -156,13 +169,15 @@ mod linux_impl {
                 libc::SYS_truncate,
             ]);
         }
-        // Broker IPC (AF_UNIX); see module-level doc on the
-        // argument-filtering simplification.
+        // Broker IPC (AF_UNIX, client only).  socket()/socketpair() are
+        // additionally restricted to AF_UNIX via SeccompCondition in
+        // `compile_allowlist_filter`.  Server-side primitives (bind,
+        // listen, accept, accept4) were removed from the allowlist —
+        // the worker is a Unix-socket client only.
         v.extend([
             libc::SYS_socket,
             libc::SYS_socketpair,
             libc::SYS_connect,
-            libc::SYS_accept4,
             libc::SYS_sendmsg,
             libc::SYS_recvmsg,
             libc::SYS_sendto,
@@ -172,13 +187,7 @@ mod linux_impl {
             libc::SYS_setsockopt,
             libc::SYS_getsockname,
             libc::SYS_getpeername,
-            libc::SYS_bind,
-            libc::SYS_listen,
         ]);
-        #[cfg(target_arch = "x86_64")]
-        {
-            v.push(libc::SYS_accept);
-        }
         // Thread creation (see module-level note on simplification).
         v.extend([libc::SYS_clone, libc::SYS_clone3]);
         v
@@ -236,10 +245,31 @@ mod linux_impl {
 
     /// Compile the allowlist filter: unknown syscalls get `EPERM`,
     /// known ones pass through.
+    ///
+    /// `SYS_socket` and `SYS_socketpair` are conditionally allowed —
+    /// only when arg0 (the address family) equals `AF_UNIX` (1).
+    /// Other allowed syscalls have no condition (`vec![]`) so they pass
+    /// unconditionally.
     pub fn compile_allowlist_filter() -> Result<BpfProgram, SeccompCompileError> {
-        let mut rules: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = BTreeMap::new();
+        let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
         for nr in allowed_syscall_numbers() {
-            rules.insert(nr, vec![]);
+            if nr == libc::SYS_socket || nr == libc::SYS_socketpair {
+                // arg0 == AF_UNIX (1).  socket()/socketpair()'s domain
+                // arg is an `int`, so use Dword.  AF_UNIX is the only
+                // family the worker needs (broker session socket).
+                let cond = SeccompCondition::new(
+                    0,
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Eq,
+                    libc::AF_UNIX as u64,
+                )
+                .map_err(|e| SeccompCompileError::Compile(format!("AF_UNIX cond: {e}")))?;
+                let rule = SeccompRule::new(vec![cond])
+                    .map_err(|e| SeccompCompileError::Compile(format!("rule: {e}")))?;
+                rules.insert(nr, vec![rule]);
+            } else {
+                rules.insert(nr, vec![]);
+            }
         }
         let filter = SeccompFilter::new(
             rules,
@@ -317,6 +347,35 @@ mod linux_impl {
                     "syscall {nr} must be allowed (broker IPC)"
                 );
             }
+        }
+
+        #[test]
+        fn seccomp_drops_server_socket_primitives() {
+            // Bug 34 (v0.2.4): the worker is a Unix-socket *client* only.
+            // bind/listen/accept/accept4 should not appear in the allowlist;
+            // an attempt by a compromised worker to bind/listen returns EPERM.
+            let allowed = allowed_syscall_numbers();
+            for nr in [libc::SYS_bind, libc::SYS_listen, libc::SYS_accept4] {
+                assert!(
+                    !allowed.contains(&nr),
+                    "syscall {nr} must NOT be in the worker allowlist (server-side primitive)"
+                );
+            }
+            #[cfg(target_arch = "x86_64")]
+            assert!(
+                !allowed.contains(&libc::SYS_accept),
+                "SYS_accept must NOT be in the worker allowlist on x86_64"
+            );
+        }
+
+        #[test]
+        fn seccomp_socket_filter_compiles_with_af_unix_condition() {
+            // Compile the filter; if the SeccompCondition for
+            // socket(AF_UNIX) is malformed seccompiler returns an error
+            // here.  Live BPF execution (does AF_INET land EPERM?) is
+            // exercised by the namespaced-agents integration tests on a
+            // real worker.
+            let _ = compile_allowlist_filter().expect("argument-filtered allowlist must compile");
         }
 
         #[test]

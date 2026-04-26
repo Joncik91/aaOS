@@ -23,7 +23,13 @@ impl ToolExecutionSurface {
 
 /// Tools that must always execute daemon-side, regardless of backend.
 ///
-/// - `web_fetch`: seccomp allowlist has no socket/connect syscalls.
+/// - `web_fetch`: the worker's seccomp allowlist permits `socket()`
+///   only with `AF_UNIX` (broker IPC).  TCP/UDP (`AF_INET`/`AF_INET6`)
+///   and other address families return EPERM, so HTTP outbound from
+///   the worker is structurally impossible.  v0.2.4 (Bug 34) tightened
+///   this; earlier doc claims of "no socket/connect syscalls" were
+///   factually wrong (the syscalls were allowed, just unused) — the
+///   current claim is honest: socket() is allowed but argument-filtered.
 /// - `cargo_run`, `git_commit`, `grep`: seccomp kill-filter denies
 ///   execve — these tools shell out to external binaries (cargo, git,
 ///   rg) and would fail with "Operation not permitted" under the

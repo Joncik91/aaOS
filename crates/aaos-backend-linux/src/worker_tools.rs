@@ -19,8 +19,11 @@ use aaos_tools::registry::ToolRegistry;
 ///   worker's seccomp kill-filter denies execve, so shelling out to
 ///   cargo / git / rg inside the worker fails with "Operation not
 ///   permitted".
-/// - Network tools (`web_fetch`): seccomp allowlist has no socket/
-///   connect syscalls.
+/// - Network tools (`web_fetch`): the worker's seccomp allowlist
+///   permits `socket()` ONLY with `AF_UNIX` (broker IPC) — TCP/UDP
+///   would return EPERM (Bug 34, v0.2.4).  Even if a network socket
+///   could be created, no Landlock egress would let it reach the
+///   internet; route through the daemon.
 pub const WORKER_SIDE_TOOLS: &[&str] = &[
     "echo",
     "file_read",

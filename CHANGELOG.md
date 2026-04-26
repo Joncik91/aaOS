@@ -10,7 +10,32 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.3 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.4 `.deb` preinstalled).
+
+---
+
+## [0.2.4] — 2026-04-26
+
+Round-8 self-reflection on v0.2.3.  One real bug to fix (Bug 34: seccomp socket allowlist + lying docs).  Two findings real-but-deferred — filed in `docs/ideas.md` with concrete reconsider signals rather than shipped as code, per the round-6/7/8 lesson.  This is the first round where some findings genuinely deferred rather than fixed; the v0.2.x patch surface is starting to thin.  Reflection log: [`docs/reflection/2026-04-26-v0.2.3-round-8.md`](docs/reflection/2026-04-26-v0.2.3-round-8.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.4> — `aaos_0.2.4-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 34 (medium — defence-in-depth hole + factually wrong docs).**  The worker's seccomp allowlist allowed `SYS_socket` and `SYS_socketpair` *unconditionally*, plus server-side primitives (`SYS_bind`, `SYS_listen`, `SYS_accept`, `SYS_accept4`).  Two doc comments downstream of the policy claimed the opposite — `tool_surface.rs:26` and `worker_tools.rs:22` both said *"`web_fetch`: seccomp allowlist has no socket/connect syscalls"*, which was factually wrong.  Round-8 self-reflection caught the contradiction.  **Fix**: argument-filter `SYS_socket` and `SYS_socketpair` via `SeccompCondition` so arg0 must equal `AF_UNIX` — `AF_INET`/`AF_INET6`/`AF_NETLINK` etc. now return EPERM.  Server-side primitives removed from the allowlist entirely (the worker is a Unix-socket *client*; it `connect()`s to the broker session socket once and reads/writes — never `bind`/`listen`/`accept`).  Module-level doc + both downstream doc comments rewritten to be honest about what's allowed.  Tests: `seccomp_drops_server_socket_primitives` (asserts the four server primitives are not in the static list) + `seccomp_socket_filter_compiles_with_af_unix_condition` (asserts the argument-filtered allowlist compiles).  Live BPF execution (does `socket(AF_INET)` actually return EPERM on the worker?) is exercised by the namespaced-agents integration tests.
+
+### Documentation
+
+- **`capability_registry.rs::resolve_tokens` doc** rewritten to be honest about what v0.2.0's push-revocation protocol does and doesn't close.  Push-revocation closes the *post-dispatch* race for the worker's session-level registry; it does NOT close the *wire-race* window where an `InvokeTool` and a `RevokeToken` cross on the broker stream.  Round-8 caught the previous comment ("residual race; closing it fully requires a push-revocation protocol — queued for v0.2.x as Bug 11 Option A") as misleading because v0.2.0 *did* land push-revocation but the comment still described it as the unbuilt fix.  Honest comment now points at `docs/ideas.md` for the heavier-fix reconsider signal.
+
+### Deferred (filed in `docs/ideas.md`)
+
+- **Token-generation counter to close the wire race.**  Reconsider when (a) two operators share a daemon and one needs sub-call-latency revocation of the other's tokens, OR (b) the broker protocol gains synchronous result-ack for other reasons (back-pressure, exactly-once delivery).
+- **Replace hand-rolled `SchemaValidator` with the `jsonschema` crate.**  Reconsider when externally-authored manifests start declaring tool schemas that need pre-tool-body trust-boundary enforcement.
+
+### Pattern reinforced
+
+The "deferred follow-up" comment pattern (rounds 6/7/8) keeps producing.  v0.2.4's `resolve_tokens` doc rewrite explicitly cites `docs/ideas.md` instead of claiming "queued for v0.N+1" — the contract is now: comments that defer must point at an external paper trail.  In-code TODOs without a corresponding `ideas.md` entry are findings waiting to happen.
 
 ---
 
@@ -451,7 +476,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/Joncik91/aaOS/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Joncik91/aaOS/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Joncik91/aaOS/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Joncik91/aaOS/compare/v0.2.0...v0.2.1
