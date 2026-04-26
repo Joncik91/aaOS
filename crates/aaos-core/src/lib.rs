@@ -20,8 +20,8 @@ pub use audit::{
 pub use backend::{AgentBackend, AgentLaunchHandle, AgentLaunchSpec, BackendHealth};
 pub use budget::{BudgetConfig, BudgetExceeded, BudgetTracker};
 pub use capability::{
-    extract_host, Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot,
-    CapabilityToken, Constraints, RateLimit,
+    extract_host, glob_matches_canonical, Capability, CapabilityDenied, CapabilityHandle,
+    CapabilitySnapshot, CapabilityToken, Constraints, FileAccess, RateLimit,
 };
 pub use capability_registry::{CapabilityRegistry, RevokeNotifier};
 pub use error::{CoreError, Result};

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
-use aaos_core::{Capability, CoreError, Result, ToolDefinition};
+use aaos_core::{Capability, CoreError, FileAccess, Result, ToolDefinition};
 
 const MAX_WRITE_BYTES: usize = 1_048_576; // 1MB
 
@@ -53,51 +53,78 @@ impl Tool for FileWriteTool {
             )));
         }
 
-        // Check path against FileWrite capability tokens
-        let requested = Capability::FileWrite {
-            path_glob: path_str.to_string(),
-        };
-        let allowed = ctx.tokens.iter().any(|h| {
-            ctx.capability_registry
-                .permits(*h, ctx.agent_id, &requested)
-        });
-        if !allowed {
-            return Err(CoreError::CapabilityDenied {
-                agent_id: ctx.agent_id,
-                capability: requested,
-                reason: format!("file_write not permitted for path: {path_str}"),
-            });
-        }
-
         let path = Path::new(path_str);
 
-        // Create parent directories if needed
+        // Pre-create parent directories. The capability check below is on
+        // the *file's* fd-derived canonical, so leaf-component symlink
+        // races are eliminated by O_NOFOLLOW. Intermediate-component
+        // symlink races on freshly-created parents are out of scope of
+        // this fix — capability globs already include the intended parent
+        // tree, so an attacker who can swap a parent could already steer
+        // us into their tree. This is documented in the security model.
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|e| CoreError::Ipc(format!("failed to create directories: {e}")))?;
         }
 
-        // Write or append
-        if append {
-            use tokio::io::AsyncWriteExt;
-            let mut file = tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .await
-                .map_err(|e| CoreError::Ipc(format!("failed to open file: {e}")))?;
-            file.write_all(content.as_bytes())
-                .await
-                .map_err(|e| CoreError::Ipc(format!("failed to write: {e}")))?;
-            file.flush()
-                .await
-                .map_err(|e| CoreError::Ipc(format!("failed to flush: {e}")))?;
-        } else {
-            tokio::fs::write(path, content.as_bytes())
-                .await
-                .map_err(|e| CoreError::Ipc(format!("failed to write: {e}")))?;
+        // TOCTOU-safe open: O_NOFOLLOW + capability check on the
+        // /proc/self/fd/<fd> canonical, write through the same fd.
+        let path_owned = path_str.to_string();
+        let (fd, canonical) =
+            tokio::task::spawn_blocking(move || -> Result<(std::os::fd::OwnedFd, String)> {
+                #[cfg(target_os = "linux")]
+                {
+                    let mode = if append {
+                        crate::path_safe::AccessMode::WriteCreateAppend
+                    } else {
+                        crate::path_safe::AccessMode::WriteCreateTrunc
+                    };
+                    crate::path_safe::safe_open_for_capability(&path_owned, mode)
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(CoreError::Ipc(
+                        "file_write TOCTOU-safe path requires Linux".to_string(),
+                    ))
+                }
+            })
+            .await
+            .map_err(|e| CoreError::Ipc(format!("safe_open join: {e}")))??;
+
+        let requested = Capability::FileWrite {
+            path_glob: canonical.clone(),
+        };
+        let allowed = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry.permits_canonical_file(
+                *h,
+                ctx.agent_id,
+                FileAccess::Write,
+                &canonical,
+            )
+        });
+        if !allowed {
+            // The fd is dropped here, closing the (possibly newly-created)
+            // file. We do not unlink — leaving an empty file behind is
+            // less surprising than racing rmdir on the parent path.
+            return Err(CoreError::CapabilityDenied {
+                agent_id: ctx.agent_id,
+                capability: requested,
+                reason: format!("file_write not permitted for path: {canonical}"),
+            });
         }
+
+        let std_file = std::fs::File::from(fd);
+        let mut tokio_file = tokio::fs::File::from_std(std_file);
+        use tokio::io::AsyncWriteExt;
+        tokio_file
+            .write_all(content.as_bytes())
+            .await
+            .map_err(|e| CoreError::Ipc(format!("failed to write: {e}")))?;
+        tokio_file
+            .flush()
+            .await
+            .map_err(|e| CoreError::Ipc(format!("failed to flush: {e}")))?;
 
         Ok(json!({
             "bytes_written": content.len(),

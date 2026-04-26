@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::path::Path;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
-use aaos_core::{Capability, CoreError, Result, ToolDefinition};
+use aaos_core::{Capability, CoreError, FileAccess, Result, ToolDefinition};
 
 const MAX_READ_BYTES: u64 = 1_048_576; // 1MB
 const DEFAULT_LIMIT: usize = 2000;
@@ -60,33 +59,59 @@ impl Tool for FileReadTool {
             .map(|n| n as usize)
             .unwrap_or(DEFAULT_LIMIT);
 
-        // Check path against FileRead capability tokens
+        // TOCTOU-safe path: open with O_NOFOLLOW + capability check on
+        // the kernel-derived canonical (/proc/self/fd/<fd>) so a
+        // symlink swap between check and open cannot redirect the read.
+        // Wrapped in spawn_blocking because nix::open is a sync syscall.
+        let path_owned = path_str.to_string();
+        let (fd, canonical) =
+            tokio::task::spawn_blocking(move || -> Result<(std::os::fd::OwnedFd, String)> {
+                #[cfg(target_os = "linux")]
+                {
+                    crate::path_safe::safe_open_for_capability(
+                        &path_owned,
+                        crate::path_safe::AccessMode::Read,
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(CoreError::Ipc(
+                        "file_read TOCTOU-safe path requires Linux".to_string(),
+                    ))
+                }
+            })
+            .await
+            .map_err(|e| CoreError::Ipc(format!("safe_open join: {e}")))??;
+
         let requested = Capability::FileRead {
-            path_glob: path_str.to_string(),
+            path_glob: canonical.clone(),
         };
         let allowed = ctx.tokens.iter().any(|h| {
-            ctx.capability_registry
-                .permits(*h, ctx.agent_id, &requested)
+            ctx.capability_registry.permits_canonical_file(
+                *h,
+                ctx.agent_id,
+                FileAccess::Read,
+                &canonical,
+            )
         });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
                 capability: requested,
-                reason: format!("file_read not permitted for path: {path_str}"),
+                reason: format!("file_read not permitted for path: {canonical}"),
             });
         }
 
-        let path = Path::new(path_str);
-
-        // Check file exists and is a regular file
-        let metadata = tokio::fs::metadata(path)
-            .await
-            .map_err(|e| CoreError::Ipc(format!("file not found: {e}")))?;
-
+        // I/O happens on the same fd that powered the capability check —
+        // no second open, no path string in the syscall. Convert the
+        // OwnedFd to a tokio File via the std::fs::File adapter.
+        let std_file = std::fs::File::from(fd);
+        let metadata = std_file
+            .metadata()
+            .map_err(|e| CoreError::Ipc(format!("metadata: {e}")))?;
         if !metadata.is_file() {
-            return Err(CoreError::Ipc(format!("{path_str} is not a regular file")));
+            return Err(CoreError::Ipc(format!("{canonical} is not a regular file")));
         }
-
         if metadata.len() > MAX_READ_BYTES {
             return Err(CoreError::Ipc(format!(
                 "file too large: {} bytes (max {})",
@@ -94,9 +119,11 @@ impl Tool for FileReadTool {
                 MAX_READ_BYTES
             )));
         }
-
-        // Read as UTF-8 string (binary files not yet supported)
-        let raw = tokio::fs::read_to_string(path)
+        let mut tokio_file = tokio::fs::File::from_std(std_file);
+        let mut raw = String::new();
+        use tokio::io::AsyncReadExt;
+        tokio_file
+            .read_to_string(&mut raw)
             .await
             .map_err(|e| CoreError::Ipc(format!("failed to read file: {e}")))?;
 
@@ -247,6 +274,31 @@ mod tests {
             .invoke(json!({"path": "/tmp/nonexistent-aaos-test-file"}), &ctx)
             .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn refuses_symlink_at_target() {
+        // O_NOFOLLOW path: a symlink as the requested file must be rejected
+        // before any capability check, so we cannot be tricked into reading
+        // the symlink's target.
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("forbidden.txt");
+        std::fs::write(&target, "secret").unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // Grant a wide read capability so denial is solely about the
+        // symlink, not about scope.
+        let ctx = ctx_with_read("*");
+        let result = FileReadTool
+            .invoke(json!({"path": link.to_str().unwrap()}), &ctx)
+            .await;
+        assert!(result.is_err(), "symlink read must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("symlink") || err.contains("ELOOP") || err.contains("loop"),
+            "expected symlink-rejection error, got: {err}"
+        );
     }
 
     #[tokio::test]

@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::path::Path;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
-use aaos_core::{Capability, CoreError, Result, ToolDefinition};
+use aaos_core::{Capability, CoreError, FileAccess, Result, ToolDefinition};
 
 /// Upper bound on the old/new strings in one edit. Both params travel
 /// inline in the LLM's tool-call JSON, so keep them bounded to protect
@@ -98,46 +97,77 @@ impl Tool for FileEditTool {
             )));
         }
 
-        // Capability check: need BOTH read and write for this path.
+        // TOCTOU-safe: open once for read+write, capability-check on
+        // the fd-derived canonical, do the read/modify/write on the
+        // same fd. file_edit refuses to create new files (a missing
+        // path is an error, not an empty edit), so O_CREAT here is
+        // tolerated but the caller is expected to be editing an
+        // existing file.
+        let path_owned = path_str.to_string();
+        let (fd, canonical) =
+            tokio::task::spawn_blocking(move || -> Result<(std::os::fd::OwnedFd, String)> {
+                #[cfg(target_os = "linux")]
+                {
+                    crate::path_safe::safe_open_for_capability(
+                        &path_owned,
+                        crate::path_safe::AccessMode::ReadWriteCreate,
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    Err(CoreError::Ipc(
+                        "file_edit TOCTOU-safe path requires Linux".to_string(),
+                    ))
+                }
+            })
+            .await
+            .map_err(|e| CoreError::Ipc(format!("safe_open join: {e}")))??;
+
         let read_cap = Capability::FileRead {
-            path_glob: path_str.to_string(),
+            path_glob: canonical.clone(),
         };
         let write_cap = Capability::FileWrite {
-            path_glob: path_str.to_string(),
+            path_glob: canonical.clone(),
         };
-        let has_read = ctx
-            .tokens
-            .iter()
-            .any(|h| ctx.capability_registry.permits(*h, ctx.agent_id, &read_cap));
+        let has_read = ctx.tokens.iter().any(|h| {
+            ctx.capability_registry.permits_canonical_file(
+                *h,
+                ctx.agent_id,
+                FileAccess::Read,
+                &canonical,
+            )
+        });
         let has_write = ctx.tokens.iter().any(|h| {
-            ctx.capability_registry
-                .permits(*h, ctx.agent_id, &write_cap)
+            ctx.capability_registry.permits_canonical_file(
+                *h,
+                ctx.agent_id,
+                FileAccess::Write,
+                &canonical,
+            )
         });
 
         if !has_read {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
                 capability: read_cap,
-                reason: format!("file_edit needs file_read for path: {path_str}"),
+                reason: format!("file_edit needs file_read for path: {canonical}"),
             });
         }
         if !has_write {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
                 capability: write_cap,
-                reason: format!("file_edit needs file_write for path: {path_str}"),
+                reason: format!("file_edit needs file_write for path: {canonical}"),
             });
         }
 
-        let path = Path::new(path_str);
-        let metadata = tokio::fs::metadata(path)
-            .await
-            .map_err(|e| CoreError::Ipc(format!("file not found: {e}")))?;
-
+        let std_file = std::fs::File::from(fd);
+        let metadata = std_file
+            .metadata()
+            .map_err(|e| CoreError::Ipc(format!("metadata: {e}")))?;
         if !metadata.is_file() {
-            return Err(CoreError::Ipc(format!("{path_str} is not a regular file")));
+            return Err(CoreError::Ipc(format!("{canonical} is not a regular file")));
         }
-
         if metadata.len() > MAX_FILE_BYTES {
             return Err(CoreError::Ipc(format!(
                 "file too large to edit in-place: {} bytes (max {}). \
@@ -146,20 +176,24 @@ impl Tool for FileEditTool {
                 MAX_FILE_BYTES
             )));
         }
+        let mut tokio_file = tokio::fs::File::from_std(std_file);
 
-        let original = tokio::fs::read_to_string(path)
+        let mut original = String::new();
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+        tokio_file
+            .read_to_string(&mut original)
             .await
             .map_err(|e| CoreError::Ipc(format!("failed to read file: {e}")))?;
 
         let match_count = count_non_overlapping(&original, old_string);
         if match_count == 0 {
             return Err(CoreError::Ipc(format!(
-                "old_string not found in {path_str}"
+                "old_string not found in {canonical}"
             )));
         }
         if match_count > 1 && !replace_all {
             return Err(CoreError::Ipc(format!(
-                "old_string matches {match_count} times in {path_str}; \
+                "old_string matches {match_count} times in {canonical}; \
                  refusing ambiguous edit. Pass replace_all=true to replace all, \
                  or extend old_string with more context to make it unique."
             )));
@@ -168,18 +202,32 @@ impl Tool for FileEditTool {
         let modified = if replace_all {
             original.replace(old_string, new_string)
         } else {
-            // Single match — replacen(…, 1) is the precise primitive.
             original.replacen(old_string, new_string, 1)
         };
-
         let replacements = if replace_all { match_count } else { 1 };
 
-        tokio::fs::write(path, modified.as_bytes())
+        // Truncate-and-rewrite on the same fd. set_len truncates; seek
+        // back to the start before writing so the new content occupies
+        // bytes [0, modified.len()).
+        tokio_file
+            .set_len(0)
+            .await
+            .map_err(|e| CoreError::Ipc(format!("truncate: {e}")))?;
+        tokio_file
+            .seek(std::io::SeekFrom::Start(0))
+            .await
+            .map_err(|e| CoreError::Ipc(format!("seek: {e}")))?;
+        tokio_file
+            .write_all(modified.as_bytes())
             .await
             .map_err(|e| CoreError::Ipc(format!("failed to write file: {e}")))?;
+        tokio_file
+            .flush()
+            .await
+            .map_err(|e| CoreError::Ipc(format!("failed to flush: {e}")))?;
 
         Ok(json!({
-            "path": path_str,
+            "path": canonical,
             "replacements": replacements,
             "bytes_before": metadata.len(),
             "bytes_after": modified.len(),

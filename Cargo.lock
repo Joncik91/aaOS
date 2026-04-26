@@ -143,6 +143,8 @@ dependencies = [
  "aaos-memory",
  "async-trait",
  "chrono",
+ "libc",
+ "nix",
  "reqwest",
  "serde",
  "serde_json",

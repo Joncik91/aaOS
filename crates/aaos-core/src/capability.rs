@@ -54,6 +54,15 @@ pub struct CapabilitySnapshot {
     pub invocations_used: u64,
 }
 
+/// File access mode discriminator for the TOCTOU-safe path-canonical
+/// authorization helpers (`Token::permits_canonical_file`,
+/// `CapabilityRegistry::permits_canonical_file`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAccess {
+    Read,
+    Write,
+}
+
 /// A specific permission that can be granted to an agent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -186,6 +195,34 @@ impl CapabilityToken {
             }
         }
         self.capability_matches(requested)
+    }
+
+    /// TOCTOU-safe variant: check this token against a `FileRead`/`FileWrite`
+    /// request whose path has already been resolved to a canonical form via
+    /// a pinned file descriptor (`/proc/self/fd/<fd>`). Skips the second
+    /// filesystem-level canonicalization that would otherwise open a swap
+    /// window. Used by file tools after `safe_open_for_capability`.
+    ///
+    /// Returns false for non-file capabilities — callers should still go
+    /// through `permits` for those.
+    pub fn permits_canonical_file(&self, kind: FileAccess, canonical: &str) -> bool {
+        if self.is_expired() || self.is_revoked() {
+            return false;
+        }
+        if let Some(max) = self.constraints.max_invocations {
+            if self.invocation_count >= max {
+                return false;
+            }
+        }
+        match (kind, &self.capability) {
+            (FileAccess::Read, Capability::FileRead { path_glob }) => {
+                glob_matches_canonical(path_glob, canonical)
+            }
+            (FileAccess::Write, Capability::FileWrite { path_glob }) => {
+                glob_matches_canonical(path_glob, canonical)
+            }
+            _ => false,
+        }
     }
 
     /// Record a use of this token. Call after a successful operation.
@@ -449,10 +486,20 @@ mod extract_host_tests {
 }
 
 fn glob_matches(pattern: &str, path: &str) -> bool {
+    let canonical = canonical_for_match(path);
+    glob_matches_canonical(pattern, &canonical)
+}
+
+/// Variant of [`glob_matches`] that skips the path-canonicalization step.
+/// Callers are responsible for handing in a path that has already been
+/// resolved via a TOCTOU-safe primitive — i.e., the kernel-derived
+/// canonical from a `/proc/self/fd/<fd>` readlink. The fd anchors the
+/// inode, so a subsequent symlink swap cannot subvert the decision
+/// made here. Used by the file tools' `safe_open_for_capability` flow.
+pub fn glob_matches_canonical(pattern: &str, canonical: &str) -> bool {
     if pattern == "*" {
         return true;
     }
-    let canonical = canonical_for_match(path);
     if let Some(prefix) = pattern.strip_suffix('*') {
         let norm_prefix = normalize_path(prefix);
         // Require that the match lands on a path-separator boundary so that

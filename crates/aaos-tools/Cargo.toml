@@ -19,5 +19,9 @@ reqwest = { workspace = true }
 aaos-memory = { workspace = true }
 sha2 = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.29", features = ["fs"] }
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"

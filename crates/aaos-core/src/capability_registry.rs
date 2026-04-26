@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::agent_id::AgentId;
 use crate::capability::{
     Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken,
-    Constraints,
+    Constraints, FileAccess,
 };
 
 /// Hook called by [`CapabilityRegistry::revoke`] when a token is revoked.
@@ -173,6 +173,28 @@ impl CapabilityRegistry {
             return false;
         }
         entry.token.permits(requested)
+    }
+
+    /// TOCTOU-safe variant of [`permits`] for `FileRead`/`FileWrite`. Takes
+    /// a kernel-derived canonical path (typically from
+    /// `aaos_tools::path_safe::safe_open_for_capability`) and skips the
+    /// extra `fs::canonicalize` that opens a symlink-swap window.
+    /// Authorization is bound to the inode the caller already holds an
+    /// fd on.
+    pub fn permits_canonical_file(
+        &self,
+        handle: CapabilityHandle,
+        requesting_agent: AgentId,
+        kind: FileAccess,
+        canonical: &str,
+    ) -> bool {
+        let Some(entry) = self.table.get(&handle) else {
+            return false;
+        };
+        if entry.agent_id != requesting_agent {
+            return false;
+        }
+        entry.token.permits_canonical_file(kind, canonical)
     }
 
     /// Atomic permit + record-use. This is what tool implementations should

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
-use aaos_core::{Capability, CoreError, Result, ToolDefinition};
+use aaos_core::{Capability, CoreError, FileAccess, Result, ToolDefinition};
 
 const MAX_INLINE_BYTES: usize = 16 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -51,25 +51,55 @@ impl Tool for GrepTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Capability check: need FileRead on the search root.
+        // TOCTOU-safe capability check: open the search root with
+        // O_PATH|O_NOFOLLOW so a leaf symlink swap can't redirect us,
+        // resolve the canonical via /proc/self/fd/<fd>, then check the
+        // capability against THAT canonical. ripgrep then runs against
+        // the canonical path string (one extra path lookup, but the
+        // inode is already pinned by our fd until the spawn_blocking
+        // closure returns).
+        let path_owned = path_str.to_string();
+        let canonical = tokio::task::spawn_blocking(move || -> Result<String> {
+            #[cfg(target_os = "linux")]
+            {
+                let (_fd, c) = crate::path_safe::safe_open_for_capability(
+                    &path_owned,
+                    crate::path_safe::AccessMode::PathOnly,
+                )?;
+                Ok(c)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err(CoreError::Ipc(
+                    "grep TOCTOU-safe path requires Linux".to_string(),
+                ))
+            }
+        })
+        .await
+        .map_err(|e| CoreError::Ipc(format!("safe_open join: {e}")))??;
+
         let requested = Capability::FileRead {
-            path_glob: path_str.to_string(),
+            path_glob: canonical.clone(),
         };
         let allowed = ctx.tokens.iter().any(|h| {
-            ctx.capability_registry
-                .permits(*h, ctx.agent_id, &requested)
+            ctx.capability_registry.permits_canonical_file(
+                *h,
+                ctx.agent_id,
+                FileAccess::Read,
+                &canonical,
+            )
         });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
                 capability: requested,
-                reason: format!("grep not permitted for path: {path_str}"),
+                reason: format!("grep not permitted for path: {canonical}"),
             });
         }
 
-        let path = PathBuf::from(path_str);
+        let path = PathBuf::from(&canonical);
         if !path.exists() {
-            return Err(CoreError::Ipc(format!("path does not exist: {path_str}")));
+            return Err(CoreError::Ipc(format!("path does not exist: {canonical}")));
         }
 
         run_rg(pattern, &path, glob, case_insensitive).await

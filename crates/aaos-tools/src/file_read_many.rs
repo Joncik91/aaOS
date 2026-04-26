@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::path::Path;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
-use aaos_core::{Capability, CoreError, Result, ToolDefinition};
+#[cfg(test)]
+use aaos_core::Capability;
+use aaos_core::{CoreError, FileAccess, Result, ToolDefinition};
 
 const MAX_READ_BYTES_PER_FILE: u64 = 1_048_576; // 1 MB per file (matches FileReadTool)
 const MAX_PATHS: usize = 16; // cap paths per call so one tool_use can't flood the context
@@ -124,44 +125,92 @@ async fn read_one(
     registry: &aaos_core::CapabilityRegistry,
     agent_id: aaos_core::AgentId,
 ) -> Value {
-    // Capability check
-    let requested = Capability::FileRead {
-        path_glob: path_str.clone(),
-    };
-    if !tokens
-        .iter()
-        .any(|h| registry.permits(*h, agent_id, &requested))
-    {
-        return json!({
-            "path": path_str,
-            "error": "capability_denied",
-            "reason": format!("file_read not permitted for path: {path_str}"),
-        });
-    }
+    // TOCTOU-safe open: see file_read.rs for the rationale.
+    let path_owned = path_str.clone();
+    let open_res =
+        tokio::task::spawn_blocking(move || -> Result<(std::os::fd::OwnedFd, String)> {
+            #[cfg(target_os = "linux")]
+            {
+                crate::path_safe::safe_open_for_capability(
+                    &path_owned,
+                    crate::path_safe::AccessMode::Read,
+                )
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err(CoreError::Ipc(
+                    "file_read_many TOCTOU-safe path requires Linux".to_string(),
+                ))
+            }
+        })
+        .await;
 
-    let path = Path::new(&path_str);
-    let metadata = match tokio::fs::metadata(path).await {
-        Ok(m) => m,
+    let (fd, canonical) = match open_res {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            // Open failed — translate to per-file error so the batch
+            // doesn't abort.
+            let s = e.to_string();
+            let kind = if s.contains("symlink") || s.contains("ELOOP") {
+                "symlink_rejected"
+            } else if s.contains("not found") {
+                "not_found"
+            } else if s.contains("permission denied") {
+                "permission_denied"
+            } else {
+                "open_failed"
+            };
+            return json!({
+                "path": path_str,
+                "error": kind,
+                "reason": s,
+            });
+        }
         Err(e) => {
             return json!({
                 "path": path_str,
-                "error": "not_found",
-                "reason": format!("file not found: {e}"),
+                "error": "open_failed",
+                "reason": format!("safe_open join: {e}"),
             });
         }
     };
 
-    if !metadata.is_file() {
+    let allowed = tokens
+        .iter()
+        .any(|h| registry.permits_canonical_file(*h, agent_id, FileAccess::Read, &canonical));
+    if !allowed {
         return json!({
             "path": path_str,
-            "error": "not_a_file",
-            "reason": format!("{path_str} is not a regular file"),
+            "canonical": canonical,
+            "error": "capability_denied",
+            "reason": format!("file_read not permitted for path: {canonical}"),
         });
     }
 
+    let std_file = std::fs::File::from(fd);
+    let metadata = match std_file.metadata() {
+        Ok(m) => m,
+        Err(e) => {
+            return json!({
+                "path": path_str,
+                "canonical": canonical,
+                "error": "metadata_failed",
+                "reason": format!("metadata: {e}"),
+            });
+        }
+    };
+    if !metadata.is_file() {
+        return json!({
+            "path": path_str,
+            "canonical": canonical,
+            "error": "not_a_file",
+            "reason": format!("{canonical} is not a regular file"),
+        });
+    }
     if metadata.len() > MAX_READ_BYTES_PER_FILE {
         return json!({
             "path": path_str,
+            "canonical": canonical,
             "error": "too_large",
             "reason": format!(
                 "file too large: {} bytes (max {})",
@@ -172,14 +221,19 @@ async fn read_one(
         });
     }
 
-    match tokio::fs::read_to_string(path).await {
-        Ok(content) => json!({
+    let mut tokio_file = tokio::fs::File::from_std(std_file);
+    let mut buf = String::new();
+    use tokio::io::AsyncReadExt;
+    match tokio_file.read_to_string(&mut buf).await {
+        Ok(_) => json!({
             "path": path_str,
-            "content": content,
+            "canonical": canonical,
+            "content": buf,
             "size_bytes": metadata.len(),
         }),
         Err(e) => json!({
             "path": path_str,
+            "canonical": canonical,
             "error": "read_failed",
             "reason": format!("failed to read file: {e}"),
         }),

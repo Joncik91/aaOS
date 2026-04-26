@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
-use aaos_core::{Capability, CoreError, Result, ToolDefinition};
+use aaos_core::{Capability, CoreError, FileAccess, Result, ToolDefinition};
 
 const MAX_ENTRIES: usize = 500;
 
@@ -35,29 +35,64 @@ impl Tool for FileListTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| CoreError::InvalidManifest("missing 'path' parameter".into()))?;
 
+        // TOCTOU-safe capability check: open with O_PATH|O_NOFOLLOW so
+        // a leaf-component symlink swap can't redirect us, then resolve
+        // the inode-pinned canonical via /proc/self/fd/<fd>. The fd is
+        // dropped before tokio::fs::read_dir; subsequent path-string
+        // operations operate on a stable directory because read_dir
+        // resolves the path again, but a symlink swap on the leaf
+        // component now would still point at SOMETHING our capability
+        // was authorized for (since the canonical we matched against
+        // was the inode our fd opened). For full immunity we'd need
+        // fdopendir on the same fd; this incremental fix is the
+        // capability-bypass blocker, not an IO correctness blocker.
+        let path_owned = path_str.to_string();
+        let canonical = tokio::task::spawn_blocking(move || -> Result<String> {
+            #[cfg(target_os = "linux")]
+            {
+                let (_fd, c) = crate::path_safe::safe_open_for_capability(
+                    &path_owned,
+                    crate::path_safe::AccessMode::PathOnly,
+                )?;
+                Ok(c)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err(CoreError::Ipc(
+                    "file_list TOCTOU-safe path requires Linux".to_string(),
+                ))
+            }
+        })
+        .await
+        .map_err(|e| CoreError::Ipc(format!("safe_open join: {e}")))??;
+
         let requested = Capability::FileRead {
-            path_glob: path_str.to_string(),
+            path_glob: canonical.clone(),
         };
         let allowed = ctx.tokens.iter().any(|h| {
-            ctx.capability_registry
-                .permits(*h, ctx.agent_id, &requested)
+            ctx.capability_registry.permits_canonical_file(
+                *h,
+                ctx.agent_id,
+                FileAccess::Read,
+                &canonical,
+            )
         });
         if !allowed {
             return Err(CoreError::CapabilityDenied {
                 agent_id: ctx.agent_id,
                 capability: requested,
-                reason: format!("file_list not permitted for path: {path_str}"),
+                reason: format!("file_list not permitted for path: {canonical}"),
             });
         }
 
-        let path = Path::new(path_str);
+        let path = Path::new(&canonical);
         let metadata = tokio::fs::metadata(path)
             .await
             .map_err(|e| CoreError::Ipc(format!("path not found: {e}")))?;
 
         if metadata.is_file() {
             return Ok(json!({
-                "path": path_str,
+                "path": canonical,
                 "kind": "file",
                 "entries": [{
                     "name": path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
@@ -69,7 +104,7 @@ impl Tool for FileListTool {
 
         if !metadata.is_dir() {
             return Err(CoreError::Ipc(format!(
-                "{path_str} is neither a file nor a directory"
+                "{canonical} is neither a file nor a directory"
             )));
         }
 
@@ -110,7 +145,7 @@ impl Tool for FileListTool {
         });
 
         Ok(json!({
-            "path": path_str,
+            "path": canonical,
             "kind": "dir",
             "entries": entries,
             "truncated": truncated,
@@ -212,11 +247,19 @@ mod tests {
 
     #[tokio::test]
     async fn path_traversal_denied() {
+        // /tmp/../etc collapses to /etc — canonical from the fd readlink
+        // is "/etc", which fails to match a /tmp/* glob, so the
+        // capability check denies. This validates that traversal can't
+        // be used to escape the granted glob (the fix is structural:
+        // canonical comes from the fd, not the input string).
         let tool = FileListTool;
         let out = tool
-            .invoke(json!({ "path": "/data/../etc" }), &ctx_with_read("/data/*"))
+            .invoke(json!({ "path": "/tmp/../etc" }), &ctx_with_read("/tmp/*"))
             .await;
-        assert!(matches!(out, Err(CoreError::CapabilityDenied { .. })));
+        assert!(
+            matches!(out, Err(CoreError::CapabilityDenied { .. })),
+            "expected CapabilityDenied, got: {out:?}"
+        );
     }
 
     #[tokio::test]

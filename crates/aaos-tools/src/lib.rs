@@ -11,6 +11,8 @@ pub mod invocation;
 pub mod memory_delete_tool;
 pub mod memory_query_tool;
 pub mod memory_store_tool;
+#[cfg(target_os = "linux")]
+pub mod path_safe;
 pub mod registry;
 pub mod routing;
 pub mod skill_read;
