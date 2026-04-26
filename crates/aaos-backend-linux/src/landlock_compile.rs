@@ -94,6 +94,26 @@ mod linux_impl {
             );
         }
 
+        // /proc is needed for /proc/self/fd/<fd> readlink — the worker's
+        // file tools use this to derive the kernel-pinned canonical path
+        // of an open fd for TOCTOU-safe capability checks (v0.2.0). Read-
+        // only access is sufficient: we only call readlink + open. Without
+        // this rule, readlink returns EPERM and every file_read inside the
+        // namespaced backend fails.
+        let proc_path = std::path::PathBuf::from("/proc");
+        if proc_path.exists() {
+            let fd = PathFd::new(&proc_path).map_err(|e| LandlockCompileError::RuleAddFailed {
+                path: proc_path.clone(),
+                reason: e.to_string(),
+            })?;
+            ruleset = ruleset
+                .add_rule(PathBeneath::new(fd, read_only))
+                .map_err(|e| LandlockCompileError::RuleAddFailed {
+                    path: proc_path.clone(),
+                    reason: e.to_string(),
+                })?;
+        }
+
         for lib_path in &policy.shared_libs {
             if !lib_path.exists() {
                 tracing::debug!(
