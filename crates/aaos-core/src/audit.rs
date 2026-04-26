@@ -306,7 +306,12 @@ impl InMemoryAuditLog {
     /// Create a capped log. When the cap is reached, the oldest events are
     /// dropped (O(1) via VecDeque::pop_front). Callers must pass `max >= 1`.
     pub fn with_cap(max: usize) -> Self {
-        debug_assert!(max >= 1, "InMemoryAuditLog cap must be >= 1");
+        // Bug 33 (v0.2.3): always-on guard rather than `debug_assert!`,
+        // which compiles out in release. With `max == 0`, the
+        // `while events.len() >= max` loop in `record()` would spin
+        // forever holding the mutex (pop_front on an empty VecDeque is
+        // a silent no-op). Fail loud at construction instead.
+        assert!(max >= 1, "InMemoryAuditLog cap must be >= 1, got 0");
         Self {
             events: std::sync::Mutex::new(VecDeque::with_capacity(max)),
             max_events: Some(max),
@@ -576,6 +581,17 @@ mod tests {
             })
             .collect();
         assert_eq!(tools, vec!["tool-2", "tool-3", "tool-4"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "cap must be >= 1")]
+    fn in_memory_audit_log_with_cap_zero_panics() {
+        // Bug 33 (v0.2.3): with_cap(0) used to debug_assert (compiled out
+        // in release) and the resulting `while events.len() >= 0` loop
+        // would spin forever in record() holding the mutex. The guard is
+        // now an always-on assert so misuse fails loud at construction
+        // rather than deadlocking the audit log silently.
+        let _ = InMemoryAuditLog::with_cap(0);
     }
 
     #[test]
