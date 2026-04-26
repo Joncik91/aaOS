@@ -467,6 +467,68 @@ lifecycle: persistent
         assert!(!stored.is_empty());
     }
 
+    /// Bug 38 regression: when `clear_session_on_exit` is true, the
+    /// session-store entry MUST be released on loop exit so an
+    /// ephemeral agent's history doesn't accumulate forever in the
+    /// store across spawn-stop cycles.
+    #[tokio::test]
+    async fn persistent_loop_clears_session_on_exit_when_flag_set() {
+        let agent_id = AgentId::new();
+        let (msg_tx, msg_rx) = mpsc::channel(64);
+        let (cmd_tx, cmd_rx) = mpsc::channel(32);
+        let audit_log = Arc::new(InMemoryAuditLog::new());
+        let session_store: Arc<dyn SessionStore> = Arc::new(InMemorySessionStore::new());
+        let router = Arc::new(MessageRouter::new(audit_log.clone(), |_, _| true));
+
+        let llm: Arc<dyn LlmClient> = Arc::new(MockLlmClient::with_text("Hi"));
+        let services: Arc<dyn aaos_core::AgentServices> = Arc::new(MockAgentServices);
+        let executor = AgentExecutor::new(llm, services, ExecutorConfig::default());
+
+        let handle = tokio::spawn(persistent_agent_loop(
+            agent_id,
+            test_manifest(),
+            msg_rx,
+            cmd_rx,
+            executor,
+            session_store.clone(),
+            router.clone(),
+            audit_log.clone(),
+            None,
+            true, // clear_on_exit — ephemeral agent semantics
+        ));
+
+        // Push a message so history is populated, then prove it's gone
+        // after stop.
+        let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+        let msg = McpMessage::new(
+            AgentId::new(),
+            agent_id,
+            "agent.run",
+            serde_json::json!({"message": "Hello"}),
+        );
+        let trace_id = msg.metadata.trace_id;
+        router.register_pending(trace_id, resp_tx);
+        msg_tx.send(msg).await.unwrap();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), resp_rx)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Mid-flight, history should exist.
+        assert!(
+            !session_store.load(&agent_id).unwrap().is_empty(),
+            "history populated after message processed"
+        );
+
+        // Stop the loop and assert the entry was cleared.
+        cmd_tx.send(AgentCommand::Stop).await.unwrap();
+        handle.await.unwrap();
+        assert!(
+            session_store.load(&agent_id).unwrap().is_empty(),
+            "session_store entry leaked across stop with clear_session_on_exit=true"
+        );
+    }
+
     #[tokio::test]
     async fn persistent_loop_survives_executor_error() {
         let agent_id = AgentId::new();
