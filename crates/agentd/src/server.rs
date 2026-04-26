@@ -233,10 +233,10 @@ impl Server {
                         );
                     }
                     let nb = Arc::new(backend);
-                    return SelectedBackend {
+                    SelectedBackend {
                         backend: nb.clone() as Arc<dyn AgentBackend>,
                         namespaced: Some(nb),
-                    };
+                    }
                 }
                 Err(e) => {
                     static LOGGED_ERR: std::sync::OnceLock<()> = std::sync::OnceLock::new();
@@ -248,10 +248,10 @@ impl Server {
                              InProcessBackend"
                         );
                     }
-                    return SelectedBackend {
+                    SelectedBackend {
                         backend: in_process,
                         namespaced: None,
-                    };
+                    }
                 }
             }
         }
@@ -318,6 +318,32 @@ impl Server {
         let catalog = Arc::new(catalog);
         let planner = Arc::new(Planner::new(client.clone(), "deepseek-chat".into()));
         (Some(catalog), Some(planner))
+    }
+
+    /// If `selected.namespaced` is `Some`, install a [`SessionMapNotifier`]
+    /// on the registry's `CapabilityRegistry` so subsequent
+    /// `revoke()` calls push `RevokeToken` frames to active worker
+    /// sessions (Bugs 11 + 18 fix). No-op on the in-process path —
+    /// in-process workers share the same `Arc<CapabilityRegistry>` and
+    /// see revocations immediately.
+    #[allow(unused_variables)]
+    fn wire_revocation_notifier(registry: &Arc<AgentRegistry>, selected: &SelectedBackend) {
+        #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
+        if let Some(nb) = &selected.namespaced {
+            use aaos_backend_linux::broker_session::SessionMapNotifier;
+            let notifier = Arc::new(SessionMapNotifier::new(nb.sessions()))
+                as Arc<dyn aaos_core::RevokeNotifier>;
+            if registry
+                .capability_registry()
+                .set_notifier(notifier)
+                .is_err()
+            {
+                tracing::warn!(
+                    "wire_revocation_notifier: notifier already installed on \
+                     CapabilityRegistry — ignoring duplicate install"
+                );
+            }
+        }
     }
 
     /// Default workspace base used by PlanExecutor for per-run scratch
@@ -907,6 +933,7 @@ impl Server {
             approval_queue.clone(),
             None,
         );
+        Self::wire_revocation_notifier(&registry, &selected);
 
         // Build the real ToolInvocation: wire BrokerWorkerHandle when namespaced.
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
@@ -1000,6 +1027,7 @@ impl Server {
             server.approval_queue.clone(),
             Some(llm_client),
         );
+        Self::wire_revocation_notifier(&server.registry, &selected);
         server.backend = selected.backend;
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
         {
@@ -1131,6 +1159,7 @@ impl Server {
             approval_queue.clone(),
             Some(llm_client.clone()),
         );
+        Self::wire_revocation_notifier(&registry, &selected);
 
         // Build the real ToolInvocation: wire BrokerWorkerHandle when namespaced.
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]
@@ -1278,6 +1307,7 @@ impl Server {
             approval_queue.clone(),
             Some(llm_client.clone()),
         );
+        Self::wire_revocation_notifier(&registry, &selected);
 
         // Build the real ToolInvocation: wire BrokerWorkerHandle when namespaced.
         #[cfg(all(target_os = "linux", feature = "namespaced-agents"))]

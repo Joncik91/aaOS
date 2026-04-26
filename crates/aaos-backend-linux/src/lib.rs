@@ -324,6 +324,15 @@ impl NamespacedBackend {
         self.sessions.len()
     }
 
+    /// Expose the internal session map so the daemon can wrap it in a
+    /// [`SessionMapNotifier`](crate::broker_session::SessionMapNotifier) and
+    /// install it on `CapabilityRegistry`. Push-revocation depends on this
+    /// wiring; without it `CapabilityRegistry::revoke()` cannot reach
+    /// active worker sessions.
+    pub fn sessions(&self) -> Arc<SessionMap> {
+        self.sessions.clone()
+    }
+
     /// Look up the live session for an agent. Returns `None` if the
     /// agent has never launched or has already stopped. Used by
     /// integration tests and, eventually, by higher-level code that

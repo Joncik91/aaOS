@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -32,7 +32,7 @@ pub trait RevokeNotifier: Send + Sync {
 pub struct CapabilityRegistry {
     table: DashMap<CapabilityHandle, OwnedEntry>,
     next_id: AtomicU64,
-    notifier: Option<Arc<dyn RevokeNotifier>>,
+    notifier: OnceLock<Arc<dyn RevokeNotifier>>,
 }
 
 struct OwnedEntry {
@@ -51,7 +51,7 @@ impl CapabilityRegistry {
         Self {
             table: DashMap::new(),
             next_id: AtomicU64::new(0),
-            notifier: None,
+            notifier: OnceLock::new(),
         }
     }
 
@@ -59,11 +59,28 @@ impl CapabilityRegistry {
     /// whenever a token is revoked. Used by the daemon-side `NamespacedBackend`
     /// to push revocations to active worker sessions.
     pub fn new_with_notifier(notifier: Arc<dyn RevokeNotifier>) -> Self {
+        let lock = OnceLock::new();
+        let _ = lock.set(notifier);
         Self {
             table: DashMap::new(),
             next_id: AtomicU64::new(0),
-            notifier: Some(notifier),
+            notifier: lock,
         }
+    }
+
+    /// Install a revoke notifier on a registry that was constructed without
+    /// one (`CapabilityRegistry::new()`).  This exists because the daemon
+    /// builds its `AgentRegistry` (which owns the `CapabilityRegistry`)
+    /// before the namespaced backend's `SessionMap` exists, so the notifier
+    /// must be wired in post-construction.
+    ///
+    /// Returns `Err(_)` if a notifier is already installed — callers should
+    /// not race installations.
+    pub fn set_notifier(
+        &self,
+        notifier: Arc<dyn RevokeNotifier>,
+    ) -> std::result::Result<(), Arc<dyn RevokeNotifier>> {
+        self.notifier.set(notifier)
     }
 
     // ------- Issuance (runtime-only; used by AgentRegistry) -------
@@ -208,7 +225,7 @@ impl CapabilityRegistry {
             }
         }
         if revoked {
-            if let Some(n) = &self.notifier {
+            if let Some(n) = self.notifier.get() {
                 n.revoke_published(token_id);
             }
         }
@@ -217,16 +234,24 @@ impl CapabilityRegistry {
 
     /// RUNTIME-INTERNAL. Revoke every token owned by the given agent. Used
     /// on capability-wipe and on agent removal. Tool code must not call this.
+    /// Notifies the revoke hook for each revoked token so any in-flight
+    /// worker session forgets the revoked tokens before the agent's session
+    /// terminates.
     #[doc(hidden)]
     pub fn revoke_all_for_agent(&self, agent_id: AgentId) -> usize {
-        let mut count = 0;
+        let mut revoked_ids: Vec<Uuid> = Vec::new();
         for mut entry in self.table.iter_mut() {
             if entry.agent_id == agent_id && entry.token.revoked_at.is_none() {
                 entry.token.revoked_at = Some(Utc::now());
-                count += 1;
+                revoked_ids.push(entry.token.id);
             }
         }
-        count
+        if let Some(n) = self.notifier.get() {
+            for id in &revoked_ids {
+                n.revoke_published(*id);
+            }
+        }
+        revoked_ids.len()
     }
 
     /// RUNTIME-INTERNAL. Remove all handles belonging to an agent. Called
