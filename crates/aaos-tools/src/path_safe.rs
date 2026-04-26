@@ -33,7 +33,7 @@
 #![cfg(target_os = "linux")]
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nix::fcntl::{open, OFlag};
 use nix::sys::stat::Mode;
@@ -121,9 +121,17 @@ pub fn safe_open_for_capability(path: &str, mode: AccessMode) -> Result<(OwnedFd
 /// — symlinks crossed by intermediate components have already been
 /// resolved by the open syscall, and the inode is pinned, so a
 /// subsequent rename/symlink-swap cannot change the answer.
+///
+/// Uses `readlinkat(AT_FDCWD, ...)` directly via nix — the namespaced
+/// worker's seccomp policy permits `readlinkat` but not the older bare
+/// `readlink` syscall, and Rust's `std::fs::read_link` calls the bare
+/// syscall on x86_64 glibc, returning EPERM under seccomp. Calling
+/// `readlinkat` ensures we go through the syscall the worker is
+/// actually allowed to make.
 pub fn canonical_path_for_fd(fd: i32) -> std::io::Result<String> {
     let link = format!("/proc/self/fd/{fd}");
-    let target: PathBuf = std::fs::read_link(&link)?;
+    let target = nix::fcntl::readlinkat(None, Path::new(&link))
+        .map_err(|errno| std::io::Error::from_raw_os_error(errno as i32))?;
     Ok(target.to_string_lossy().into_owned())
 }
 
