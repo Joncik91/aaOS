@@ -455,6 +455,23 @@ impl BrokerSession {
         Ok(started.elapsed())
     }
 
+    /// Push a `RevokeToken` frame to the worker. Fire-and-forget: the worker
+    /// does not reply. Returns an error if the write half is not installed or
+    /// the I/O fails; callers typically log and drop the error.
+    pub async fn send_revoke_token(&self, token_id: uuid::Uuid) -> Result<(), SendError> {
+        let req = Request::RevokeToken { token_id };
+        let id = self.next_request_id.fetch_add(1, Ordering::AcqRel);
+        let wire = WireRequest::new(id, req);
+        let mut buf = serde_json::to_vec(&wire).map_err(SendError::Serialize)?;
+        buf.push(b'\n');
+        let mut guard = self.write_half.lock().await;
+        let wh = guard.as_mut().ok_or(SendError::NotConnected)?;
+        use tokio::io::AsyncWriteExt;
+        wh.write_all(&buf).await?;
+        wh.flush().await?;
+        Ok(())
+    }
+
     /// Send a `Poke` request to the worker and await its response. The
     /// response semantics match what the worker's `handle_poke_with_id`
     /// produces — this method just plumbs the round-trip. Integration
@@ -594,6 +611,43 @@ pub enum PeerCredsError {
 #[derive(Default)]
 pub struct SessionMap {
     inner: dashmap::DashMap<AgentId, Arc<BrokerSession>>,
+}
+
+/// [`aaos_core::RevokeNotifier`] implementation backed by the live
+/// [`SessionMap`]. When the daemon revokes a capability token,
+/// `revoke_published` fires a best-effort `RevokeToken` frame to every
+/// active worker session. Fire-and-forget: if a session's write half has
+/// already been closed, the error is logged and silently dropped.
+pub struct SessionMapNotifier {
+    sessions: Arc<SessionMap>,
+}
+
+impl SessionMapNotifier {
+    pub fn new(sessions: Arc<SessionMap>) -> Self {
+        Self { sessions }
+    }
+}
+
+impl aaos_core::RevokeNotifier for SessionMapNotifier {
+    fn revoke_published(&self, token_id: uuid::Uuid) {
+        // Snapshot agent ids to avoid holding dashmap iterator across async.
+        let ids: Vec<AgentId> = self.sessions.inner.iter().map(|r| *r.key()).collect();
+        for agent_id in ids {
+            if let Some(session) = self.sessions.get(&agent_id) {
+                let session = session.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = session.send_revoke_token(token_id).await {
+                        tracing::debug!(
+                            %agent_id,
+                            token_id = %token_id,
+                            error = %e,
+                            "revoke push to worker failed (session may be closing)"
+                        );
+                    }
+                });
+            }
+        }
+    }
 }
 
 impl SessionMap {

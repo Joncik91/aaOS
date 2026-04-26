@@ -32,6 +32,7 @@ pub mod method {
     pub const INVOKE_TOOL: &str = "invoke-tool";
     pub const INVOKE_TOOL_OK: &str = "invoke-tool-ok";
     pub const INVOKE_TOOL_ERR: &str = "invoke-tool-err";
+    pub const REVOKE_TOKEN: &str = "revoke-token";
 }
 
 /// Error codes for `InvokeTool` failures. Extend JSON-RPC 2.0's reserved range
@@ -96,6 +97,12 @@ pub enum Request {
         #[serde(default)]
         capability_tokens: Vec<aaos_core::CapabilityToken>,
     },
+    /// Broker→worker push-revocation frame (Bugs 11 + 18). Instructs
+    /// the worker to immediately mark the given token as revoked in its
+    /// session-level `CapabilityRegistry`. Subsequent `permits()` checks
+    /// on that token return false regardless of whether a new `InvokeTool`
+    /// forwarded the token. No response expected — fire-and-forget.
+    RevokeToken { token_id: uuid::Uuid },
 }
 
 /// Integration-test-only operations the worker can be asked to try
@@ -331,6 +338,23 @@ mod tests {
                     Capability::FileRead { path_glob } if path_glob == "/lib/x86_64-linux-gnu/*"
                 ));
             }
+            other => panic!("wrong variant: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn revoke_token_request_roundtrips() {
+        let token_id = uuid::Uuid::new_v4();
+        let req = WireRequest::new(50, Request::RevokeToken { token_id });
+        let s = serde_json::to_string(&req).unwrap();
+        assert!(
+            s.contains("revoke-token"),
+            "json must contain revoke-token method"
+        );
+        let back: WireRequest = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.id, 50);
+        match back.request {
+            Request::RevokeToken { token_id: id } => assert_eq!(id, token_id),
             other => panic!("wrong variant: {:?}", other),
         }
     }

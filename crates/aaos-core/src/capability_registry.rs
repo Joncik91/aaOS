@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use chrono::Utc;
 use dashmap::DashMap;
@@ -10,12 +11,28 @@ use crate::capability::{
     Constraints,
 };
 
+/// Hook called by [`CapabilityRegistry::revoke`] when a token is revoked.
+///
+/// Implementations live in backend crates that need to forward revocations
+/// to active worker sessions (e.g. `aaos-backend-linux`). The registry
+/// itself stays backend-agnostic: it calls the notifier after marking the
+/// token revoked, and the notifier pushes a `RevokeToken` frame to any
+/// workers that may hold that token.
+///
+/// For the daemon-internal in-process backend no notifier is needed — workers
+/// share the same `Arc<CapabilityRegistry>`, so the revocation is visible
+/// immediately.
+pub trait RevokeNotifier: Send + Sync {
+    fn revoke_published(&self, token_id: Uuid);
+}
+
 /// Runtime-owned table of issued capability tokens. Agents and tools hold
 /// `CapabilityHandle` values; the underlying `CapabilityToken` and its
 /// mutable state are never exposed outside runtime code.
 pub struct CapabilityRegistry {
     table: DashMap<CapabilityHandle, OwnedEntry>,
     next_id: AtomicU64,
+    notifier: Option<Arc<dyn RevokeNotifier>>,
 }
 
 struct OwnedEntry {
@@ -34,6 +51,18 @@ impl CapabilityRegistry {
         Self {
             table: DashMap::new(),
             next_id: AtomicU64::new(0),
+            notifier: None,
+        }
+    }
+
+    /// Construct a registry that calls `notifier.revoke_published(token_id)`
+    /// whenever a token is revoked. Used by the daemon-side `NamespacedBackend`
+    /// to push revocations to active worker sessions.
+    pub fn new_with_notifier(notifier: Arc<dyn RevokeNotifier>) -> Self {
+        Self {
+            table: DashMap::new(),
+            next_id: AtomicU64::new(0),
+            notifier: Some(notifier),
         }
     }
 
@@ -165,6 +194,10 @@ impl CapabilityRegistry {
     /// RUNTIME-INTERNAL. Revoke by token_id (the UUID on CapabilityToken).
     /// Matches the current `AgentRegistry::revoke_capability` signature. Tool
     /// code must not call this.
+    ///
+    /// If a [`RevokeNotifier`] is installed, `revoke_published` is called after
+    /// the in-memory state is updated so active broker sessions can push a
+    /// `RevokeToken` frame to their workers.
     #[doc(hidden)]
     pub fn revoke(&self, token_id: Uuid) -> bool {
         let mut revoked = false;
@@ -172,6 +205,11 @@ impl CapabilityRegistry {
             if entry.token.id == token_id && entry.token.revoked_at.is_none() {
                 entry.token.revoked_at = Some(Utc::now());
                 revoked = true;
+            }
+        }
+        if revoked {
+            if let Some(n) = &self.notifier {
+                n.revoke_published(token_id);
             }
         }
         revoked
@@ -266,11 +304,59 @@ impl CapabilityRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tokio::sync::Barrier;
 
     fn test_agent(_name: &str) -> AgentId {
         AgentId::new()
+    }
+
+    struct MockNotifier {
+        received: Mutex<Vec<Uuid>>,
+    }
+
+    impl MockNotifier {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                received: Mutex::new(vec![]),
+            })
+        }
+
+        fn received(&self) -> Vec<Uuid> {
+            self.received.lock().unwrap().clone()
+        }
+    }
+
+    impl RevokeNotifier for MockNotifier {
+        fn revoke_published(&self, token_id: Uuid) {
+            self.received.lock().unwrap().push(token_id);
+        }
+    }
+
+    #[test]
+    fn revoke_notifies_subscriber() {
+        let notifier = MockNotifier::new();
+        let registry = CapabilityRegistry::new_with_notifier(notifier.clone());
+        let agent = test_agent("a");
+        let token = CapabilityToken::issue(agent, Capability::WebSearch, Constraints::default());
+        let token_id = token.id;
+        registry.insert(agent, token);
+
+        assert!(registry.revoke(token_id));
+        let received = notifier.received();
+        assert_eq!(received.len(), 1, "notifier must be called exactly once");
+        assert_eq!(
+            received[0], token_id,
+            "notifier must receive the correct token_id"
+        );
+
+        // Revoking an already-revoked token does not re-notify.
+        assert!(!registry.revoke(token_id));
+        assert_eq!(
+            notifier.received().len(),
+            1,
+            "no second notification for already-revoked"
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ pub use capability::{
     extract_host, Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot,
     CapabilityToken, Constraints, RateLimit,
 };
-pub use capability_registry::CapabilityRegistry;
+pub use capability_registry::{CapabilityRegistry, RevokeNotifier};
 pub use error::{CoreError, Result};
 pub use manifest::{
     AgentManifest, CapabilityDeclaration, Lifecycle, MemoryConfig, PromptSource, TokenBudget,
