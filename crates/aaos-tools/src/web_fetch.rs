@@ -23,13 +23,54 @@ impl Default for WebFetchTool {
 
 impl WebFetchTool {
     pub fn new() -> Self {
+        // Disable automatic redirect following (Policy::none).  We follow
+        // redirects manually inside `invoke` so each hop's host is re-
+        // checked against the agent's NetworkAccess capability — a
+        // 301/302 from a permitted host to an attacker-controlled host
+        // would otherwise silently exfiltrate the request.
         let http = Client::builder()
             .timeout(Duration::from_secs(TIMEOUT_SECS))
-            .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("failed to build HTTP client");
         Self { http }
     }
+}
+
+/// Validate that the agent's NetworkAccess capability permits a fetch to
+/// this URL.  Used both for the initial URL and for every redirect hop —
+/// the closure has to re-run on each step because the grant decision is
+/// per-host and a redirect can change the host.
+fn check_url_permitted(ctx: &InvocationContext, url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|e| CoreError::InvalidManifest(format!("invalid URL: {e}")))?;
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => {
+            return Err(CoreError::InvalidManifest(format!(
+                "unsupported URL scheme '{other}' — only http/https allowed"
+            )));
+        }
+    }
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| CoreError::InvalidManifest("URL has no host".into()))?
+        .to_string();
+    let requested = Capability::NetworkAccess {
+        hosts: vec![aaos_core::extract_host(&host)],
+    };
+    let allowed = ctx.tokens.iter().any(|h| {
+        ctx.capability_registry
+            .permits(*h, ctx.agent_id, &requested)
+    });
+    if !allowed {
+        return Err(CoreError::CapabilityDenied {
+            agent_id: ctx.agent_id,
+            capability: requested,
+            reason: format!("web_fetch not permitted for host: {host}"),
+        });
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -62,50 +103,54 @@ impl Tool for WebFetchTool {
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_MAX_BYTES);
 
-        // Extract host from URL. Reject malformed URLs, non-http(s) schemes,
-        // and URLs without a host component.
-        let parsed = reqwest::Url::parse(url)
-            .map_err(|e| CoreError::InvalidManifest(format!("invalid URL: {e}")))?;
-        match parsed.scheme() {
-            "http" | "https" => {}
-            other => {
-                return Err(CoreError::InvalidManifest(format!(
-                    "unsupported URL scheme '{other}' — only http/https allowed"
+        // Manual redirect-following loop — the reqwest client is built
+        // with `Policy::none()` (Bug 28) so redirects are NOT followed
+        // automatically.  Every hop's host is re-checked against the
+        // agent's NetworkAccess grant.  Without this, a 301/302 from
+        // a permitted host could redirect us to an attacker-controlled
+        // host and exfiltrate the request silently.
+        let mut current_url = url.to_string();
+        let mut hops = 0usize;
+        let mut response;
+        loop {
+            check_url_permitted(ctx, &current_url)?;
+
+            response = self
+                .http
+                .get(&current_url)
+                .send()
+                .await
+                .map_err(|e| CoreError::Ipc(format!("fetch failed: {e}")))?;
+
+            let status = response.status();
+            if !status.is_redirection() {
+                break;
+            }
+            // 3xx — follow if Location is present and we haven't exceeded
+            // the redirect cap.
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let Some(location) = location else { break };
+            hops += 1;
+            if hops > MAX_REDIRECTS {
+                return Err(CoreError::Ipc(format!(
+                    "too many redirects (>{MAX_REDIRECTS})"
                 )));
             }
+            // Resolve relative redirects against the current URL.
+            let next = match reqwest::Url::parse(&location) {
+                Ok(u) => u,
+                Err(_) => reqwest::Url::parse(&current_url)
+                    .and_then(|base| base.join(&location))
+                    .map_err(|e| {
+                        CoreError::Ipc(format!("invalid redirect Location {location}: {e}"))
+                    })?,
+            };
+            current_url = next.to_string();
         }
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| CoreError::InvalidManifest("URL has no host".into()))?
-            .to_string();
-
-        // Capability check: the agent must hold NetworkAccess that covers
-        // this specific host. Matching is exact on the lowercased host; no
-        // wildcard support yet (YAGNI — add when a real role needs it).
-        // Normalize through the same extract_host used by the grant parser
-        // so `api.example.com` and `https://api.example.com:443` compare
-        // equal, and userinfo/port variations don't slip past.
-        let requested = Capability::NetworkAccess {
-            hosts: vec![aaos_core::extract_host(&host)],
-        };
-        let allowed = ctx.tokens.iter().any(|h| {
-            ctx.capability_registry
-                .permits(*h, ctx.agent_id, &requested)
-        });
-        if !allowed {
-            return Err(CoreError::CapabilityDenied {
-                agent_id: ctx.agent_id,
-                capability: requested,
-                reason: format!("web_fetch not permitted for host: {host}"),
-            });
-        }
-
-        let mut response = self
-            .http
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| CoreError::Ipc(format!("fetch failed: {e}")))?;
 
         let status = response.status().as_u16();
         let content_type = response
@@ -266,6 +311,46 @@ mod tests {
             }
         });
         format!("http://{addr}/")
+    }
+
+    /// Spawn a TCP server that responds with a 302 redirect to the
+    /// given Location header (full URL).  Returns the bound URL.
+    async fn spawn_mock_redirect_server(location: String) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut req_buf = [0u8; 1024];
+                let _ = sock.read(&mut req_buf).await;
+                let response = format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    #[tokio::test]
+    async fn redirect_to_unpermitted_host_denied() {
+        // Bug 28 regression: a 302 from a permitted host to an attacker-
+        // controlled host must be rejected by the per-hop capability check,
+        // not silently followed by reqwest's redirect policy.
+        let attacker_url = "http://attacker.example.com/steal".to_string();
+        let permitted_url = spawn_mock_redirect_server(attacker_url.clone()).await;
+
+        let tool = WebFetchTool::new();
+        // Grant only 127.0.0.1 (the redirect-server host); attacker.example.com is NOT granted.
+        let ctx = ctx_with_hosts(&["127.0.0.1"]);
+        let result = tool.invoke(json!({ "url": permitted_url }), &ctx).await;
+
+        let err = result.expect_err("redirect to unpermitted host must be denied");
+        assert!(
+            matches!(err, CoreError::CapabilityDenied { .. }),
+            "expected CapabilityDenied for the redirect target, got: {err}"
+        );
     }
 
     #[tokio::test]
