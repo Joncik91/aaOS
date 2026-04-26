@@ -12,6 +12,17 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.4 `.deb` preinstalled).
 
+### Round 9 self-reflection on v0.2.4 (2026-04-26)
+
+Run produced 3 findings; **all three rejected on triage**.  The v0.2.x patch surface — what self-reflection can find by source-reading — is depleted.  Trend was visible in round 8 (1 real + 2 deferred); decisive in round 9 (0 real).  No code change ships from round 9.  Reflection log: [`docs/reflection/2026-04-26-v0.2.4-round-9.md`](docs/reflection/2026-04-26-v0.2.4-round-9.md).
+
+The next runtime-improvement probe should be different in kind, not another iteration of the same loop:
+- Fuzzer on `path_safe::safe_open_for_capability`, `glob_matches_canonical`, `broker_protocol::Request` deserialization.
+- Load test with sustained spawn + revoke-storm to surface concurrency bugs the source-reading loop cannot.
+- External audit (second LLM or human) on v0.2.4 source.
+
+Bug-hunt rounds against v0.2.x source are paused until external evidence (a fuzzer hit, a load-test failure, etc.) surfaces something this loop missed.  M1 is the right active milestone.
+
 ---
 
 ## [0.2.4] — 2026-04-26
