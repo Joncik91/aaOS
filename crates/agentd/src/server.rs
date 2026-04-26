@@ -346,6 +346,76 @@ impl Server {
         }
     }
 
+    /// Build an `ApprovalQueue`. Persistent when `AAOS_APPROVAL_DB`
+    /// names a writable SQLite path (default
+    /// `/var/lib/aaos/approvals.db` on the systemd-managed install).
+    /// `AAOS_APPROVAL_DB=:memory:` selects in-memory; an explicit empty
+    /// string disables persistence (matches the test `ApprovalQueue::new`).
+    /// On any open-or-load failure we log loudly and fall back to the
+    /// in-memory queue rather than failing daemon startup.
+    fn build_approval_queue() -> Arc<crate::approval::ApprovalQueue> {
+        let path = match std::env::var("AAOS_APPROVAL_DB") {
+            Ok(s) if s.is_empty() => return Arc::new(crate::approval::ApprovalQueue::new()),
+            Ok(s) => s,
+            Err(_) => "/var/lib/aaos/approvals.db".to_string(),
+        };
+
+        let store_result = if path == ":memory:" {
+            crate::approval_store::ApprovalStore::in_memory()
+        } else {
+            if let Some(parent) = std::path::Path::new(&path).parent() {
+                if !parent.as_os_str().is_empty() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+            }
+            crate::approval_store::ApprovalStore::open(std::path::Path::new(&path))
+        };
+        let store = match store_result {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    path = %path,
+                    "approval store open failed; falling back to in-memory queue \
+                     (pending approvals will not survive restart)"
+                );
+                return Arc::new(crate::approval::ApprovalQueue::new());
+            }
+        };
+
+        // Purge entries already past the default timeout — these would
+        // have timed out across the restart anyway. Audit-event emission
+        // is omitted because no agent is currently waiting on them.
+        if let Err(e) = store.purge_older_than(crate::approval::DEFAULT_APPROVAL_TIMEOUT) {
+            tracing::warn!(error = %e, "approval store purge_older_than failed");
+        }
+
+        // Snapshot what's left; a real reload-and-rearm path needs the
+        // requesting agents to be alive, which doesn't happen after a
+        // restart yet. Logging the count gives operators visibility.
+        match store.list_pending() {
+            Ok(pending) if !pending.is_empty() => {
+                tracing::warn!(
+                    count = pending.len(),
+                    "approval store has {} pending entr{} from a prior daemon \
+                     instance; their requesting agents are gone, so these will \
+                     be cleared on next respond/timeout sweep",
+                    pending.len(),
+                    if pending.len() == 1 { "y" } else { "ies" },
+                );
+                for p in pending {
+                    let _ = store.remove(p.id);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "approval store list_pending failed at startup");
+            }
+        }
+
+        Arc::new(crate::approval::ApprovalQueue::with_store(store))
+    }
+
     /// Default workspace base used by PlanExecutor for per-run scratch
     /// dirs. Read from `AAOS_WORKSPACE_BASE` if set, else
     /// `/var/lib/aaos/workspace`.
@@ -856,7 +926,7 @@ impl Server {
         let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
         let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
         let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
-        let approval_queue = Arc::new(crate::approval::ApprovalQueue::new());
+        let approval_queue = Self::build_approval_queue();
         let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
         let tool_registry = Arc::new(ToolRegistry::new());
         let validator = Arc::new(SchemaValidator::new());
@@ -1062,7 +1132,7 @@ impl Server {
         // the inner; everything recorded flows through unchanged.
         let broadcast_audit = Arc::new(BroadcastAuditLog::new(audit_log, 256));
         let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
-        let approval_queue = Arc::new(crate::approval::ApprovalQueue::new());
+        let approval_queue = Self::build_approval_queue();
         let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
         let tool_registry = Arc::new(ToolRegistry::new());
         let validator = Arc::new(SchemaValidator::new());
@@ -1225,7 +1295,7 @@ impl Server {
         let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
         let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
         let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
-        let approval_queue = Arc::new(crate::approval::ApprovalQueue::new());
+        let approval_queue = Self::build_approval_queue();
         let registry = Arc::new(AgentRegistry::new(audit_log.clone()));
         let tool_registry = Arc::new(ToolRegistry::new());
         let validator = Arc::new(SchemaValidator::new());

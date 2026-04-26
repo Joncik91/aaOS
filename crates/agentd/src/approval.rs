@@ -4,9 +4,12 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::Serialize;
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use uuid::Uuid;
+
+use crate::approval_store::{ApprovalStore, PersistedApproval};
 
 /// Default timeout for an approval request.  After this elapses with no
 /// human response, the request is removed from the queue and the
@@ -23,6 +26,11 @@ pub const DEFAULT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(3600);
 
 pub struct ApprovalQueue {
     pending: DashMap<Uuid, PendingApproval>,
+    /// Optional persistence layer. When `Some`, every insert/remove writes
+    /// through to disk so pending approvals survive a daemon restart.
+    /// `None` is the legacy in-memory-only path used by tests and
+    /// non-persistent constructors.
+    store: Option<Arc<ApprovalStore>>,
 }
 
 struct PendingApproval {
@@ -57,6 +65,16 @@ impl ApprovalQueue {
     pub fn new() -> Self {
         Self {
             pending: DashMap::new(),
+            store: None,
+        }
+    }
+
+    /// Production constructor — every pending approval is written through to
+    /// `store` so a daemon restart can reload them.
+    pub fn with_store(store: Arc<ApprovalStore>) -> Self {
+        Self {
+            pending: DashMap::new(),
+            store: Some(store),
         }
     }
 
@@ -81,6 +99,15 @@ impl ApprovalQueue {
     pub fn respond(&self, id: Uuid, decision: ApprovalResult) -> Result<()> {
         match self.pending.remove(&id) {
             Some((_, pending)) => {
+                if let Some(store) = &self.store {
+                    if let Err(e) = store.remove(id) {
+                        tracing::warn!(
+                            approval_id = %id,
+                            error = %e,
+                            "approval store remove failed; persistence may be stale"
+                        );
+                    }
+                }
                 let _ = pending.response_tx.send(decision);
                 Ok(())
             }
@@ -109,24 +136,52 @@ impl ApprovalService for ApprovalQueue {
             "approval requested — waiting for human response"
         );
 
+        let timestamp = Utc::now();
         self.pending.insert(
             id,
             PendingApproval {
+                id,
+                agent_id,
+                agent_name: agent_name.clone(),
+                description: description.clone(),
+                tool: tool.clone(),
+                input: input.clone(),
+                timestamp,
+                response_tx: tx,
+            },
+        );
+
+        if let Some(store) = &self.store {
+            let persisted = PersistedApproval {
                 id,
                 agent_id,
                 agent_name,
                 description,
                 tool,
                 input,
-                timestamp: Utc::now(),
-                response_tx: tx,
-            },
-        );
+                timestamp,
+            };
+            if let Err(e) = store.insert(&persisted) {
+                tracing::warn!(
+                    approval_id = %id,
+                    error = %e,
+                    "approval store insert failed; restart will lose this entry"
+                );
+            }
+        }
 
         match tokio::time::timeout(DEFAULT_APPROVAL_TIMEOUT, rx).await {
-            Ok(Ok(result)) => Ok(result),
+            Ok(Ok(result)) => {
+                if let Some(store) = &self.store {
+                    let _ = store.remove(id);
+                }
+                Ok(result)
+            }
             Ok(Err(_)) => {
                 self.pending.remove(&id);
+                if let Some(store) = &self.store {
+                    let _ = store.remove(id);
+                }
                 Ok(ApprovalResult::Denied {
                     reason: "approval service unavailable".into(),
                 })
@@ -137,6 +192,9 @@ impl ApprovalService for ApprovalQueue {
                 // otherwise the agent blocks forever and the entry
                 // leaks across daemon lifetime.
                 self.pending.remove(&id);
+                if let Some(store) = &self.store {
+                    let _ = store.remove(id);
+                }
                 tracing::warn!(
                     approval_id = %id,
                     timeout_secs = DEFAULT_APPROVAL_TIMEOUT.as_secs(),
@@ -228,6 +286,42 @@ mod tests {
         let queue = ApprovalQueue::new();
         let result = queue.respond(Uuid::new_v4(), ApprovalResult::Approved);
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn pending_approval_persists_through_store() {
+        let store = Arc::new(ApprovalStore::in_memory().unwrap());
+        let queue = Arc::new(ApprovalQueue::with_store(store.clone()));
+        let queue_clone = queue.clone();
+
+        let agent_id = AgentId::new();
+        let handle = tokio::spawn(async move {
+            queue_clone
+                .request(
+                    agent_id,
+                    "persistent-agent".into(),
+                    "approve write".into(),
+                    Some("file_write".into()),
+                    Some(serde_json::json!({"path": "/tmp/x"})),
+                )
+                .await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Persistence path: store reflects the in-flight approval.
+        let persisted = store.list_pending().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].agent_name, "persistent-agent");
+        assert_eq!(persisted[0].tool.as_deref(), Some("file_write"));
+
+        // Approve and assert removal flushes through to the store.
+        let pending = queue.list();
+        queue
+            .respond(pending[0].id, ApprovalResult::Approved)
+            .unwrap();
+        let _ = handle.await.unwrap().unwrap();
+        assert!(store.list_pending().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -171,6 +171,7 @@ dependencies = [
  "clap",
  "dashmap",
  "libc",
+ "rusqlite",
  "scopeguard",
  "serde",
  "serde_json",

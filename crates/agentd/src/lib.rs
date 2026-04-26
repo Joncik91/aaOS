@@ -1,5 +1,6 @@
 pub mod api;
 pub mod approval;
+pub mod approval_store;
 pub mod broadcast_audit;
 pub mod cli;
 pub mod config;
