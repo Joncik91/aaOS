@@ -114,12 +114,20 @@ impl SessionStore for JsonlSessionStore {
     }
 
     fn clear(&self, agent_id: &AgentId) -> Result<()> {
+        // Bug 38 fix (v0.2.7): remove the file rather than truncate.
+        // The prior `fs::write(path, b"")` left a zero-byte file
+        // behind which (a) accumulated unbounded across stopped agents
+        // and (b) made `load_archives`/`prune_archives` waste cycles
+        // on serde_json::from_str of an empty string.  remove_file
+        // returns NotFound idempotently so a double-clear is harmless.
         let path = self.path_for(agent_id);
-        if path.exists() {
-            fs::write(&path, b"")
-                .map_err(|e| CoreError::Ipc(format!("failed to clear session file: {e}")))?;
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CoreError::Ipc(format!(
+                "failed to remove session file: {e}"
+            ))),
         }
-        Ok(())
     }
 
     /// Atomic replacement: write the full new history to a sibling

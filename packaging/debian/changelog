@@ -1,3 +1,22 @@
+aaos (0.2.7-1) trixie; urgency=medium
+
+  * Fix Bug 38 (medium): SessionStore::clear had no production
+    caller — every persistent agent's session-store entry leaked
+    on stop.  Wired session_store.clear into persistent_agent_loop
+    exit (gated by !persistent_identity so Bootstrap-shaped agents
+    preserve history).  Fixed JsonlSessionStore::clear to remove
+    file rather than truncate.
+  * Fix Bug 40 (high): agent.spawn_and_run with lifecycle:persistent
+    started a persistent loop AND a one-shot executor on the same
+    agent_id, leaking the persistent loop after the one-shot
+    returned.  Reject persistent manifests in spawn_and_run with
+    a clear error directing the caller to use spawn+run instead.
+  * Both found by round 10 self-reflection with a deeper prompt
+    that explicitly steered toward "trait methods with only test
+    callers" — same shape as Bugs 35, 37.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 18:00:00 +0000
+
 aaos (0.2.6-1) trixie; urgency=medium
 
   * Fix Bug 36 (high): mount("proc", ..., "proc", ...) failed

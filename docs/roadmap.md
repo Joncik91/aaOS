@@ -417,6 +417,33 @@ If round 9 on v0.2.4 source produces 0 real fixable findings, the v0.2.x patch s
 
 Tagged as `v0.2.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.4 — `aaos_0.2.4-1_amd64.deb`.
 
+### 35. v0.2.7 release — round 10 deep self-reflection finds Bugs 38 + 40
+*complete 2026-04-26*
+
+Round 9 had declared the v0.2.x source-reading surface depleted (0/3 real findings on v0.2.4 with the standard prompt).  The intervening stress probes (Bugs 35, 36, 37) proved that was a depletion-of-the-prompt-shape, not a depletion-of-the-runtime.  Round 10 used a deeper-investigation prompt that explicitly steered toward the missed-pattern shapes:
+- Trait methods with only test callers
+- Doc-warned defaults that production callers use anyway
+- Lifecycle events that don't reach all subsystems
+
+3 findings reported in 143 s; 2 real and shipped, 1 deferred:
+
+- **Bug 38 (medium) — `SessionStore::clear` had no production caller.**  Every persistent agent's session-store entry leaked on stop (in-memory store accumulated DashMap entries unbounded across spawn-stop cycles).  Fixed by wiring `clear` into the persistent loop's exit handler, gated on `!persistent_identity` so Bootstrap-shaped agents preserve history across stop+respawn.  Same shape as Bug 35 (audit log unbounded by default).
+
+- **Bug 40 (high) — `agent.spawn_and_run` + `lifecycle: persistent` leaks.**  The handler called `agent.spawn` (which starts a persistent loop) then ran a one-shot `execute_agent` on the same agent_id.  After the one-shot returned, the persistent loop never received a stop signal — leaked one tokio task (InProcess) or one worker subprocess (namespaced) per call.  Fixed by rejecting persistent manifests in spawn_and_run with a clear error directing the caller to use `agent.spawn` + `agent.run` instead.
+
+- **Bug 39 (deferred) — `JsonlSessionStore` directory scans O(N).**  Real structural inefficiency; unreachable in production since InMemorySessionStore is the default.  Filed in `docs/ideas.md` with reconsider signals.
+
+**Pattern lifted.**  "No findings" from a self-reflection pass is a depletion signal *for the specific prompt shape used*, not for the runtime.  Round 10's prompt structure (explicit shape-steering plus exploit-POC requirement) is now the recommended one for v0.2.x reflection rounds.
+
+The v0.2.x line has now closed bugs across four independent probe types:
+- Source-reading reflection rounds 6–8 (standard prompt): Bugs 27–34
+- Source-reading reflection round 10 (shape-steering prompt): **Bugs 38, 40**
+- Fuzzing randomized inputs (137M): 0 findings
+- Stress InProcess: Bug 35
+- Stress namespaced: Bugs 36, 37
+
+Tagged as `v0.2.7`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.7 — `aaos_0.2.7-1_amd64.deb`.
+
 ### 34. v0.2.6 release — namespaced-backend stress probe finds Bugs 36 + 37
 *complete 2026-04-26*
 

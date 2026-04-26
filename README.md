@@ -4,7 +4,7 @@
 
 **An agent-first runtime where AI agents are native processes, capabilities replace permissions, and the system is designed for autonomy — not human interaction.**
 
-A working agent runtime on Linux.  9 Rust crates, ~41,400 lines, 684 tests (665 always-run + 19 `#[ignore]`-gated on host prereqs like ripgrep, git, kernel primitives, or a child toolchain — exercised on CI, optional locally).  Ships as a Debian `.deb` with an operator CLI; current release `v0.2.6` is built inside a `debian:13` container with `mcp,namespaced-agents` features baked in and attached at [Releases](https://github.com/Joncik91/aaOS/releases).
+A working agent runtime on Linux.  9 Rust crates, ~41,400 lines, 684 tests (665 always-run + 19 `#[ignore]`-gated on host prereqs like ripgrep, git, kernel primitives, or a child toolchain — exercised on CI, optional locally).  Ships as a Debian `.deb` with an operator CLI; current release `v0.2.7` is built inside a `debian:13` container with `mcp,namespaced-agents` features baked in and attached at [Releases](https://github.com/Joncik91/aaOS/releases).
 
 Orchestration auto-detects per goal: a cheap-LLM classifier routes structured goals with independent parallelisable subtasks to a **Planner + PlanExecutor** multi-node DAG, and open-ended investigation goals to a **single multi-turn generalist** via an inline 1-node plan — both paths through the unified PlanExecutor.  Operators can override with `--orchestration plan|persistent`.
 
@@ -22,7 +22,7 @@ See [Architecture](docs/architecture.md) for the full stack, [Roadmap](docs/road
 
 ```bash
 # 1. Install the .deb (download from Releases, or build from source — see below).
-sudo apt install ./aaos_0.2.6-1_amd64.deb
+sudo apt install ./aaos_0.2.7-1_amd64.deb
 
 # 2. Join the aaos group so your shell can talk to the daemon socket.
 #    Log out and back in for group membership to take effect.

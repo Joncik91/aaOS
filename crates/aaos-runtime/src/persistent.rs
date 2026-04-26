@@ -35,6 +35,14 @@ pub async fn persistent_agent_loop(
     router: Arc<MessageRouter>,
     audit_log: Arc<dyn AuditLog>,
     context_manager: Option<Arc<ContextManager>>,
+    // Bug 38 fix (v0.2.7): when true, clear the agent's session-store
+    // entry on loop exit.  Set for ephemeral agents (whose agent_id is
+    // gone forever after stop, so the history is unreachable and just
+    // leaks DashMap entries / on-disk files).  Set false for agents
+    // with persistent identity (Bootstrap, anything spawned via
+    // spawn_with_id for a stable id) — those need history to survive
+    // across stop+respawn so the agent's memory is restored.
+    clear_session_on_exit: bool,
 ) {
     let mut history: Vec<Message> = session_store.load(&agent_id).unwrap_or_default();
 
@@ -259,6 +267,28 @@ pub async fn persistent_agent_loop(
             messages_processed,
         },
     ));
+
+    // Bug 38 fix (v0.2.7): release the agent's session-store entry on
+    // loop exit IF the agent doesn't have persistent identity.  An
+    // ephemeral agent's id is gone forever after stop, so the history
+    // is unreachable — keeping the DashMap entry / JSONL file is pure
+    // leak.  Persistent-identity agents (Bootstrap and anything
+    // spawned via `spawn_with_id` for a stable id from
+    // `/var/lib/aaos/bootstrap_id`) need history to survive across
+    // stop + respawn so memory is restored on the next session.
+    //
+    // Production caller (`AgentRegistry::start_persistent_loop`) sets
+    // this to `!persistent_identity`; tests pass `false` to preserve
+    // the prior behavior of session history outliving the loop.
+    if clear_session_on_exit {
+        if let Err(e) = session_store.clear(&agent_id) {
+            tracing::warn!(
+                agent_id = %agent_id,
+                error = %e,
+                "session_store.clear failed at loop exit; entry leaks until daemon restart"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -407,6 +437,7 @@ lifecycle: persistent
             router.clone(),
             audit_log.clone(),
             None,
+            false, // clear_on_exit — tests preserve the prior behavior
         ));
 
         let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
@@ -471,6 +502,7 @@ lifecycle: persistent
             router.clone(),
             audit_log.clone(),
             None,
+            false, // clear_on_exit — tests preserve the prior behavior
         ));
 
         // First message: will fail
@@ -537,6 +569,7 @@ lifecycle: persistent
             router,
             audit_log.clone(),
             None,
+            false, // clear_on_exit
         ));
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

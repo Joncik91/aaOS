@@ -205,6 +205,13 @@ The monolithic "cryptographically unforgeable tokens" item from earlier rounds c
 
 ---
 
+## Per-agent subdirectory layout for `JsonlSessionStore`
+
+- **Idea:** today `JsonlSessionStore` stores all agents' session files flat in `data_dir`, and `load_archives` / `prune_archives` `read_dir` the whole directory on every call, filtering by `starts_with("{agent_id}.archive.")`.  O(N) where N is the total number of agents the daemon ever spawned, even when looking up archives for one specific agent.  Refactor to a per-agent subdirectory layout (`{data_dir}/{agent_id}/history.jsonl`, `{data_dir}/{agent_id}/archives/{uuid}.json`) so archive operations only touch files relevant to the target agent.
+- **Where seen:** standard pattern in any per-tenant filesystem store (Maildir, BorgBackup chunks, cargo's target/).
+- **Why deferred:** production uses `InMemorySessionStore`, not `JsonlSessionStore`.  `JsonlSessionStore` has no production caller today — round 10's Bug 38 fix made `clear` correctly remove files, but the methods that scan the directory are dead-code paths the daemon never reaches.  Refactoring for an unused code path is premature; the structural inefficiency only becomes load-bearing when JSONL becomes the production store.
+- **Signal to reconsider:** (a) durability requirement promotes JSONL to production (operator complaint that session history is lost on daemon restart), OR (b) multi-restart history retention becomes a feature aaOS sells (bootstrap-style stable identity for arbitrary agents) — at which point the scan cost compounds with agent count.
+
 ## Deterministic scaffold roles (runtime-side execution for mechanical work) — **SIGNAL FIRED** (2026-04-17)
 
 - **Idea:** roles whose work is purely mechanical (fetcher: `web_fetch → file_write → return path`) should not run through the LLM loop at all. Runtime detects a `scaffold: true` marker on the role YAML (or a `scaffold_kind: "fetcher"` discriminator) and dispatches directly via Rust code that calls `ToolInvocation::invoke` for each step. LLM-shaped roles (analyzer, writer) stay untouched.

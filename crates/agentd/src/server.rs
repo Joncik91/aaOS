@@ -1831,6 +1831,32 @@ impl Server {
             }
         };
 
+        // Bug 40 (v0.2.7): reject persistent manifests up front.
+        // `handle_agent_spawn` for `lifecycle: persistent` calls
+        // `backend.launch` which starts an in-daemon persistent loop
+        // (and, under namespaced, a worker subprocess).  We then call
+        // `execute_agent` which runs a one-shot LLM execution against
+        // the same agent_id.  Two concurrent execution loops on one
+        // agent — and the persistent loop has no stop trigger after
+        // the one-shot returns, so it leaks tokio tasks (InProcess) or
+        // worker subprocesses (namespaced) per call.  spawn_and_run is
+        // a one-shot API; persistent agents should be created via
+        // `agent.spawn` and driven via `agent.run`.
+        if let Some(manifest_yaml) = params.get("manifest").and_then(|m| m.as_str()) {
+            if let Ok(manifest) = aaos_core::AgentManifest::from_yaml(manifest_yaml) {
+                if matches!(manifest.lifecycle, aaos_core::Lifecycle::Persistent) {
+                    return JsonRpcResponse::error(
+                        id,
+                        INTERNAL_ERROR,
+                        "agent.spawn_and_run does not support `lifecycle: persistent` — \
+                         use agent.spawn followed by agent.run for persistent agents \
+                         (otherwise the persistent loop leaks after the one-shot returns)"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+
         // Spawn first
         let spawn_resp = self.handle_agent_spawn(params, json!(null)).await;
         let agent_id_str = match spawn_resp.result {

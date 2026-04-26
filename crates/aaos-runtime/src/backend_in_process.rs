@@ -189,6 +189,9 @@ impl AgentBackend for InProcessBackend {
             threshold,
         )));
 
+        // Bug 38: clear session on exit for ephemeral agents only.
+        let clear_on_exit = !self.registry.has_stable_identity(agent_id).unwrap_or(false);
+
         // Spawn the same persistent loop the registry used to spawn.
         let join = tokio::spawn(crate::persistent::persistent_agent_loop(
             agent_id,
@@ -200,6 +203,7 @@ impl AgentBackend for InProcessBackend {
             self.router.clone(),
             self.audit_log.clone(),
             context_manager,
+            clear_on_exit,
         ));
 
         let abort = join.abort_handle();

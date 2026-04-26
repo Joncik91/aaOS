@@ -10,7 +10,29 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.6 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.7 `.deb` preinstalled).
+
+---
+
+## [0.2.7] — 2026-04-26
+
+Round 10 self-reflection on v0.2.6 with a deeper-investigation prompt.  v0.2.4's round 9 had declared "patch surface depleted on v0.2.x" for source-reading — the stress probes (Bugs 35, 36, 37) proved that was a depletion-of-the-prompt-shape, not a depletion-of-the-runtime.  Round 10's prompt explicitly steered toward the missed-pattern shapes (trait methods with only test callers, doc-warned defaults that production callers use anyway, lifecycle events that don't reach all subsystems).  Three findings; **two real bugs shipped, one deferred to ideas.md**.  Reflection log: [`docs/reflection/2026-04-26-v0.2.6-round-10.md`](docs/reflection/2026-04-26-v0.2.6-round-10.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.7> — `aaos_0.2.7-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 38 (medium — `SessionStore::clear` had no production caller).**  Same-shape as Bug 35: the trait method existed, documentation said "use this on stop," but no production caller invoked it.  Result: every persistent agent that processed messages left its session-store entry behind on stop.  In-memory store (production default) accumulated DashMap entries unbounded across spawn-stop cycles; JSONL store (no production user yet) would also accumulate zero-byte files — `JsonlSessionStore::clear` truncated rather than removed.  **Fix**: (a) wire `session_store.clear(agent_id)` into `persistent_agent_loop`'s exit path, gated on a `clear_session_on_exit` flag; (b) `AgentRegistry::start_persistent_loop` and `InProcessBackend::launch` set the flag to `!persistent_identity` so ephemeral agents clear and Bootstrap-shaped persistent-identity agents preserve history across stop+respawn; (c) fix `JsonlSessionStore::clear` to `fs::remove_file` instead of zero-truncate.  Existing test `persistent_loop_processes_message` (which asserts history outlives loop exit) preserved by passing `false` for the clear flag in tests.
+
+- **Bug 40 (high — `agent.spawn_and_run` + `lifecycle: persistent` leaks).**  `handle_agent_spawn_and_run` calls `handle_agent_spawn` (which starts a persistent loop via `backend.launch` if the manifest requests it) then immediately runs a one-shot `execute_agent` against the same agent_id.  Two concurrent execution loops on one agent.  After the one-shot returns, the persistent loop is never told to stop — leaks one tokio task (InProcess) or one worker subprocess (namespaced) per call.  Bug 37 closed the worker-subprocess leak for `agent.stop`; this one is the same shape but on a different entry path.  **Fix**: reject persistent manifests in `handle_agent_spawn_and_run` with an explicit error directing the caller to use `agent.spawn` + `agent.run` instead.  spawn_and_run is a one-shot API; persistent agents need explicit lifecycle management.
+
+### Deferred (filed in `docs/ideas.md`)
+
+- **Bug 39 — `JsonlSessionStore::load_archives` / `prune_archives` scan whole data directory.**  Real structural inefficiency (every call is O(N) where N = total agents ever, not just the target agent's archives).  No production exploit because production uses `InMemorySessionStore`; `JsonlSessionStore` has no production caller today.  Reconsider when JSONL becomes the production store (durability requirement, multi-restart history needed) — the fix is structural (per-agent subdirectory layout) and not worth the cost of refactor today.
+
+### Pattern reinforced
+
+The deeper prompt — explicitly steering toward "trait methods with only test callers" — found Bugs 38 and 40 in 143 seconds, after round 9 with the standard prompt had reported 0/3 real findings on the same code.  Round 10's prompt structure is now the recommended one for any future v0.2.x reflection round.  Convention going forward: "no production caller for a trait method" is itself a finding shape that the loop should be primed to look for.
 
 ---
 
@@ -517,7 +539,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/Joncik91/aaOS/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/Joncik91/aaOS/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Joncik91/aaOS/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Joncik91/aaOS/compare/v0.2.3...v0.2.4

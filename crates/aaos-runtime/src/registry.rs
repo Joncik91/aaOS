@@ -314,6 +314,10 @@ impl AgentRegistry {
 
         let manifest = process.manifest.clone();
         let audit_log = self.audit_log.clone();
+        // Ephemeral agents get their session-store entry cleared on
+        // loop exit (Bug 38 fix); persistent-identity agents keep it
+        // so memory survives stop+respawn.
+        let clear_on_exit = !process.persistent_identity;
 
         let handle = tokio::spawn(persistent_agent_loop(
             agent_id,
@@ -325,6 +329,7 @@ impl AgentRegistry {
             router,
             audit_log,
             context_manager,
+            clear_on_exit,
         ));
 
         process.task_handle = Some(handle);
