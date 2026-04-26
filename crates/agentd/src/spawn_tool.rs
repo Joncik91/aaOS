@@ -182,42 +182,25 @@ impl Tool for SpawnAgentTool {
                     });
                 }
                 Some(parent_handle) => {
-                    // Issue a fresh narrowed handle for the specific requested
-                    // capability. Constraints are inherited via the registry's
-                    // narrow() implementation (which clones the parent token
-                    // and layers any additional constraints on top). We pass
-                    // empty additional constraints; the parent's own
-                    // max_invocations etc. are preserved by the clone.
-                    //
-                    // The parent token's capability type may be broader than
-                    // the child's request (e.g. grant is file_read:/src/* and
-                    // child asks for file_read:/src/crates/*). We can't use
-                    // narrow() directly because that preserves the parent's
-                    // capability. Instead we use the registry's insert() with
-                    // a freshly-issued token scoped to the child's exact ask,
-                    // and carry over the parent's constraints manually.
-                    //
-                    // This is the shape the plan called "narrowing semantics
-                    // unchanged" — the token has the specific capability the
-                    // child asked for (narrower), with the parent's
-                    // constraints.
-                    // Liveness check: confirm the parent handle still resolves.
-                    // We only need the existence proof — narrowing semantics
-                    // are applied below by issuing a fresh token scoped to the
-                    // child's specific capability ask with default constraints.
-                    let _parent_token_id =
-                        cap_registry.token_id_of(parent_handle).ok_or_else(|| {
-                            CoreError::Ipc(
-                                "parent handle vanished mid-spawn (runtime invariant violation)"
-                                    .into(),
-                            )
-                        })?;
-                    let child_token = aaos_core::CapabilityToken::issue(
-                        child_id,
-                        child_cap,
-                        aaos_core::Constraints::default(),
-                    );
-                    let handle = cap_registry.insert(child_id, child_token);
+                    // Bug 27 fix (v0.1.7): use the registry's
+                    // narrow_with_capability() so the child token (a) carries
+                    // the parent's existing constraints (max_invocations,
+                    // rate_limit, expiry) and (b) is scoped to the specific
+                    // narrower capability the child asked for.  The previous
+                    // code issued a fresh token with `Constraints::default()`,
+                    // silently dropping every parent constraint —
+                    // Phase A's run-1 finding #3 had regressed.
+                    let handle = cap_registry
+                        .narrow_with_capability(
+                            parent_handle,
+                            ctx.agent_id,
+                            child_id,
+                            child_cap.clone(),
+                            aaos_core::Constraints::default(),
+                        )
+                        .ok_or_else(|| CoreError::Ipc(
+                            "parent handle vanished mid-spawn or capability narrowing rejected (runtime invariant violation)".into(),
+                        ))?;
                     child_handles.push(handle);
                 }
             }
@@ -270,20 +253,34 @@ impl Tool for SpawnAgentTool {
             // Retry with a fresh child agent. Handles issued for the original
             // child_id won't resolve for child_id_2 (cross-agent leak
             // protection in CapabilityRegistry), so we re-issue narrowed
-            // handles for the new child. We reuse `child_handles_for_retry`
-            // as a record of which capabilities to grant, pulled back through
-            // inspect(); for simplicity we re-derive from child_manifest.
-            let _ = child_handles_for_retry; // retained to silence unused warning; see note above
+            // handles for the new child via the same narrow_with_capability
+            // path the first attempt used.  Bug 27 fix (v0.1.7): the retry
+            // path used to issue with Constraints::default(), bypassing
+            // parent constraints entirely — even if the first attempt had
+            // correctly inherited them.
+            let _ = child_handles_for_retry; // retained to silence unused warning
             let child_id_2 = AgentId::new();
             let mut child_handles_2: Vec<aaos_core::CapabilityHandle> = Vec::new();
             for decl in &child_manifest.capabilities {
-                if let Some(cap) = parse_capability(decl) {
-                    let tok = aaos_core::CapabilityToken::issue(
+                let child_cap = match parse_capability(decl) {
+                    Some(c) => c,
+                    None => continue,
+                };
+                let granting_handle = ctx
+                    .tokens
+                    .iter()
+                    .find(|h| cap_registry.permits(**h, ctx.agent_id, &child_cap))
+                    .copied();
+                if let Some(parent_handle) = granting_handle {
+                    if let Some(handle) = cap_registry.narrow_with_capability(
+                        parent_handle,
+                        ctx.agent_id,
                         child_id_2,
-                        cap,
+                        child_cap,
                         aaos_core::Constraints::default(),
-                    );
-                    child_handles_2.push(cap_registry.insert(child_id_2, tok));
+                    ) {
+                        child_handles_2.push(handle);
+                    }
                 }
             }
             self.registry.spawn_with_token_handles(

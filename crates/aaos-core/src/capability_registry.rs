@@ -75,6 +75,39 @@ impl CapabilityRegistry {
         Some(self.insert(child_agent, narrowed))
     }
 
+    /// Narrow a parent token into a child handle with a more-specific
+    /// capability AND inherit the parent's constraints (intersected with
+    /// any additional ones the caller supplies).  Used by spawn_agent /
+    /// spawn_agents to delegate a subset capability to a child without
+    /// dropping the parent's `max_invocations`, rate limits, or expiry.
+    ///
+    /// Returns `None` if the parent handle doesn't resolve, doesn't
+    /// belong to `parent_agent`, or the child's `requested_capability`
+    /// is not a subset of the parent's capability.
+    ///
+    /// Bug 27 fix (v0.1.7): replaces the spawn-path pattern of issuing
+    /// fresh tokens with `Constraints::default()` (which silently
+    /// dropped parent constraints).
+    pub fn narrow_with_capability(
+        &self,
+        parent_handle: CapabilityHandle,
+        parent_agent: AgentId,
+        child_agent: AgentId,
+        requested_capability: Capability,
+        additional: Constraints,
+    ) -> Option<CapabilityHandle> {
+        let narrowed = {
+            let entry = self.table.get(&parent_handle)?;
+            if entry.agent_id != parent_agent {
+                return None;
+            }
+            entry
+                .token
+                .narrow_with_capability(child_agent, requested_capability, additional)?
+        };
+        Some(self.insert(child_agent, narrowed))
+    }
+
     // ------- Authorization (the hot path — tools call this) -------
 
     /// Atomic permit-check. Does NOT count as usage; use `authorize_and_record`

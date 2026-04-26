@@ -273,6 +273,54 @@ impl CapabilityToken {
         }
     }
 
+    /// Create a narrowed copy of this token, substituting a more-specific
+    /// capability AND layering additional constraints on top of the
+    /// parent's existing ones.  The `child_capability` MUST satisfy
+    /// `self.capability_matches(&child_capability)` — i.e., the child's
+    /// requested capability must be a subset of what the parent holds.
+    /// Returns `None` if the child's capability is not a subset.
+    ///
+    /// Bug 27 fix (v0.1.7): the previous `narrow()` method preserved the
+    /// parent's capability identity (so `file_read: /src/*` couldn't be
+    /// narrowed to `file_read: /src/crates/*`).  Spawn paths therefore
+    /// issued child tokens with `Constraints::default()` directly,
+    /// which silently dropped the parent's `max_invocations` / rate
+    /// limits / expiry.  This method does both correctly: substitutes
+    /// the narrower capability and inherits the parent's constraints
+    /// (intersected with any additional ones the caller supplies).
+    pub fn narrow_with_capability(
+        &self,
+        child_agent: AgentId,
+        child_capability: Capability,
+        additional: Constraints,
+    ) -> Option<Self> {
+        if !self.capability_matches(&child_capability) {
+            return None;
+        }
+        let mut narrowed = self.clone();
+        narrowed.id = Uuid::new_v4();
+        narrowed.agent_id = child_agent;
+        narrowed.capability = child_capability;
+        narrowed.invocation_count = 0;
+        if let Some(max) = additional.max_invocations {
+            narrowed.constraints.max_invocations = Some(
+                narrowed
+                    .constraints
+                    .max_invocations
+                    .map_or(max, |existing| existing.min(max)),
+            );
+        }
+        if let Some(rate) = additional.rate_limit {
+            narrowed.constraints.rate_limit = Some(narrowed.constraints.rate_limit.map_or(
+                rate.clone(),
+                |existing| RateLimit {
+                    max_per_minute: existing.max_per_minute.min(rate.max_per_minute),
+                },
+            ));
+        }
+        Some(narrowed)
+    }
+
     /// Create a narrowed copy of this token with additional constraints.
     pub fn narrow(&self, additional: Constraints) -> Self {
         let mut narrowed = self.clone();
