@@ -1,3 +1,26 @@
+aaos (0.2.0-1) trixie; urgency=medium
+
+  * Cleared-queue release.  Closes the v0.1.x carryover queue:
+    push-revocation, approval persistence, canonical_for_match
+    TOCTOU.  clone3 seccomp tightening (Bug 19) was filed as
+    structurally infeasible and moved to docs/ideas.md.
+  * Push-revocation protocol (Bugs 11 + 18): CapabilityRegistry
+    now publishes revocations to a pluggable RevokeNotifier;
+    aaos-backend-linux wires SessionMapNotifier to push
+    Request::RevokeToken frames to active worker sessions.
+    revoke_all_for_agent also fires the notifier.  Worker
+    sessions now hold a session-level CapabilityRegistry.
+  * Approval queue persistence: SQLite store at
+    /var/lib/aaos/approvals.db (override AAOS_APPROVAL_DB).
+    Pending approvals survive daemon restart.
+  * canonical_for_match TOCTOU: file_read / file_write /
+    file_edit / file_list / file_read_many / grep all migrated
+    to O_NOFOLLOW + /proc/self/fd/<fd> capability check.  The
+    leaf-component symlink-swap race that Round 4 + 5 self-
+    reflection runs identified is structurally closed.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 12:30:00 +0000
+
 aaos (0.1.7-1) trixie; urgency=medium
 
   * Fix Bug 27 (high): both spawn paths in spawn_tool.rs issued

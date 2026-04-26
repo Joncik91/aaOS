@@ -10,7 +10,31 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.1.7 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.0 `.deb` preinstalled).
+
+---
+
+## [0.2.0] — 2026-04-26
+
+Cleared-queue release.  v0.1.x left four architectural items deferred — push-revocation, approval persistence, the `canonical_for_match` TOCTOU, and `clone3` seccomp tightening.  v0.2.0 closes the first three; the fourth (`clone3` argument filtering) was discovered to be structurally infeasible for seccomp-BPF (the kernel takes a userspace pointer to `struct clone_args`; BPF can only read syscall registers, not pointed-to memory) and was filed as not-buildable under the current substrate.  Detail in `docs/ideas.md`.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.0> — `aaos_0.2.0-1_amd64.deb`.
+
+### Added
+
+- **Push-revocation protocol (Bugs 11 + 18)** — `CapabilityRegistry::revoke()` now publishes the revocation to a pluggable `RevokeNotifier`; `aaos-backend-linux::SessionMapNotifier` implements it by sending a `Request::RevokeToken { token_id }` frame to every active worker session whose tokens reference the revoked id.  Worker-side: a session-level `Arc<CapabilityRegistry>` initialized at session start handles the frame by calling `registry.revoke(token_id)` — subsequent `permits()` checks see the revocation.  `revoke_all_for_agent` also fires the notifier per revoked token, so lifecycle-exit and capability-wipe paths no longer silently drop revocations on workers.  Commits `294024b`, `13d08c1`.
+
+- **SQLite-backed approval queue persistence** — `crates/agentd/src/approval_store.rs` (new) is a single-purpose SQLite store mirroring the in-memory `ApprovalQueue` shape.  `ApprovalQueue::with_store(store)` writes through to disk on every insert/respond/timeout.  `Server::build_approval_queue` reads `AAOS_APPROVAL_DB` (default `/var/lib/aaos/approvals.db`); on startup it purges entries already past `DEFAULT_APPROVAL_TIMEOUT` and clears the rest because the agents that owned them are gone after the restart.  Falls back to in-memory on any open/load failure rather than failing daemon startup.  Tests cover round-trip persistence, replace-on-duplicate-id, age-based purge, open-and-reopen.  Commit `860491c`.
+
+### Fixed
+
+- **`canonical_for_match` TOCTOU (Round-4 + Round-5 Finding 1)** — file tools previously canonicalized the requested path string, glob-matched against the agent's grant, then re-opened by string for I/O.  An attacker with write access to any path component could swap a regular file for a symlink between the two operations and steer the read/write to a forbidden target.  Fixed by introducing `aaos-tools::path_safe::safe_open_for_capability(path, mode)` which opens with `O_NOFOLLOW | O_CLOEXEC`, resolves the resulting fd via `/proc/self/fd/<fd>` to a kernel-pinned canonical, and hands back both an `OwnedFd` and that canonical string.  New `Token::permits_canonical_file` / `CapabilityRegistry::permits_canonical_file` / `glob_matches_canonical` skip the second `fs::canonicalize` since the fd already pins the inode.  All six file tools (`file_read`, `file_write`, `file_edit`, `file_list`, `file_read_many`, `grep`) migrated.  `file_write` and `file_edit` perform their I/O on the same fd that powered the capability check; `file_list` and `grep` use the `O_PATH` variant since they hand off to `read_dir` / ripgrep.  Tests cover the symlink-swap race directly: open an fd, swap the path for a symlink to a forbidden target, and assert the fd still reads the original inode.  Commit `8b8f03b`.
+
+### Deferred / not buildable
+
+- **`clone3` seccomp argument filtering (Bug 19)** — moved from `[Unreleased]` to `docs/ideas.md` as STRUCTURALLY INFEASIBLE.  `clone3(struct clone_args *args)` takes a *pointer* to a userspace struct.  seccomp-BPF programs run before the syscall executes and have access only to the syscall register values, not the memory they point to.  The kernel deliberately does not copy `clone_args` into the BPF program — this is documented in `Documentation/userspace-api/seccomp_filter.rst`.  An attacker who can call `clone3` from a confined worker could place arbitrary flags in the struct and we have no syscall-filter-level mechanism to reject them.  Reconsider signals: (a) Linux gains a seccomp variant that exposes `clone3` flags to BPF, or (b) we move worker confinement onto a substrate that can intercept argument memory (Landlock LSM extensions, eBPF LSM hooks, microVM hypervisor traps).  Until then, the in-process seccomp policy correctly allows `clone3` unconditionally — denying it would break tokio's worker-thread spawn — and the namespace-creation defense is layered at the unprivileged-user-ns boundary instead.
+
+- **Approval-queue full reload-and-rearm.**  v0.2.0's persistence layer flushes pending approvals to disk and surfaces them on restart, but the persistent-agent state machine doesn't yet expose a hook for re-attaching a reload-time `oneshot::Sender` to the agent that originally issued the approval request.  v0.2.0 logs the count and clears the entries; the agents the entries belonged to are gone after the restart anyway.  Reconsider when persistent-agent migration shipping makes a "resume across restart" story load-bearing.
 
 ---
 
@@ -359,7 +383,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Joncik91/aaOS/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/Joncik91/aaOS/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Joncik91/aaOS/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/Joncik91/aaOS/compare/v0.1.4...v0.1.5

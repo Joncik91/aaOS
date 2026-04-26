@@ -326,6 +326,21 @@ Bug 27 (high): both spawn paths in `spawn_tool.rs` issued child capability token
 
 Tagged as `v0.1.7`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.1.7 — `aaos_0.1.7-1_amd64.deb`.
 
+### 28. v0.2.0 release — cleared-queue release (push-revocation, approval persistence, TOCTOU fix)
+*complete 2026-04-26*
+
+Five rounds of v0.1.x self-reflection had exhausted the patch-level bug surface.  Four architectural items remained on the carryover queue, each correctly deferred during v0.1.x because they needed real design work, not patches: push-revocation, approval persistence, the `canonical_for_match` TOCTOU, and `clone3` seccomp tightening.  v0.2.0 was scoped as a cleared-queue release — ship the three that were buildable, surface the fourth as not-buildable with a written reason.
+
+**Push-revocation protocol (Bugs 11 + 18).**  `CapabilityRegistry::revoke()` had been a single-shot mutation on the daemon-side table; tokens revoked between `resolve_tokens` and worker `permits()` were still honored.  Fix: `RevokeNotifier` trait in `aaos-core`, `SessionMapNotifier` impl in `aaos-backend-linux` that pushes a `Request::RevokeToken { token_id }` frame to every active worker session.  Worker-side: session-level `Arc<CapabilityRegistry>` initialized at session start, handles the frame by calling `registry.revoke(token_id)`.  `revoke_all_for_agent` also fires the notifier per token, so capability-wipe and lifecycle-exit paths no longer silently drop revocations.  Wired into agentd's three Server constructors via `wire_revocation_notifier`.  Commits `294024b`, `13d08c1`.
+
+**Approval queue persistence.**  `ApprovalQueue` had been pure in-memory; daemon restart lost every pending entry.  Fix: `crates/agentd/src/approval_store.rs` is a SQLite store mirroring the in-memory shape.  `ApprovalQueue::with_store(store)` writes through on insert/respond/timeout.  `Server::build_approval_queue` reads `AAOS_APPROVAL_DB` (default `/var/lib/aaos/approvals.db`), purges entries past `DEFAULT_APPROVAL_TIMEOUT` at startup, and clears the rest because the agents that owned them are gone after restart.  A full reload-and-rearm path was deferred — needs persistent-agent-side cooperation that the current state machine doesn't expose.  Commit `860491c`.
+
+**`canonical_for_match` TOCTOU.**  File tools previously did "canonicalize string → glob match → re-open by string for I/O".  An attacker with write access to any path component could swap a regular file for a symlink to a forbidden target between the two operations.  Fix: `aaos-tools::path_safe::safe_open_for_capability(path, mode)` opens with `O_NOFOLLOW | O_CLOEXEC`, resolves the resulting fd's `/proc/self/fd/<fd>` to a kernel-pinned canonical, and hands back both an `OwnedFd` and that canonical string.  `Token::permits_canonical_file` / `glob_matches_canonical` skip the second `fs::canonicalize`.  All six file tools migrated.  `file_write` and `file_edit` perform their I/O on the same fd that powered the capability check.  Commit `8b8f03b`.
+
+**`clone3` seccomp tightening — not buildable.**  The Round-5-era plan was an argument-filter rule on `clone3` so only `CLONE_THREAD` flags would be permitted.  Discovered during implementation that this is structurally infeasible: `clone3(struct clone_args *args)` takes a pointer to userspace memory, and seccomp-BPF programs run before the syscall executes with access only to the syscall *register* values — not the memory they point to.  This is a deliberate kernel design choice (`Documentation/userspace-api/seccomp_filter.rst`), not a missing feature we can compose around.  Filed as STRUCTURALLY INFEASIBLE in `docs/ideas.md` with concrete reconsider signals: kernel exposes `clone3` flags to BPF, or worker confinement moves to a substrate that can intercept argument memory (eBPF LSM, microVM hypervisor).  Until then the namespace-creation defense is layered at the unprivileged-user-ns boundary, where it has always been load-bearing.
+
+Tagged as `v0.2.0`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.0 — `aaos_0.2.0-1_amd64.deb`.
+
 ---
 
 ## Active milestones
