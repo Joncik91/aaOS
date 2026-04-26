@@ -10,7 +10,29 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.7 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.8 `.deb` preinstalled).
+
+---
+
+## [0.2.8] — 2026-04-26
+
+Round 11 self-reflection on v0.2.7 with a third prompt-shape steer: silent-failure paths (`let _ =` discards of `Result<()>` returns).  Agent classified all 47 such discards in the codebase — 44 defensible, **3 real bugs**.  All three concern persistence-layer failures the daemon throws away without an audit event or log line; under disk-full / NFS outage / read-only fs / SQLite corruption, the agent silently truncates history or accumulates orphan rows.  Reflection log: [`docs/reflection/2026-04-26-v0.2.7-round-11.md`](docs/reflection/2026-04-26-v0.2.7-round-11.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.8> — `aaos_0.2.8-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 41 (high — `archive_segment` failure permanently destroys conversation history).**  `persistent_agent_loop`'s summarization path discarded `archive_segment` errors with `let _ = `, then unconditionally drained the archived messages from in-memory history.  If the archive write failed (disk full, SQLite locked, ENOSPC mid-process), the original messages existed nowhere — gone from memory, never written to disk.  Daemon restart loaded only the LLM-summarized form; the agent's original tool-call arguments and intermediate reasoning were unrecoverable.  No audit event, no log line.  **Fix**: skip the summarization cycle when archive fails.  Original history stays intact for the next cycle to retry.  Audit + log on failure (with the existing `should_emit` throttle pattern from the v0.2.2 `replace` fix).
+
+- **Bug 42 (high — `append` failure silently truncates session history).**  Same shape: every `agent.run` turn called `let _ = session_store.append(...)` and the on-disk history would be truncated at the last successful append point.  Daemon restart loaded a shorter history than the operator expected.  No audit, no log.  **Fix**: identical to Bug 41 — audit + log on failure with the throttle pattern.
+
+- **Bug 43 (medium — silent SQLite orphan row leaks in approval store).**  Three sites in `ApprovalQueue::request` (timeout-handler, oneshot-fail, timeout-elapsed) plus the daemon's startup purge in `Server::build_approval_queue` did `let _ = store.remove(id);`.  Under read-only filesystem or a SQLite-level error the row stayed in the database while the in-memory `DashMap` entry was removed; subsequent `agent approval list` showed empty but the table grew.  After a restart the entries reloaded, retried, silently failed again, accumulating across every daemon lifetime.  **Fix**: log at `warn!` with `approval_id` + error (matching the existing `respond` site that already logs).
+
+### Pattern reinforced
+
+Round 11's prompt shape ("find `let _ = ` patterns that hide real bugs") found 3 real bugs in 205 s after rounds 9 + 10 had also been declared "done" with their respective shapes.  Three distinct prompt shapes, three rounds, 5 real bugs (Bugs 38, 40, 41, 42, 43).  Convention now confirmed: when self-reflection plateaus on one prompt shape, **change the shape**.  Don't declare depletion.  The v0.2.x runtime's reachable-by-source-reading bug surface is wider than any single prompt shape can find.
+
+The agent's classification of the 44 defensible `let _ = ` discards is preserved in the reflection log — useful as a future maintenance reference (next time someone touches one of those sites and wonders if the discard is safe).
 
 ---
 
@@ -539,7 +561,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/Joncik91/aaOS/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/Joncik91/aaOS/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/Joncik91/aaOS/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Joncik91/aaOS/compare/v0.2.4...v0.2.5

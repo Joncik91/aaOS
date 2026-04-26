@@ -1,3 +1,26 @@
+aaos (0.2.8-1) trixie; urgency=medium
+
+  * Fix Bugs 41/42/43 (high/high/medium): three persistence-layer
+    silent-failure paths — archive_segment, append, store.remove —
+    discarded errors with `let _ = ` and would (on disk-full, NFS
+    outage, read-only fs, SQLite error) silently destroy or leak
+    state.  All three now log at error/warn level with a
+    SessionStoreError audit event where applicable.
+  * Bug 41: archive_segment failure followed by unconditional
+    history.drain meant original messages existed nowhere.  Now
+    skips the summarization cycle entirely on archive failure
+    (history preserved for retry).
+  * Bug 42: append failure silently truncated on-disk history at
+    the last successful turn.  Now audits + logs.
+  * Bug 43: store.remove failures in approval cleanup paths
+    accumulated orphan rows in the SQLite approvals table.  Now
+    logs.
+  * Found by round 11 self-reflection with a "find `let _ = `
+    discards that hide real bugs" prompt shape — 47 sites
+    classified, 44 defensible, 3 real.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 18:30:00 +0000
+
 aaos (0.2.7-1) trixie; urgency=medium
 
   * Fix Bug 38 (medium): SessionStore::clear had no production

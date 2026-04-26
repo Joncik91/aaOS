@@ -95,7 +95,37 @@ pub async fn persistent_agent_loop(
                                     messages: summ.archived_messages.clone(),
                                     archived_at: chrono::Utc::now(),
                                 };
-                                let _ = session_store.archive_segment(&agent_id, &segment);
+                                // Bug 41 fix (v0.2.8): if archive fails, abort
+                                // the summarization cycle.  history.drain on the
+                                // line below is irreversible — once executed,
+                                // the original messages exist nowhere if the
+                                // archive write failed.  Audit + log; let the
+                                // next summarization cycle retry.  The agent
+                                // stays usable in the meantime; only the
+                                // summarization is deferred.
+                                if let Err(e) = session_store.archive_segment(&agent_id, &segment) {
+                                    let should_emit = match last_session_store_error {
+                                        Some(prev) if prev.elapsed() < SESSION_STORE_ERROR_THROTTLE => false,
+                                        _ => { last_session_store_error = Some(Instant::now()); true }
+                                    };
+                                    if should_emit {
+                                        audit_log.record(AuditEvent::new(
+                                            agent_id,
+                                            AuditEventKind::SessionStoreError {
+                                                operation: "archive".to_string(),
+                                                message: e.to_string(),
+                                            },
+                                        ));
+                                    }
+                                    tracing::error!(
+                                        agent_id = %agent_id,
+                                        error = %e,
+                                        "session_store.archive_segment failed — skipping this summarization cycle to preserve original history; will retry next cycle"
+                                    );
+                                    // Skip the summarization; fall through to
+                                    // execute_with_history with the (still
+                                    // intact) original history below.
+                                } else {
 
                                 // 2. Drain old messages from history, insert summary
                                 let (_, end) = summ.source_range;
@@ -140,6 +170,7 @@ pub async fn persistent_agent_loop(
                                         tokens_saved_estimate: summ.tokens_saved_estimate,
                                     },
                                 ));
+                                } // close Bug 41 else-branch (archive succeeded)
                             }
 
                             // Handle summarization failure (non-fatal — context is
@@ -205,7 +236,34 @@ pub async fn persistent_agent_loop(
                             history.drain(..history.len() - max_history);
                         }
 
-                        let _ = session_store.append(&agent_id, &result.transcript_delta);
+                        // Bug 42 fix (v0.2.8): persistence failure here
+                        // means the agent's response for this turn is gone
+                        // from disk forever — daemon restart loads only
+                        // history up to the last successful append.  Audit
+                        // + log on failure (mirroring the v0.2.2 replace
+                        // throttle) so operators see persistent
+                        // truncation rather than silently degraded
+                        // history.
+                        if let Err(e) = session_store.append(&agent_id, &result.transcript_delta) {
+                            let should_emit = match last_session_store_error {
+                                Some(prev) if prev.elapsed() < SESSION_STORE_ERROR_THROTTLE => false,
+                                _ => { last_session_store_error = Some(Instant::now()); true }
+                            };
+                            if should_emit {
+                                audit_log.record(AuditEvent::new(
+                                    agent_id,
+                                    AuditEventKind::SessionStoreError {
+                                        operation: "append".to_string(),
+                                        message: e.to_string(),
+                                    },
+                                ));
+                            }
+                            tracing::error!(
+                                agent_id = %agent_id,
+                                error = %e,
+                                "session_store.append failed — conversation history truncated from this point on disk"
+                            );
+                        }
 
                         audit_log.record(AuditEvent::new(
                             agent_id,

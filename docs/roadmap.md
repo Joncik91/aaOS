@@ -417,6 +417,45 @@ If round 9 on v0.2.4 source produces 0 real fixable findings, the v0.2.x patch s
 
 Tagged as `v0.2.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.4 — `aaos_0.2.4-1_amd64.deb`.
 
+### 33. v0.2.5 release — concurrency stress probe finds Bug 35
+*complete 2026-04-26*
+
+After round 9 (0 source-reading findings) and the fuzz pass (0 panics across 137M inputs) both depleted on v0.2.4, the next probe of different kind was concurrency stress.  A bash + socat + jq harness on the droplet opens 32 concurrent connections to the daemon and hammers `agent.spawn` + `agent.stop` cycles (16k per pass, no LLM round-trip — exercises the registry / capability / session-map shard locks, not the executor).
+
+First serious run found **Bug 35**: `InMemoryAuditLog::new()` is unbounded by design (its own doc-comment says so for test harnesses), and both Server constructors called the unbounded `::new()` directly.  Each spawn-stop cycle emits ~10 audit events × ~120 bytes = +1.2 KB/cycle.  Three consecutive 16k passes on the same daemon: RSS +20MB → +18MB → +20MB.  Linear leak.  Fixed by switching to `InMemoryAuditLog::with_cap(50_000)` (override via `AAOS_AUDIT_LOG_CAP`).  Verified bounded on v0.2.5.
+
+Pattern lifted: a primitive's `::new()` default that is *unsafe for production* (unbounded, blocking-on-default-timeout, no-rate-limit) becomes a production bug if callers use it directly.  The bug-shape that source-reading misses: a code comment honestly documenting "this is unbounded" reads like documentation, not a warning, when callers `use ::new()`.  Future v0.2.x convention: such constructors should be `#[cfg(test)]`-gated, OR the doc-comment must explicitly direct production callers to the bounded variant.  Queued as v0.2.6+ work to tighten `::new()` itself.
+
+The v0.2.x line has now closed bugs across three independent probes:
+- Source-reading reflection (rounds 6–8): Bugs 27–34
+- Fuzzing randomized inputs (137M): 0 findings, surface confirmed robust
+- Concurrency stress: Bug 35
+
+Each probe finds bugs the others can't.
+
+Tagged as `v0.2.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.5 — `aaos_0.2.5-1_amd64.deb`.
+
+### 34. v0.2.6 release — namespaced-backend stress probe finds Bugs 36 + 37
+*complete 2026-04-26*
+
+After v0.2.5 closed Bug 35 (audit log unbounded under churn — InProcess stress probe), the natural next probe was the same harness with `AAOS_DEFAULT_BACKEND=namespaced` to exercise the broker `SessionMap` + worker fork/exec/landlock/seccomp setup.  Two real bugs surfaced:
+
+- **Bug 36 (high) — `mount("proc", ..., "proc", ...)` fails inside unprivileged user namespace.**  v0.2.1's procfs-mount fix (Step E2) needs CLONE_NEWPID, which the worker deliberately doesn't unshare.  EPERM on every `agent.spawn` with `lifecycle:persistent` under namespaced.  Fixed by bind-mounting host `/proc` instead of mounting fresh procfs.
+
+- **Bug 37 (high) — `agent.stop` leaked the worker subprocess.**  `AgentRegistry::stop` ended the in-daemon persistent loop but never told the namespaced backend to terminate the worker.  `backend.stop()` was only called from tests.  20 spawns → 20 leaked workers.  Fixed by adding `AgentBackend::stop_by_agent_id` (default no-op for backends without subprocesses; `NamespacedBackend` overrides to SIGTERM+waitpid the worker by id).  `Server::handle_agent_stop` calls it after `registry.stop` succeeds.
+
+Both bugs had been latent since v0.2.1 / v0.0.x respectively — every droplet QA since v0.0.2 had silently skipped them because the canonical fetch-HN goal goes through inline plan-executor subtasks (no `backend.launch`), never through the `agent.spawn`+namespaced+persistent path that production operators using JSON-RPC directly hit.
+
+**Pattern lifted.**  "Test the path the canonical goal actually uses" (the v0.1.x convention) misses bugs in surfaces the canonical doesn't touch.  Stress probes that exercise every JSON-RPC method catch this class.  Wiring `stress-droplet.sh` (under both InProcess and namespaced) into the release checklist alongside the canonical fetch-HN run would prevent the regression class going forward.
+
+The v0.2.x line has now closed bugs across four independent probe types:
+- Source-reading reflection (rounds 6–8): Bugs 27–34
+- Fuzzing randomized inputs (137M): 0 findings
+- Stress InProcess: Bug 35
+- Stress namespaced: **Bugs 36, 37**
+
+Tagged as `v0.2.6`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.6 — `aaos_0.2.6-1_amd64.deb`.
+
 ### 35. v0.2.7 release — round 10 deep self-reflection finds Bugs 38 + 40
 *complete 2026-04-26*
 
@@ -444,44 +483,34 @@ The v0.2.x line has now closed bugs across four independent probe types:
 
 Tagged as `v0.2.7`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.7 — `aaos_0.2.7-1_amd64.deb`.
 
-### 34. v0.2.6 release — namespaced-backend stress probe finds Bugs 36 + 37
+### 36. v0.2.8 release — round 11 silent-failure prompt finds Bugs 41/42/43
 *complete 2026-04-26*
 
-After v0.2.5 closed Bug 35 (audit log unbounded under churn — InProcess stress probe), the natural next probe was the same harness with `AAOS_DEFAULT_BACKEND=namespaced` to exercise the broker `SessionMap` + worker fork/exec/landlock/seccomp setup.  Two real bugs surfaced:
+Third distinct prompt-shape steer in three rounds:
+- Round 9 (standard prompt, v0.2.4): 0 real findings → "depleted"
+- Round 10 (trait-with-only-test-callers shape, v0.2.6): 2 real (Bugs 38, 40)
+- Round 11 (silent-failure-discards shape, v0.2.7): **3 real (Bugs 41, 42, 43)**
 
-- **Bug 36 (high) — `mount("proc", ..., "proc", ...)` fails inside unprivileged user namespace.**  v0.2.1's procfs-mount fix (Step E2) needs CLONE_NEWPID, which the worker deliberately doesn't unshare.  EPERM on every `agent.spawn` with `lifecycle:persistent` under namespaced.  Fixed by bind-mounting host `/proc` instead of mounting fresh procfs.
+Same source code being read each round (the rounds differ only by the bugfixes applied between).  Round 11 prompt: "find every `let _ = result_returning_call()` discard, classify each, identify the ones hiding real bugs."  Agent enumerated all 47 such sites, classified 44 as defensibly discarded (with reasons), flagged 3 as real bugs:
 
-- **Bug 37 (high) — `agent.stop` leaked the worker subprocess.**  `AgentRegistry::stop` ended the in-daemon persistent loop but never told the namespaced backend to terminate the worker.  `backend.stop()` was only called from tests.  20 spawns → 20 leaked workers.  Fixed by adding `AgentBackend::stop_by_agent_id` (default no-op for backends without subprocesses; `NamespacedBackend` overrides to SIGTERM+waitpid the worker by id).  `Server::handle_agent_stop` calls it after `registry.stop` succeeds.
+- **Bug 41 (high) — `archive_segment` failure permanently destroys conversation history.**  `persistent_agent_loop` summarization path discarded archive errors then unconditionally drained the archived messages from history.  If the archive write failed, the original messages existed nowhere.  Fixed by skipping the summarization cycle on archive failure (preserve original history for retry).
 
-Both bugs had been latent since v0.2.1 / v0.0.x respectively — every droplet QA since v0.0.2 had silently skipped them because the canonical fetch-HN goal goes through inline plan-executor subtasks (no `backend.launch`), never through the `agent.spawn`+namespaced+persistent path that production operators using JSON-RPC directly hit.
+- **Bug 42 (high) — `append` failure silently truncates session history.**  Same shape: per-turn append errors discarded; daemon restart loaded a shorter history than the operator expected.  Fixed by adding an audit event + throttled error log.
 
-**Pattern lifted.**  "Test the path the canonical goal actually uses" (the v0.1.x convention) misses bugs in surfaces the canonical doesn't touch.  Stress probes that exercise every JSON-RPC method catch this class.  Wiring `stress-droplet.sh` (under both InProcess and namespaced) into the release checklist alongside the canonical fetch-HN run would prevent the regression class going forward.
+- **Bug 43 (medium) — silent SQLite orphan rows in approval store.**  Three sites in `ApprovalQueue::request` plus the daemon's startup purge did `let _ = store.remove(id);`.  Under read-only-fs or SQLite-locked conditions the row stayed; the table grew unbounded across daemon lifetimes.  Fixed by logging at warn level.
 
-The v0.2.x line has now closed bugs across four independent probe types:
-- Source-reading reflection (rounds 6–8): Bugs 27–34
+**Pattern confirmed.**  "No findings" from a self-reflection pass is a depletion signal *for the specific prompt shape used*, not for the runtime.  Three distinct shapes have surfaced 5 real bugs in three consecutive rounds (38, 40, 41, 42, 43).  Round-12+ candidate prompt shapes are listed in the reflection log; the loop has more reach than any single prompt finds.
+
+The agent's classification of all 47 `let _ = ` discards is preserved in the round-11 report as a future-maintenance reference — when someone modifies one of those sites and wonders if the discard is safe, the table answers it.
+
+The v0.2.x line has now closed bugs across five independent probe types:
+- Source-reading rounds 6–8 (standard prompt): Bugs 27–34
+- Source-reading round 10 (trait-method shape): Bugs 38, 40
+- Source-reading round 11 (silent-failure shape): **Bugs 41, 42, 43**
 - Fuzzing randomized inputs (137M): 0 findings
-- Stress InProcess: Bug 35
-- Stress namespaced: **Bugs 36, 37**
+- Stress (InProcess + namespaced): Bugs 35, 36, 37
 
-Tagged as `v0.2.6`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.6 — `aaos_0.2.6-1_amd64.deb`.
-
-### 33. v0.2.5 release — concurrency stress probe finds Bug 35
-*complete 2026-04-26*
-
-After round 9 (0 source-reading findings) and the fuzz pass (0 panics across 137M inputs) both depleted on v0.2.4, the next probe of different kind was concurrency stress.  A bash + socat + jq harness on the droplet opens 32 concurrent connections to the daemon and hammers `agent.spawn` + `agent.stop` cycles (16k per pass, no LLM round-trip — exercises the registry / capability / session-map shard locks, not the executor).
-
-First serious run found **Bug 35**: `InMemoryAuditLog::new()` is unbounded by design (its own doc-comment says so for test harnesses), and both Server constructors called the unbounded `::new()` directly.  Each spawn-stop cycle emits ~10 audit events × ~120 bytes = +1.2 KB/cycle.  Three consecutive 16k passes on the same daemon: RSS +20MB → +18MB → +20MB.  Linear leak.  Fixed by switching to `InMemoryAuditLog::with_cap(50_000)` (override via `AAOS_AUDIT_LOG_CAP`).  Verified bounded on v0.2.5.
-
-Pattern lifted: a primitive's `::new()` default that is *unsafe for production* (unbounded, blocking-on-default-timeout, no-rate-limit) becomes a production bug if callers use it directly.  The bug-shape that source-reading misses: a code comment honestly documenting "this is unbounded" reads like documentation, not a warning, when callers `use ::new()`.  Future v0.2.x convention: such constructors should be `#[cfg(test)]`-gated, OR the doc-comment must explicitly direct production callers to the bounded variant.  Queued as v0.2.6+ work to tighten `::new()` itself.
-
-The v0.2.x line has now closed bugs across three independent probes:
-- Source-reading reflection (rounds 6–8): Bugs 27–34
-- Fuzzing randomized inputs (137M): 0 findings, surface confirmed robust
-- Concurrency stress: Bug 35
-
-Each probe finds bugs the others can't.
-
-Tagged as `v0.2.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.5 — `aaos_0.2.5-1_amd64.deb`.
+Tagged as `v0.2.8`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.8 — `aaos_0.2.8-1_amd64.deb`.
 
 ---
 

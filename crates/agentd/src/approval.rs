@@ -173,14 +173,36 @@ impl ApprovalService for ApprovalQueue {
         match tokio::time::timeout(DEFAULT_APPROVAL_TIMEOUT, rx).await {
             Ok(Ok(result)) => {
                 if let Some(store) = &self.store {
-                    let _ = store.remove(id);
+                    if let Err(e) = store.remove(id) {
+                        // Bug 43 fix (v0.2.8): orphan rows in the SQLite
+                        // approvals table accumulate if remove fails
+                        // silently.  Log so operators can detect the
+                        // failing store and fix it before the table
+                        // grows unbounded.
+                        tracing::warn!(
+                            approval_id = %id,
+                            error = %e,
+                            "approval store remove failed; orphan row leaked"
+                        );
+                    }
                 }
                 Ok(result)
             }
             Ok(Err(_)) => {
                 self.pending.remove(&id);
                 if let Some(store) = &self.store {
-                    let _ = store.remove(id);
+                    if let Err(e) = store.remove(id) {
+                        // Bug 43 fix (v0.2.8): orphan rows in the SQLite
+                        // approvals table accumulate if remove fails
+                        // silently.  Log so operators can detect the
+                        // failing store and fix it before the table
+                        // grows unbounded.
+                        tracing::warn!(
+                            approval_id = %id,
+                            error = %e,
+                            "approval store remove failed; orphan row leaked"
+                        );
+                    }
                 }
                 Ok(ApprovalResult::Denied {
                     reason: "approval service unavailable".into(),
@@ -193,7 +215,18 @@ impl ApprovalService for ApprovalQueue {
                 // leaks across daemon lifetime.
                 self.pending.remove(&id);
                 if let Some(store) = &self.store {
-                    let _ = store.remove(id);
+                    if let Err(e) = store.remove(id) {
+                        // Bug 43 fix (v0.2.8): orphan rows in the SQLite
+                        // approvals table accumulate if remove fails
+                        // silently.  Log so operators can detect the
+                        // failing store and fix it before the table
+                        // grows unbounded.
+                        tracing::warn!(
+                            approval_id = %id,
+                            error = %e,
+                            "approval store remove failed; orphan row leaked"
+                        );
+                    }
                 }
                 tracing::warn!(
                     approval_id = %id,

@@ -401,7 +401,18 @@ impl Server {
                     if pending.len() == 1 { "y" } else { "ies" },
                 );
                 for p in pending {
-                    let _ = store.remove(p.id);
+                    // Bug 43 fix (v0.2.8): log on failure rather than
+                    // silently retry forever on next startup. Orphan
+                    // rows accumulate if the underlying SQLite issue
+                    // persists.
+                    if let Err(e) = store.remove(p.id) {
+                        tracing::warn!(
+                            approval_id = %p.id,
+                            error = %e,
+                            "failed to purge stale approval entry from prior daemon instance \
+                             (will be retried on next restart)"
+                        );
+                    }
                 }
             }
             Ok(_) => {}
