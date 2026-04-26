@@ -1,3 +1,25 @@
+aaos (0.2.6-1) trixie; urgency=medium
+
+  * Fix Bug 36 (high): mount("proc", ..., "proc", ...) failed
+    with EPERM inside the worker's unprivileged user namespace
+    (kernel requires CLONE_NEWPID for fresh procfs mounts; we
+    deliberately don't unshare PID).  Every agent.spawn with
+    lifecycle:persistent under namespaced returned "worker
+    exited with status 72 before sandboxed-ready".  Fixed by
+    bind-mounting host /proc instead.
+  * Fix Bug 37 (high): agent.stop on a namespaced+persistent
+    agent left the worker subprocess running — backend.stop()
+    was only called from tests, never from the daemon's stop
+    path.  20 spawns → 20 leaked workers.  New trait method
+    AgentBackend::stop_by_agent_id, NamespacedBackend override
+    SIGTERM+waitpid-reaps the worker by id; Server's
+    agent.stop handler calls it after registry.stop succeeds.
+  * Found by re-running the v0.2.5 stress harness with
+    AAOS_DEFAULT_BACKEND=namespaced.  Verified bounded across
+    1600 spawn-stop × 3 passes (pass-2 +2.6MB, pass-3 +0.6MB).
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 17:45:00 +0000
+
 aaos (0.2.5-1) trixie; urgency=medium
 
   * Fix Bug 35 (medium): InMemoryAuditLog used unbounded new() in

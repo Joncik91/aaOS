@@ -1623,7 +1623,25 @@ impl Server {
             Err(e) => return JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         };
         match self.registry.stop(agent_id).await {
-            Ok(()) => JsonRpcResponse::success(id, json!({"ok": true})),
+            Ok(()) => {
+                // Bug 37 (v0.2.6): also tell the backend to terminate
+                // any worker subprocess it spawned for this agent.
+                // Default impl is a no-op; NamespacedBackend overrides
+                // to SIGTERM+waitpid-reap the worker (otherwise every
+                // namespaced+persistent stop leaks the worker for the
+                // daemon's lifetime).  Errors here are logged but not
+                // propagated — registry.stop already succeeded so the
+                // operator-visible state is "stopped"; the worker
+                // subprocess cleanup is best-effort.
+                if let Err(e) = self.backend.stop_by_agent_id(agent_id).await {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        error = %e,
+                        "backend.stop_by_agent_id failed after registry.stop succeeded"
+                    );
+                }
+                JsonRpcResponse::success(id, json!({"ok": true}))
+            }
             Err(e) => JsonRpcResponse::error(id, INTERNAL_ERROR, e.to_string()),
         }
     }

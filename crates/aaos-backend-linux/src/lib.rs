@@ -775,32 +775,42 @@ mod launch_impl {
                 );
             }
 
-            // Step E2: mount procfs at /proc inside the new root so the
-            // worker's TOCTOU-safe file tools can readlinkat
+            // Step E2: bind-mount /proc from the host into the new root
+            // so the worker's TOCTOU-safe file tools can readlinkat
             // /proc/self/fd/<fd> to derive a kernel-pinned canonical
-            // path for an open fd (v0.2.0). Without /proc the readlink
-            // returns ENOENT and every file_read inside the namespaced
-            // backend fails. proc is its own filesystem type — the
-            // worker mounts a fresh instance limited to its own thread
-            // group, so no host-PID leakage beyond what /proc/<pid>
-            // would already expose to the worker's own UID.
+            // path for an open fd (v0.2.0).
+            //
+            // Bug 36 (v0.2.6): the v0.2.1 fix tried `mount("proc", ...,
+            // "proc", ...)` to get a fresh procfs instance.  The kernel
+            // refuses that inside an unprivileged user namespace that
+            // doesn't own a PID namespace (we deliberately don't unshare
+            // CLONE_NEWPID — the module doc explains why).  EPERM on
+            // every `agent.spawn` with `lifecycle: persistent` under
+            // namespaced.  Bind-mount instead: `/proc` from the host
+            // requires no special userns privilege, and `/proc/self`
+            // is a magic-link resolved per-task by the kernel — the
+            // worker sees its own /proc/<pid>/* regardless of which
+            // procfs instance is mounted.  fd canonicalization works
+            // identically.  Trade-off: the worker can also see other
+            // host PIDs, but Landlock denies any read outside the
+            // explicit allow-list (which doesn't include /proc/<other>),
+            // so the visibility is recoverable only as a side channel
+            // not a direct exfiltration.
             let proc_inside = new_root.join("proc");
             if let Err(e) = std::fs::create_dir_all(&proc_inside) {
                 log_step("E2-mkdir-proc", Some(&e.to_string()));
                 return 71;
             }
             match nix::mount::mount::<str, std::path::Path, str, str>(
-                Some("proc"),
+                Some("/proc"),
                 &proc_inside,
-                Some("proc"),
-                nix::mount::MsFlags::MS_NOSUID
-                    | nix::mount::MsFlags::MS_NODEV
-                    | nix::mount::MsFlags::MS_NOEXEC,
+                None,
+                nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
                 None,
             ) {
-                Ok(_) => log_step("E2-proc-mount", None),
+                Ok(_) => log_step("E2-proc-bind", None),
                 Err(e) => {
-                    log_step("E2-proc-mount", Some(&e.to_string()));
+                    log_step("E2-proc-bind", Some(&e.to_string()));
                     return 72;
                 }
             }
@@ -1211,6 +1221,46 @@ impl AgentBackend for NamespacedBackend {
                         let _ = waitpid(pid, None);
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    async fn stop_by_agent_id(&self, agent_id: aaos_core::AgentId) -> Result<()> {
+        // Bug 37 (v0.2.6): the daemon's `AgentRegistry::stop` ends the
+        // in-daemon persistent loop but never told the namespaced
+        // backend to terminate the worker subprocess.  Result: every
+        // spawn under namespaced+persistent leaked one worker process
+        // for the lifetime of the daemon.  This override reaches into
+        // the `sessions` map by id (the worker pid is stored on the
+        // BrokerSession), SIGTERM + waitpid the child, and removes the
+        // session entry.  Mirrors the logic of `stop(&handle)` for the
+        // case where the daemon never kept the handle around.
+        let Some(session) = self.sessions.remove(&agent_id) else {
+            return Ok(());
+        };
+        let _ = std::fs::remove_file(&session.socket_path);
+        #[cfg(target_os = "linux")]
+        {
+            let pid = nix::unistd::Pid::from_raw(session.expected_pid as i32);
+            let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+            use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+            let mut reaped = false;
+            for _ in 0..10 {
+                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::StillAlive) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Ok(_) | Err(nix::Error::ECHILD) => {
+                        reaped = true;
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+            if !reaped {
+                let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGKILL);
+                let _ = waitpid(pid, None);
             }
         }
         Ok(())

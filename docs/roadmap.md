@@ -417,6 +417,27 @@ If round 9 on v0.2.4 source produces 0 real fixable findings, the v0.2.x patch s
 
 Tagged as `v0.2.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.4 — `aaos_0.2.4-1_amd64.deb`.
 
+### 34. v0.2.6 release — namespaced-backend stress probe finds Bugs 36 + 37
+*complete 2026-04-26*
+
+After v0.2.5 closed Bug 35 (audit log unbounded under churn — InProcess stress probe), the natural next probe was the same harness with `AAOS_DEFAULT_BACKEND=namespaced` to exercise the broker `SessionMap` + worker fork/exec/landlock/seccomp setup.  Two real bugs surfaced:
+
+- **Bug 36 (high) — `mount("proc", ..., "proc", ...)` fails inside unprivileged user namespace.**  v0.2.1's procfs-mount fix (Step E2) needs CLONE_NEWPID, which the worker deliberately doesn't unshare.  EPERM on every `agent.spawn` with `lifecycle:persistent` under namespaced.  Fixed by bind-mounting host `/proc` instead of mounting fresh procfs.
+
+- **Bug 37 (high) — `agent.stop` leaked the worker subprocess.**  `AgentRegistry::stop` ended the in-daemon persistent loop but never told the namespaced backend to terminate the worker.  `backend.stop()` was only called from tests.  20 spawns → 20 leaked workers.  Fixed by adding `AgentBackend::stop_by_agent_id` (default no-op for backends without subprocesses; `NamespacedBackend` overrides to SIGTERM+waitpid the worker by id).  `Server::handle_agent_stop` calls it after `registry.stop` succeeds.
+
+Both bugs had been latent since v0.2.1 / v0.0.x respectively — every droplet QA since v0.0.2 had silently skipped them because the canonical fetch-HN goal goes through inline plan-executor subtasks (no `backend.launch`), never through the `agent.spawn`+namespaced+persistent path that production operators using JSON-RPC directly hit.
+
+**Pattern lifted.**  "Test the path the canonical goal actually uses" (the v0.1.x convention) misses bugs in surfaces the canonical doesn't touch.  Stress probes that exercise every JSON-RPC method catch this class.  Wiring `stress-droplet.sh` (under both InProcess and namespaced) into the release checklist alongside the canonical fetch-HN run would prevent the regression class going forward.
+
+The v0.2.x line has now closed bugs across four independent probe types:
+- Source-reading reflection (rounds 6–8): Bugs 27–34
+- Fuzzing randomized inputs (137M): 0 findings
+- Stress InProcess: Bug 35
+- Stress namespaced: **Bugs 36, 37**
+
+Tagged as `v0.2.6`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.6 — `aaos_0.2.6-1_amd64.deb`.
+
 ### 33. v0.2.5 release — concurrency stress probe finds Bug 35
 *complete 2026-04-26*
 

@@ -10,7 +10,27 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.5 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.6 `.deb` preinstalled).
+
+---
+
+## [0.2.6] — 2026-04-26
+
+The concurrency stress probe under InProcessBackend in v0.2.5 found Bug 35.  Re-running under `AAOS_DEFAULT_BACKEND=namespaced` exercised the broker SessionMap + worker fork/exec path that v0.2.5's run didn't touch.  Two more bugs surfaced — both real, both shipping.  Pattern: the namespaced backend's launch+stop path had been *exercised* by every droplet QA since v0.0.2, but only via the *Bootstrap-via-main.rs* entrypoint, never via the `agent.spawn` JSON-RPC path that production operators actually use.  Two probes (source + fuzz) plus the existing droplet QA had all missed bugs that surface only when an operator does `agent.spawn` with `lifecycle: persistent` under namespaced.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.6> — `aaos_0.2.6-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 36 (high — `mount("proc", ...)` fails inside unprivileged user namespace).**  v0.2.1 added Step E2 to the worker setup to mount a fresh procfs at `/proc` so the TOCTOU-safe `readlinkat("/proc/self/fd/<fd>")` could canonicalize an open fd.  The kernel refuses `mount("proc", ..., "proc", ...)` inside an unprivileged user namespace that doesn't own a PID namespace — and our worker deliberately doesn't unshare `CLONE_NEWPID` (the module doc explains why).  EPERM on every `agent.spawn` with `lifecycle: persistent` under namespaced.  The canonical fetch-HN goal didn't hit this because plan-executor subtasks spawn inline via `execute_agent_for_subtask` (not `backend.launch`); the bug was reachable only via direct JSON-RPC `agent.spawn` + persistent + namespaced — a narrow surface but a hard regression for anyone there.  **Fix**: bind-mount the host's `/proc` instead of mounting fresh procfs.  No special userns privilege required, and `/proc/self` is a magic-link resolved per-task by the kernel — the worker sees its own `/proc/<pid>/*` regardless of which procfs instance is mounted.  Trade-off: the worker can also see other host PIDs, but Landlock denies any read outside the explicit allow-list (which doesn't include `/proc/<other>`), so visibility is recoverable only as a side channel, not a direct exfiltration.  Commit `<TBD>`.
+
+- **Bug 37 (high — `agent.stop` leaks worker subprocess under namespaced).**  `AgentRegistry::stop` ends the in-daemon persistent loop but never told the namespaced backend to terminate the worker subprocess.  `backend.stop()` was only called from tests.  Result: every `agent.spawn` under namespaced+persistent leaked one `aaos-agent-worker` process for the lifetime of the daemon.  Stress harness measured this directly: 20 spawn-stop cycles → 20 leaked workers, all in state `S` (sleeping in their broker-read loop, never told to exit).  **Fix**: new `AgentBackend::stop_by_agent_id` trait method (default no-op for backends that don't fork subprocesses; `NamespacedBackend` overrides to look up its session by agent_id and SIGTERM+waitpid-reap the worker pid).  `Server::handle_agent_stop` calls it after `registry.stop` succeeds.  Verified bounded under 1600 spawn-stop cycles × 3 passes on the same daemon: pass-2 ΔRSS +2.6MB, pass-3 +0.6MB — memory stable, no zombies, no leaks.
+
+### Pattern reinforced
+
+Every droplet QA since v0.0.2 has run the canonical fetch-HN goal end-to-end.  None caught Bugs 36 or 37 because the canonical goal doesn't actually use the `agent.spawn` + namespaced + persistent path — plan-executor subtasks go through inline `execute_agent_for_subtask` (no `backend.launch`), and the daemon-CLI submit path is similar.  The convention "test the path the canonical goal actually uses" (lifted from the Phase F-b QA in 2026-04-19) doesn't help here: the canonical goal's path never touched the broken code.
+
+Stress probes that exercise *every* JSON-RPC method (spawn, stop, list) regardless of whether the canonical goal uses it surface bugs the canonical-goal QA can't.  Worth wiring stress into the release checklist alongside the canonical run.
 
 ---
 
@@ -497,7 +517,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/Joncik91/aaOS/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/Joncik91/aaOS/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Joncik91/aaOS/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Joncik91/aaOS/compare/v0.2.2...v0.2.3

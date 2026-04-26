@@ -63,6 +63,17 @@ pub trait AgentBackend: Send + Sync {
     /// `stop` returns `Ok(())`.
     async fn stop(&self, handle: &AgentLaunchHandle) -> Result<()>;
 
+    /// Stop an agent by id when the launch handle isn't available
+    /// (the daemon's `AgentRegistry` doesn't carry handles).  Default
+    /// impl is a no-op for backends that have nothing process-level
+    /// to clean up (InProcessBackend's persistent loop is reaped via
+    /// the in-daemon task handle in `AgentRegistry::stop`); the
+    /// `NamespacedBackend` override looks up its session by id and
+    /// SIGTERM+waitpid-reaps the worker subprocess.  Bug 37 (v0.2.6).
+    async fn stop_by_agent_id(&self, _agent_id: AgentId) -> Result<()> {
+        Ok(())
+    }
+
     /// Snapshot the agent's health.
     ///
     /// Cheap to call; no blocking I/O. Intended for supervisors that
