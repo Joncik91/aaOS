@@ -80,7 +80,7 @@ client:
   servers:
     - name: filesystem
       transport: http
-      url: http://192.168.0.178:3002
+      url: http://mcp-fs.example.internal:3002
     - name: git
       transport: stdio
       command: ["/usr/bin/mcp-git"]

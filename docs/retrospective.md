@@ -166,7 +166,7 @@ A `SqliteMemoryStore` was added later (commit `b8b7af4`, 2026-04-13 21:11) for p
 - **"The only thing that matters is to see visually if it works as designed."** The human clarified that engineering correctness was delegated to the model + peer review; the human's validation criterion was observing the system work end-to-end.
 - **Cumulative E2E testing.** The human insisted on a Phase A + B + C1 test, not just isolated C1 — same pattern as Phase B.
 
-Phase C added **multi-model peer review of design specs** as a first-class step. Routing architecture decisions through Copilot produced concrete recommendations (skip LanceDB, use Ollama) that the primary Claude session would not have generated alone. Cost per review was described at the time as "~$0.02" — see [`reflection/cost-bookkeeping.md`](reflection/cost-bookkeeping.md) about per-run cost estimates.
+Phase C added **multi-model peer review of design specs** as a first-class step. Routing architecture decisions through Copilot produced concrete recommendations (skip LanceDB, use Ollama) that the primary Claude session would not have generated alone. Cost per review was recorded at the time as "~$0.02" — token-math estimate, not dashboard-verified. (Per-run cost tracking was discontinued 2026-04-25; rough cumulative across all runs through that date was under $1.)
 
 ---
 
@@ -188,7 +188,7 @@ Three OS-level features landed this phase:
 
 Plus safety guardrails: agent count limit (100), spawn depth limit (5), `StdoutAuditLog` for observability via `docker logs -f`.
 
-First successful run: goal "fetch HN and summarize the top 5 stories" → Bootstrap Agent spawned a Fetcher agent (Haiku) that called `web_fetch`, spawned a Writer agent (Haiku) that called `file_write`, and produced `/output/summary.txt`. The capability system worked as designed — the Bootstrap Agent couldn't read `/output/*` even though its child wrote there. Wall time ~75 seconds. Cost was recorded at the time as ~$0.03 against Anthropic, though per-run cost figures from this period are token-math estimates — the authoritative cumulative figures are in [`reflection/cost-bookkeeping.md`](reflection/cost-bookkeeping.md).
+First successful run: goal "fetch HN and summarize the top 5 stories" → Bootstrap Agent spawned a Fetcher agent (Haiku) that called `web_fetch`, spawned a Writer agent (Haiku) that called `file_write`, and produced `/output/summary.txt`. The capability system worked as designed — the Bootstrap Agent couldn't read `/output/*` even though its child wrote there. Wall time ~75 seconds. Cost was recorded at the time as ~$0.03 against Anthropic — token-math estimate, not dashboard-verified.
 
 ### What the Model Got Wrong
 

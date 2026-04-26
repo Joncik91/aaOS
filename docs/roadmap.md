@@ -356,7 +356,7 @@ The bugs:
 
 Plus two cosmetic fixes (release-mode unused-imports warning for `CapabilitySnapshot`, duplicate `wire_revocation_notifier` install warning on every daemon restart).  Commits `c8737b0`, `8f29ab7`.
 
-Verification on droplet `161.35.223.61`: canonical fetch-HN goal completes in 12.6s with a real `/data/final-test.md` comparison file; symlink read attempt rejected with `O_NOFOLLOW (capability TOCTOU guard)`; approval-DB write-restart-clear cycle exercises the persistence path; `wire_revocation_notifier` fires cleanly with no warnings.
+Verification on droplet a fresh DigitalOcean Debian 13 droplet: canonical fetch-HN goal completes in 12.6s with a real `/data/final-test.md` comparison file; symlink read attempt rejected with `O_NOFOLLOW (capability TOCTOU guard)`; approval-DB write-restart-clear cycle exercises the persistence path; `wire_revocation_notifier` fires cleanly with no warnings.
 
 Tagged as `v0.2.1`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.1 — `aaos_0.2.1-1_amd64.deb`.
 
