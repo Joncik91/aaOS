@@ -10,7 +10,31 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.0 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.1 `.deb` preinstalled).
+
+---
+
+## [0.2.1] — 2026-04-26
+
+Same-day patch closing five regressions surfaced by droplet QA of the v0.2.0 `.deb`.  v0.2.0's TOCTOU fix was correct on the host (lib tests passed) but its `/proc/self/fd/<fd>` canonicalization path was broken in three orthogonal ways once the namespaced backend was active — every `file_read` inside a worker failed, which was caught by the v0.2.0 canonical fetch-HN run on the droplet before the v0.2.0 tag was pushed.  Documented as the v0.2.0 → v0.2.1 forward-pointer per the "Known issues (fixed in X+1)" pattern.
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.1> — `aaos_0.2.1-1_amd64.deb`.
+
+### Fixed
+
+- **Worker had no `/proc` mounted.**  The worker rootfs is a tmpfs created via pivot_root with bind-mounts for the workspace, scratch tmpfs, shared libs, broker socket, and worker binary — `/proc` was never mounted inside.  v0.2.0's TOCTOU fix needs `/proc/self/fd/<fd>` to canonicalize an open fd; without it the readlinkat returns ENOENT and every `file_read` inside the namespaced backend fails.  Added Step E2 in `aaos-backend-linux/src/lib.rs`'s worker setup: `mount("proc", "/proc", "proc", MS_NOSUID|MS_NODEV|MS_NOEXEC)`.  Procfs mounted by the worker is its own instance, scoped to the worker's thread group, so this does not leak more than `/proc/<pid>/*` would already expose to the worker's own UID.  Commit `278aa52`.
+
+- **`std::fs::read_link` calls bare `readlink`, blocked by seccomp.**  Worker seccomp policy at `aaos-backend-linux/src/seccomp_compile.rs:144` permits `readlinkat` but not the older `readlink` syscall.  Rust's `std::fs::read_link` on Linux x86_64 glibc resolves to the bare syscall, returning EPERM under seccomp.  Switched `aaos-tools::path_safe::canonical_path_for_fd` to `nix::fcntl::readlinkat(None, …)` so the call goes through the syscall the worker is permitted to make.  Commit `8d63860`.
+
+- **Landlock policy missing `/proc` read-only rule.**  Even with `/proc` mounted and `readlinkat` allowed, the worker's Landlock ruleset has to permit reading inside `/proc` for the readlinkat to succeed.  Added a `PathBeneath(/proc, READ_ONLY)` rule in `aaos-backend-linux/src/landlock_compile.rs::build_ruleset`.  Read access is sufficient — we only call `readlinkat`.  Commit `cd8bc28`.
+
+- **Release-mode unused-imports warning for `CapabilitySnapshot`.**  The type is used inside a `#[cfg(any(test, debug_assertions))]` method, so release builds saw the import as unused — surfaced when the v0.2.0 `.deb` build pulled rustc through release mode.  Cfg-gated the import in `crates/aaos-core/src/capability_registry.rs`.  Commit `c8737b0`.
+
+- **Cosmetic warning on every restart: `wire_revocation_notifier: notifier already installed`.**  The LLM-aware constructors call `Server::new()` first and then rebuild `build_in_process_backend` with the LLM client — `wire_revocation_notifier` fired twice on the same registry.  The OnceLock made the second install a no-op, but the warning was noise on every restart.  Silenced because the first install already wired the SessionMapNotifier from the same SessionMap; the registry is correctly attached either way.  Commit `8f29ab7`.
+
+### Verification
+
+- v0.2.1 droplet QA passed: canonical fetch-HN goal completes in 12.6s with a real `/data/final-test.md` comparison file; symlink read attempt rejected with `O_NOFOLLOW (capability TOCTOU guard)`; approval-DB write-restart-clear cycle exercises the persistence path; `wire_revocation_notifier` fires cleanly with no warnings.
 
 ---
 
@@ -35,6 +59,10 @@ Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.0> — `aaos_0.2.0-
 - **`clone3` seccomp argument filtering (Bug 19)** — moved from `[Unreleased]` to `docs/ideas.md` as STRUCTURALLY INFEASIBLE.  `clone3(struct clone_args *args)` takes a *pointer* to a userspace struct.  seccomp-BPF programs run before the syscall executes and have access only to the syscall register values, not the memory they point to.  The kernel deliberately does not copy `clone_args` into the BPF program — this is documented in `Documentation/userspace-api/seccomp_filter.rst`.  An attacker who can call `clone3` from a confined worker could place arbitrary flags in the struct and we have no syscall-filter-level mechanism to reject them.  Reconsider signals: (a) Linux gains a seccomp variant that exposes `clone3` flags to BPF, or (b) we move worker confinement onto a substrate that can intercept argument memory (Landlock LSM extensions, eBPF LSM hooks, microVM hypervisor traps).  Until then, the in-process seccomp policy correctly allows `clone3` unconditionally — denying it would break tokio's worker-thread spawn — and the namespace-creation defense is layered at the unprivileged-user-ns boundary instead.
 
 - **Approval-queue full reload-and-rearm.**  v0.2.0's persistence layer flushes pending approvals to disk and surfaces them on restart, but the persistent-agent state machine doesn't yet expose a hook for re-attaching a reload-time `oneshot::Sender` to the agent that originally issued the approval request.  v0.2.0 logs the count and clears the entries; the agents the entries belonged to are gone after the restart anyway.  Reconsider when persistent-agent migration shipping makes a "resume across restart" story load-bearing.
+
+### Known issues (fixed in 0.2.1)
+
+- The TOCTOU fix's `/proc/self/fd/<fd>` canonicalization path was broken inside the namespaced backend in three orthogonal ways: worker rootfs had no `/proc` mounted, `std::fs::read_link` calls bare `readlink` which seccomp denies, and Landlock had no rule permitting `/proc` reads.  Every `file_read` inside a worker failed.  Fixed in v0.2.1 — see that section above.
 
 ---
 
@@ -383,7 +411,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Joncik91/aaOS/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Joncik91/aaOS/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/Joncik91/aaOS/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/Joncik91/aaOS/compare/v0.1.5...v0.1.6

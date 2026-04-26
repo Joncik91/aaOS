@@ -1,3 +1,29 @@
+aaos (0.2.1-1) trixie; urgency=medium
+
+  * Same-day patch closing five regressions surfaced by droplet
+    QA of the v0.2.0 .deb.  v0.2.0's TOCTOU fix was broken inside
+    the namespaced backend in three orthogonal ways — every
+    file_read in a worker failed.
+  * Fix worker rootfs missing /proc mount: added Step E2 in the
+    worker setup to mount procfs at /proc with MS_NOSUID|MS_NODEV
+    |MS_NOEXEC.  Without /proc the readlinkat for fd canonical-
+    ization returned ENOENT.
+  * Fix std::fs::read_link calling bare `readlink` syscall (denied
+    by worker seccomp).  Switched path_safe to nix::fcntl::
+    readlinkat which goes through the allowed `readlinkat` syscall.
+  * Fix Landlock policy missing /proc read-only rule.  Added a
+    PathBeneath(/proc, READ_ONLY) rule so the readlinkat is
+    permitted by the worker's Landlock ruleset.
+  * Fix release-mode unused-imports warning for CapabilitySnapshot
+    (cfg-gated import).
+  * Silence cosmetic wire_revocation_notifier duplicate-install
+    warning that fired on every daemon restart.
+  * Verified end-to-end: canonical fetch-HN goal in 12.6s,
+    symlink read rejected with O_NOFOLLOW guard, approval-DB
+    write-restart cycle works.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 13:00:00 +0000
+
 aaos (0.2.0-1) trixie; urgency=medium
 
   * Cleared-queue release.  Closes the v0.1.x carryover queue:

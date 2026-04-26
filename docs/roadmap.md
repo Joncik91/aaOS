@@ -341,6 +341,25 @@ Five rounds of v0.1.x self-reflection had exhausted the patch-level bug surface.
 
 Tagged as `v0.2.0`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.0 — `aaos_0.2.0-1_amd64.deb`.
 
+### 29. v0.2.1 release — droplet-QA regressions in v0.2.0's TOCTOU path
+*complete 2026-04-26*
+
+Same-day patch.  v0.2.0's lib-test suite passed (135/135) and the release commit was clean, but droplet QA before tag-push exposed that the TOCTOU fix's `/proc/self/fd/<fd>` canonicalization path was broken inside the namespaced backend in three orthogonal ways.  Every worker-side `file_read` failed; without QA this would have shipped as a hard regression for any user with `AAOS_DEFAULT_BACKEND=namespaced` (the default on a 0.0.2+ install where the postinst probe detects Landlock + unprivileged userns).
+
+The bugs:
+
+- **Worker rootfs had no `/proc` mount.**  Pivot_root onto a tmpfs with bind-mounts for workspace/scratch/libs/socket/binary, but procfs was never mounted inside.  `readlinkat("/proc/self/fd/N")` returned ENOENT.  Added `mount("proc", "/proc", "proc", MS_NOSUID|MS_NODEV|MS_NOEXEC)` as Step E2 in the worker setup.  Commit `278aa52`.
+
+- **`std::fs::read_link` calls bare `readlink`, not `readlinkat`.**  Worker seccomp permits `readlinkat` but not the older `readlink` syscall.  Rust's stdlib resolves `read_link` to the bare syscall on Linux x86_64 glibc, returning EPERM under seccomp.  Switched `path_safe::canonical_path_for_fd` to `nix::fcntl::readlinkat(None, …)` so the call goes through the syscall the worker is permitted to make.  Commit `8d63860`.
+
+- **Landlock policy missing `/proc` read-only rule.**  Even with `/proc` mounted and `readlinkat` allowed, Landlock has to permit reading inside `/proc` for the readlinkat to succeed.  Added `PathBeneath(/proc, READ_ONLY)` in `landlock_compile.rs::build_ruleset`.  Commit `cd8bc28`.
+
+Plus two cosmetic fixes (release-mode unused-imports warning for `CapabilitySnapshot`, duplicate `wire_revocation_notifier` install warning on every daemon restart).  Commits `c8737b0`, `8f29ab7`.
+
+Verification on droplet `161.35.223.61`: canonical fetch-HN goal completes in 12.6s with a real `/data/final-test.md` comparison file; symlink read attempt rejected with `O_NOFOLLOW (capability TOCTOU guard)`; approval-DB write-restart-clear cycle exercises the persistence path; `wire_revocation_notifier` fires cleanly with no warnings.
+
+Tagged as `v0.2.1`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.1 — `aaos_0.2.1-1_amd64.deb`.
+
 ---
 
 ## Active milestones
