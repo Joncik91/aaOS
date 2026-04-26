@@ -168,12 +168,21 @@ The monolithic "cryptographically unforgeable tokens" item from earlier rounds c
 - **Why deferred:** the v0.1.x architecture has no agent-controlled deserialization path that could exercise the spoofing attack.  Surfaced by the v0.1.5 self-reflection run as Finding 2; triaged as theoretical-today.
 - **Signal to reconsider:** (a) a wire protocol is added between agent and router (gRPC, raw Unix-socket JSON, or anything else where an agent serializes its own `McpMessage`), OR (b) MCP-over-HTTP gains a routing extension that lets external MCP clients delegate inter-agent messages, OR (c) external plugins start emitting `McpMessage` events (today only daemon code does).
 
-## Tighten `clone3` seccomp filter to `CLONE_THREAD` only
+## Tighten `clone3` seccomp filter — STRUCTURALLY INFEASIBLE
 
-- **Idea:** the worker seccomp policy at `crates/aaos-backend-linux/src/seccomp_compile.rs` currently allows `clone3` and `clone` unconditionally (the source comment self-acknowledges the simplification).  The intended tightening is to filter the flags argument so only `CLONE_THREAD` (creating a new thread inside the existing process) is permitted, denying `CLONE_NEWPID` / `CLONE_NEWUSER` / etc.
-- **Where seen:** standard hardening for sandbox seccomp profiles — chromium's baseline policy filters clone-flags this way, as does Firejail's default profile.  `seccompiler` (the crate aaOS uses) supports argument-filtered rules; the simplification was for v0.1.x velocity, not because the API was missing.
-- **Why deferred:** flagged by the v0.1.2 self-reflection run as Bug 19, triaged as theoretical-not-exploitable.  Defense in depth still holds: the worker is in a user namespace with `PR_SET_NO_NEW_PRIVS`, and the seccomp kill-list denies `execve` / `execveat` (so a child created via `clone3` can't exec anything).  Worker-to-host process injection requires breaking out of the user namespace AND finding a syscall path that isn't already kill-listed — `clone3` alone doesn't get an attacker either of those.
-- **Signal to reconsider:** (a) a finding that demonstrates an actual escape via the unrestricted `clone3` path (today's threat model says it can't happen), OR (b) a third-party security audit that names this specifically as a hardening recommendation, OR (c) the M1 Debian-derivative work begins and the seccomp profile becomes operator-visible (at which point tightening is cosmetic-but-correct).
+- **Idea:** the worker seccomp policy at `crates/aaos-backend-linux/src/seccomp_compile.rs` allows `clone3` unconditionally.  The original idea was to filter the flags argument so only `CLONE_THREAD` (creating a new thread inside the existing process) is permitted, denying `CLONE_NEWPID` / `CLONE_NEWUSER` / etc.
+- **Where seen:** chromium's baseline policy and Firejail's default profile filter clone-FLAGS this way — but they filter the **legacy `clone()` syscall**, where flags is the first register argument.
+- **Why infeasible (not deferred — *can't be done*):** `clone3()` takes a single argument: a pointer to a `struct clone_args` in userspace memory.  The flags field lives at offset 0 of that struct.  **Seccomp-BPF can only inspect register values, not pointed-to memory.**  No SeccompCondition can read across a userspace pointer.  This is a kernel/BPF design limitation, not a `seccompiler` limitation.  Investigated 2026-04-26 during v0.2.0 scoping.
+- **Realistic mitigations that DO hold:**
+  1. The seccomp kill-list denies `execve` and `execveat`, so a `clone3`-spawned child can't exec anything.
+  2. The user namespace prevents the child from escalating uid.
+  3. `PR_SET_NO_NEW_PRIVS` blocks setuid binaries.
+  4. Landlock confines filesystem reach.
+- **Realistic alternatives if a real signal fires:**
+  - (a) Filter the legacy `clone()` syscall (where flags ARE in a register).  Mostly cosmetic on modern glibc — `pthread_create` calls `clone3` first and only falls back to `clone` on `ENOSYS`, so a clone-only filter rarely fires.
+  - (b) Deny `clone3` entirely and rely on glibc's `clone()` fallback.  High risk: tokio's worker-thread spawn breaks if glibc doesn't fall back cleanly.
+  - (c) Switch the worker to a runtime that doesn't use `clone3` (musl-based, custom syscall wrapper).  Significant rewrite for marginal gain.
+- **Signal to reconsider:** a concrete demonstration that the unrestricted `clone3` is a real escape vector under current confinement.  Today's threat model says it isn't (defense-in-depth above).  If a third-party audit recommends a different mitigation, evaluate (a)/(b)/(c) against the audit's threat model.
 
 ## Deterministic scaffold roles (runtime-side execution for mechanical work) — **SIGNAL FIRED** (2026-04-17)
 
