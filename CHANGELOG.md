@@ -10,7 +10,27 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.1 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.2 `.deb` preinstalled).
+
+---
+
+## [0.2.2] — 2026-04-26
+
+Round-6 self-reflection on v0.2.1 source produced three findings, all real, all shipped — the highest hit rate since round 1.  The v0.2.x line just opened design ground (push-revocation, approval persistence, the path_safe TOCTOU subsystem) so the reachable bug surface temporarily widened.  Two of the three were flagged as "deferred follow-up" by the code's own comments — surfaced pattern: don't ship deferred TODOs in production code, file in `docs/ideas.md` with a reconsider signal instead.  Reflection log: [`docs/reflection/2026-04-26-v0.2.1-round-6.md`](docs/reflection/2026-04-26-v0.2.1-round-6.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.2> — `aaos_0.2.2-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 28 (high — `web_fetch` redirect host bypass).**  `WebFetchTool` constructed its `reqwest::Client` with `Policy::limited(5)` — the capability host check ran exactly once at the top of `invoke()` and reqwest then followed up to five HTTP redirects without re-checking the destination host against the agent's `NetworkAccess` grant.  An attacker who controlled a server in the agent's allowed host list (or compromised one) could return a 302 redirect to an attacker-controlled host; the response body returned silently as the tool result.  **Fix**: build the client with `Policy::none()`, hoist the capability check into a `check_url_permitted(ctx, url)` helper, and follow redirects manually inside `invoke` with a per-hop check.  Test `redirect_to_unpermitted_host_denied` spawns a mock 302 server and asserts `CapabilityDenied` for the redirect target.  Commit `eca9ddb`.
+
+- **Bug 29 (medium — `file_list` residual TOCTOU on directory listing).**  v0.2.1's `file_list` opened the requested path with `O_PATH | O_NOFOLLOW` and resolved a kernel-pinned canonical for the capability check, then *immediately dropped the fd* and re-opened by canonical-path-string for the actual `metadata` and `read_dir` calls.  Between the fd drop and the second open, an attacker with write access to any path component could swap the directory for a symlink to a forbidden tree (e.g. `/etc`).  The capability check passed against the original inode but the listing was performed against the swapped target.  Code's own comment had flagged this as deferred follow-up — round 6 correctly classified it as a real bug.  **Fix**: new `AccessMode::ReadDir` in `path_safe` (`O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`); `file_list` rewrite tries `ReadDir` first and falls back to `Read` for single files; either way the fd survives and powers the actual I/O via `fstat` for files, `nix::dir::Dir::from_fd` for directories.  Side effect: directory entries report `size_bytes: 0` because per-entry `fstatat` by name would re-introduce TOCTOU.  Commit `6b24cf7`.
+
+- **Bug 30 (high — non-atomic session-store rewrite can permanently destroy history).**  `persistent_agent_loop`'s summarization path called `session_store.clear(&agent_id)` (truncating the JSONL file) followed by `session_store.append(&agent_id, &history)` (rewriting the summarized history).  The two were not atomic — and the code's own comment again flagged it as deferred follow-up.  A daemon crash, partial write, or filesystem-full between the clear and the append left an empty on-disk file; the in-memory history was still intact, but a daemon restart loaded the empty file and the agent's session history was permanently destroyed.  The 60s throttle on `SessionStoreError` audit events meant operators saw at most one warning per minute even on persistent failures.  **Fix**: new `SessionStore::replace` trait method with a default `clear+append` fallback for in-memory stores; `JsonlSessionStore` overrides with the standard write-temp + fsync + `rename(2)` pattern (POSIX guarantees rename atomicity on the same filesystem).  `persistent_agent_loop` now calls `replace` once.  Test `jsonl_replace_is_atomic_swap` seeds 3 messages, replaces with 2, asserts no `.tmp` file leaks.  Commit `4bdfb5b`.
+
+### Pattern lifted
+
+- **Deferred-follow-up code comments are a finding-generator.**  Bugs 29 and 30 both came from inline `// NOTE: this is deferred follow-up` comments in v0.2.x code.  The reflection loop reads those comments and (correctly) calls them as bugs.  Convention going forward: if it's deferred-by-design, file in `docs/ideas.md` with a reconsider signal and DELETE the code comment.  If it's a known issue we couldn't fix yet, file in `CHANGELOG.md` "Known issues (fixed in X+1)" and tag the code comment with a `// SAFETY: see ideas.md#...` style reference.  No third option — comments saying "we should fix this" without an `ideas.md` entry are noise that the reflection loop will turn into work.
 
 ---
 
@@ -411,7 +431,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/Joncik91/aaOS/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Joncik91/aaOS/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Joncik91/aaOS/compare/v0.1.7...v0.2.0
 [0.1.7]: https://github.com/Joncik91/aaOS/compare/v0.1.6...v0.1.7

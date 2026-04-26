@@ -1,3 +1,31 @@
+aaos (0.2.2-1) trixie; urgency=medium
+
+  * Round-6 self-reflection on v0.2.1 source produced three
+    findings, all real, all shipped — highest hit rate since
+    round 1.
+  * Fix Bug 28 (high): web_fetch followed HTTP redirects with no
+    per-hop host check.  An attacker on a permitted host could
+    302-redirect to an attacker-controlled host; the response
+    silently exfiltrated.  Fixed by switching to Policy::none()
+    and following redirects manually with re-check.
+  * Fix Bug 29 (medium): file_list opened the requested path
+    with O_PATH|O_NOFOLLOW for capability check, then dropped
+    the fd and re-opened by path string for the listing —
+    residual TOCTOU window flagged as deferred-follow-up by the
+    code's own comment.  Fixed by performing fstat + Dir::from_fd
+    listing through the same fd; new AccessMode::ReadDir.
+  * Fix Bug 30 (high): persistent_agent_loop summarization called
+    clear() then append() non-atomically — a crash or partial
+    write between the two could permanently destroy session
+    history.  Fixed by adding SessionStore::replace as a trait
+    primitive with write-temp + fsync + rename(2) implementation
+    on JsonlSessionStore.
+  * Pattern lifted: don't ship "deferred follow-up" comments in
+    production code; file in ideas.md with a reconsider signal
+    instead.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 14:30:00 +0000
+
 aaos (0.2.1-1) trixie; urgency=medium
 
   * Same-day patch closing five regressions surfaced by droplet

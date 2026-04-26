@@ -360,6 +360,25 @@ Verification on droplet `161.35.223.61`: canonical fetch-HN goal completes in 12
 
 Tagged as `v0.2.1`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.1 — `aaos_0.2.1-1_amd64.deb`.
 
+### 30. v0.2.2 release — round 6 self-reflection on v0.2.1 (3/3 real findings)
+*complete 2026-04-26*
+
+Sixth iteration of the self-reflection-then-fix loop, first run against the v0.2.x line.  v0.2.1 source on the same DigitalOcean droplet (4 vCPU / 8 GiB) used for round 5; `AAOS_DEFAULT_BACKEND` left unset so the source-reading agent operated under the legacy InProcessBackend (matches all prior rounds — namespaced workers can't see `/src` since the worker rootfs is a tmpfs without bind-mounts for arbitrary host paths).
+
+The v0.1.x → v0.2.x transition reopened design ground (push-revocation, approval persistence, the path_safe TOCTOU subsystem) so the reachable bug surface widened back out for the first time in months.  v0.1.x rounds had been picking through patch-level ground at a noise floor that climbed steadily; round 6 produced three real findings out of three — the highest hit rate since round 1.
+
+The findings:
+
+- **Bug 28 (high) — `web_fetch` redirect host bypass.**  `Policy::limited(5)` followed redirects with no per-hop validation against the agent's `NetworkAccess` grant.  An attacker on a permitted host could 302 to an attacker-controlled host; the response silently exfiltrated as the tool result.  Fixed by `Policy::none()` + manual redirect-following with `check_url_permitted` re-check on every hop.  Commit `eca9ddb`.
+
+- **Bug 29 (medium) — `file_list` residual TOCTOU.**  v0.2.1 opened the path with `O_PATH | O_NOFOLLOW` for capability check, then dropped the fd and re-opened by canonical-path-string for the metadata + listing.  Race window between fd drop and second open let a directory-rename / symlink-swap subvert the listing.  Code's own comment had flagged this as deferred follow-up.  Fixed by performing the listing through the pinned fd: new `AccessMode::ReadDir` + `nix::dir::Dir::from_fd`.  Commit `6b24cf7`.
+
+- **Bug 30 (high) — non-atomic session-store rewrite.**  `persistent_agent_loop` summarization called `session_store.clear()` then `append()` non-atomically.  A daemon crash or partial write between the two left an empty file on disk; in-memory history was intact but a daemon restart loaded the empty file and the agent's session history was permanently destroyed.  Code's own comment flagged this as deferred follow-up.  Fixed by adding `SessionStore::replace` as a trait primitive, with `JsonlSessionStore` overriding via write-temp + fsync + `rename(2)`.  Commit `4bdfb5b`.
+
+**Pattern lifted.**  Two of the three findings came from inline `// NOTE: this is deferred follow-up` comments in v0.2.x code.  The reflection loop reads those comments and (correctly) calls them as bugs.  Convention going forward: deferred-by-design goes in `docs/ideas.md` with a reconsider signal and the code comment is DELETED; known-issues-pending-fix go in `CHANGELOG.md` with a forward-pointer.  In-code `// TODO: deferred` without an external paper trail is noise that the next round will turn into work.
+
+Tagged as `v0.2.2`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.2 — `aaos_0.2.2-1_amd64.deb`.
+
 ---
 
 ## Active milestones
