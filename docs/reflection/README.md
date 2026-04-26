@@ -4,7 +4,7 @@ A chronological record of aaOS reading its own code, finding bugs, proposing fea
 
 Each run or prep entry lives in its own file, dated `YYYY-MM-DD-<slug>.md`. New entries are added as new files, not appended to a monolith. For the build history that preceded this log, see [`../retrospective.md`](../retrospective.md). For cross-cutting lessons, see [`../patterns.md`](../patterns.md).
 
-On cost figures: see [`cost-bookkeeping.md`](cost-bookkeeping.md) for the authoritative framing (dashboard > token math) and the running cumulative total.
+Cost tracking was discontinued from round 5 onwards (2026-04-25); recent entries omit cost or mark it `TBD`.  The historical practice and the rationale for stopping live in [`cost-bookkeeping.md`](cost-bookkeeping.md).  Wall-clock per run is still recorded — it's the operational signal that matters for solo-maintainer iteration.
 
 ## Entries
 
@@ -64,7 +64,7 @@ Chronological, oldest first:
 
 ## Supporting
 
-- [`cost-bookkeeping.md`](cost-bookkeeping.md) — dashboard vs token-math framing for all cost figures quoted in run entries.
+- [`cost-bookkeeping.md`](cost-bookkeeping.md) — historical (discontinued 2026-04-25): how per-run costs were estimated, why the practice was dropped, and the last-known cumulative.
 
 ## How to add a new entry
 
