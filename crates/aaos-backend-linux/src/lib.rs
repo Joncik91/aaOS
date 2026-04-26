@@ -775,6 +775,36 @@ mod launch_impl {
                 );
             }
 
+            // Step E2: mount procfs at /proc inside the new root so the
+            // worker's TOCTOU-safe file tools can readlinkat
+            // /proc/self/fd/<fd> to derive a kernel-pinned canonical
+            // path for an open fd (v0.2.0). Without /proc the readlink
+            // returns ENOENT and every file_read inside the namespaced
+            // backend fails. proc is its own filesystem type — the
+            // worker mounts a fresh instance limited to its own thread
+            // group, so no host-PID leakage beyond what /proc/<pid>
+            // would already expose to the worker's own UID.
+            let proc_inside = new_root.join("proc");
+            if let Err(e) = std::fs::create_dir_all(&proc_inside) {
+                log_step("E2-mkdir-proc", Some(&e.to_string()));
+                return 71;
+            }
+            match nix::mount::mount::<str, std::path::Path, str, str>(
+                Some("proc"),
+                &proc_inside,
+                Some("proc"),
+                nix::mount::MsFlags::MS_NOSUID
+                    | nix::mount::MsFlags::MS_NODEV
+                    | nix::mount::MsFlags::MS_NOEXEC,
+                None,
+            ) {
+                Ok(_) => log_step("E2-proc-mount", None),
+                Err(e) => {
+                    log_step("E2-proc-mount", Some(&e.to_string()));
+                    return 72;
+                }
+            }
+
             // Step F: bind-mount broker socket's parent dir so the worker
             // can `connect()` to the Unix socket inside the new root.
             if let Some(socket_parent) = policy_clone.broker_socket.parent() {
