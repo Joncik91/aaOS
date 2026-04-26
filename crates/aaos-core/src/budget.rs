@@ -107,11 +107,32 @@ impl BudgetTracker {
             return;
         }
         let now = Self::now_secs();
-        let last = self.last_reset_check.load(Ordering::Acquire);
-        if now.saturating_sub(last) < 1 {
-            return;
+        // Bug 31 (v0.2.3): the reset-claim used to be a `load` followed
+        // by an unconditional `store`, so two threads near a period
+        // boundary could both pass the rate-limit gate and both go on
+        // to call `reset()`.  If thread A finished its track() between
+        // the two resets, B's reset would clobber A's freshly-added
+        // tokens back to zero — silent over-spend.  Use a CAS loop on
+        // `last_reset_check` so only one thread claims the reset; the
+        // others observe the updated `last_reset_check` and skip.
+        loop {
+            let last = self.last_reset_check.load(Ordering::Acquire);
+            if now.saturating_sub(last) < 1 {
+                return;
+            }
+            match self.last_reset_check.compare_exchange_weak(
+                last,
+                now,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(_) => {
+                    // Another thread won the claim. Re-read and decide.
+                    continue;
+                }
+            }
         }
-        self.last_reset_check.store(now, Ordering::Release);
         let start = self.period_start.load(Ordering::Acquire);
         if now.saturating_sub(start) >= self.config.reset_period_seconds {
             self.reset();
@@ -199,6 +220,35 @@ mod tests {
         assert_eq!(successes, 10);
         assert_eq!(t.used(), 1000);
         assert!(t.track(1).is_err());
+    }
+
+    #[test]
+    fn maybe_reset_races_have_at_most_one_winner() {
+        // Bug 31 (v0.2.3): two threads near a period boundary used to
+        // both pass the reset gate and both call reset(), letting one
+        // thread's reset clobber another's freshly-tracked tokens.
+        // The fixed maybe_reset uses a CAS on last_reset_check so only
+        // one thread claims the reset window per second.  Hammer it
+        // with 16 threads and assert that the cumulative `used`
+        // matches the cumulative `track` calls (i.e. no track() result
+        // was silently lost to a clobbering reset).
+        let t = std::sync::Arc::new(BudgetTracker::new(BudgetConfig {
+            max_tokens: 1_000_000,
+            reset_period_seconds: 86400, // never auto-resets during the test
+        }));
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let tt = t.clone();
+            handles.push(std::thread::spawn(move || {
+                for _ in 0..100 {
+                    tt.track(1).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(t.used(), 16 * 100);
     }
 
     #[test]
