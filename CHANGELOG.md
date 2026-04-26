@@ -10,7 +10,27 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.2 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.3 `.deb` preinstalled).
+
+---
+
+## [0.2.3] — 2026-04-26
+
+Round-7 self-reflection on v0.2.2 produced three real findings — same hit rate as round 6, all confirmed against source.  The reachable bug surface in the v0.2.x line is genuinely still open: round 6 fixed three TOCTOU/atomicity bugs in v0.2.0–v0.2.1, round 7 found three more in adjacent code (concurrent budget reset, intermediate-component symlink TOCTOU that v0.2.2's leaf-only fix didn't cover, audit-log misuse leading to deadlock).  Reflection log: [`docs/reflection/2026-04-26-v0.2.2-round-7.md`](docs/reflection/2026-04-26-v0.2.2-round-7.md).
+
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.3> — `aaos_0.2.3-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 31 (medium — `BudgetTracker` reset race).**  `maybe_reset()` did a `load` of `last_reset_check` followed by an unconditional `store(now)`.  Two threads near a period boundary could both pass the rate-limit gate, both store, and both go on to call `reset()`.  If thread A's `track()` completed between the two resets, thread B's reset clobbered A's tokens back to zero — silent over-spend across the period boundary.  **Fix**: replace load+store with a CAS loop on `last_reset_check`.  Only the thread that wins the CAS proceeds to `reset()`; the others skip.  Test `maybe_reset_races_have_at_most_one_winner` hammers `track()` with 16 threads × 100 calls and asserts cumulative `used` matches cumulative `track`.  Commit `8c06449`.
+
+- **Bug 32 (high — intermediate-component symlink TOCTOU).**  v0.2.x's `safe_open_for_capability` used `open()` with `O_NOFOLLOW`.  `O_NOFOLLOW` only rejects a symlink at the *leaf* component — symlinks at any intermediate path component are still resolved by the kernel during traversal.  An agent with `file_write: /data/project/*` could be steered to `/etc/...` if `/data/project` was swapped for a symlink to `/etc` between the parent-dir create and the file open.  Documented in v0.2.2's code as "out of scope of this fix" — round 7 correctly classified the deferred-comment-as-bug pattern again.  **Fix**: route through `openat2(AT_FDCWD, path, OpenHow{flags, resolve: RESOLVE_NO_SYMLINKS})` which rejects symlinks at every component.  Available since Linux 5.6 (Debian 13's 6.12+ kernel has it).  Falls back to plain `open()` when `openat2` returns ENOSYS or seccomp returns EPERM, so the build still works on older kernels with the leaf-only protection.  Worker seccomp policy gains `SYS_openat2` in the allowlist.  Two API quirks worth noting in the commit: `O_NOFOLLOW` must be stripped from the flags arg (kernel returns EINVAL if both are set together with `RESOLVE_NO_SYMLINKS`), and `open_how::mode` must be 0 unless `O_CREAT` is set (also EINVAL otherwise).  Test `intermediate_component_symlink_rejected` plants a symlink as the parent dir and asserts the open is refused.  Commit `67e7d24`.
+
+- **Bug 33 (medium — `InMemoryAuditLog::with_cap(0)` deadlock).**  The guard was `debug_assert!(max >= 1)` which compiles out in release.  With `max == 0`, `record()`'s `while events.len() >= max` loop is always true and `pop_front()` on an empty `VecDeque` is a silent no-op — infinite spin while holding the audit mutex, deadlocking every recorder thread.  **Fix**: switch to always-on `assert!`.  Misuse fails loud at construction.  Test `in_memory_audit_log_with_cap_zero_panics` asserts the panic.  Commit `627846e`.
+
+### Pattern reinforced
+
+The v0.2.0 → v0.2.1 → v0.2.2 → v0.2.3 sequence has now produced three rounds in a row where a v0.N comment "this is deferred follow-up" became a v0.N+1 finding.  Round 6's lesson — don't ship deferred-follow-up comments — is reinforced.  v0.2.3 deletes the `// out of scope of this fix` comment in `file_write.rs` (Bug 32 fix subsumes it).  Convention enforced: deferred-by-design goes in `docs/ideas.md` with a reconsider signal; known-issues-pending-fix go in CHANGELOG known-issues.  In-code TODOs are a finding-generator.
 
 ---
 
@@ -431,7 +451,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/Joncik91/aaOS/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Joncik91/aaOS/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/Joncik91/aaOS/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Joncik91/aaOS/compare/v0.1.7...v0.2.0

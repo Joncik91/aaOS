@@ -1,3 +1,25 @@
+aaos (0.2.3-1) trixie; urgency=medium
+
+  * Round-7 self-reflection on v0.2.2 produced three real findings.
+  * Fix Bug 31 (medium): BudgetTracker maybe_reset() race could
+    let two threads both call reset() near a period boundary,
+    silently clobbering already-tracked tokens.  Replaced
+    load+store with a CAS loop so only one thread claims the
+    reset.
+  * Fix Bug 32 (high): safe_open_for_capability used open() with
+    O_NOFOLLOW, which only protects the leaf component.  Symlinks
+    at intermediate path components were still followed, allowing
+    capability-bypass writes outside the granted glob.  Switched
+    to openat2(RESOLVE_NO_SYMLINKS) which rejects symlinks at
+    every component (Linux 5.6+; falls back to O_NOFOLLOW on
+    older kernels).  Worker seccomp policy gains SYS_openat2.
+  * Fix Bug 33 (medium): InMemoryAuditLog::with_cap(0) used a
+    debug_assert (compiled out in release) so misuse caused an
+    infinite spin under the audit mutex in record().  Switched
+    to always-on assert.
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 14:30:00 +0000
+
 aaos (0.2.2-1) trixie; urgency=medium
 
   * Round-6 self-reflection on v0.2.1 source produced three

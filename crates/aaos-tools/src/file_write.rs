@@ -55,13 +55,18 @@ impl Tool for FileWriteTool {
 
         let path = Path::new(path_str);
 
-        // Pre-create parent directories. The capability check below is on
-        // the *file's* fd-derived canonical, so leaf-component symlink
-        // races are eliminated by O_NOFOLLOW. Intermediate-component
-        // symlink races on freshly-created parents are out of scope of
-        // this fix — capability globs already include the intended parent
-        // tree, so an attacker who can swap a parent could already steer
-        // us into their tree. This is documented in the security model.
+        // Pre-create parent directories.  The capability check + I/O
+        // below run through `safe_open_for_capability` which uses
+        // `openat2(RESOLVE_NO_SYMLINKS)` (Bug 32, v0.2.3) so symlinks
+        // at any path component — leaf or intermediate — are rejected.
+        // The parent-dir create is the only path-string operation
+        // remaining; tokio::fs::create_dir_all does NOT use
+        // RESOLVE_NO_SYMLINKS, so an attacker with mid-traversal
+        // symlink-write access could still steer the create.  But
+        // since the subsequent `safe_open_for_capability` then refuses
+        // any symlink-containing path, the worst case is a directory
+        // tree gets created in an attacker location and the open fails
+        // closed — no file write lands.
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await

@@ -379,6 +379,23 @@ The findings:
 
 Tagged as `v0.2.2`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.2 — `aaos_0.2.2-1_amd64.deb`.
 
+### 31. v0.2.3 release — round 7 self-reflection on v0.2.2 (3/3 real findings)
+*complete 2026-04-26*
+
+Seventh iteration of the loop, second on the v0.2.x line.  v0.2.2 source on the same droplet as round 6 with `AAOS_DEFAULT_BACKEND` unset (rounds-1-7 protocol).  Open-ended prompt with an explicit "say nothing if nothing" clause — three real findings, plus a fourth candidate that the agent reasoned through and explicitly removed mid-write (the discipline works).  No duplicates of earlier rounds.
+
+The findings:
+
+- **Bug 31 (medium) — `BudgetTracker` reset race.**  `maybe_reset()` did `load(last) → if too soon return → store(now) → if period elapsed reset()`.  Two threads near a period boundary could both pass the rate-limit gate, both store, and both call `reset()` — clobbering tokens already tracked in the new period.  Fixed via CAS-loop reset claim (commit `8c06449`).
+
+- **Bug 32 (high) — intermediate-component symlink TOCTOU.**  `safe_open_for_capability` used `open()` with `O_NOFOLLOW`, which only protects the *leaf* component.  An attacker who could swap any intermediate directory for a symlink would steer the open to a forbidden tree even though the leaf was a non-symlink filename.  v0.2.2's code disclaimed this in a comment — the third "deferred follow-up" to become a v0.N+1 finding.  Fixed by routing through `openat2(RESOLVE_NO_SYMLINKS)` which rejects symlinks at every component.  Available since Linux 5.6; falls back to `open()` on older kernels.  Worker seccomp gains `SYS_openat2` (commit `67e7d24`).
+
+- **Bug 33 (medium) — `InMemoryAuditLog::with_cap(0)` deadlock.**  `debug_assert!(max >= 1)` compiled out in release.  With `max == 0`, `record()`'s `while events.len() >= max` loop was always true and `pop_front()` on an empty `VecDeque` was a silent no-op — infinite spin while holding the audit mutex.  Fixed via always-on `assert!` (commit `627846e`).
+
+**Pattern reinforced.**  Three rounds in a row, three "deferred follow-up" code comments turned into v0.N+1 findings.  v0.2.3 deletes the last surviving such comment in `file_write.rs` — Bug 32's `openat2(RESOLVE_NO_SYMLINKS)` fix subsumes the disclaimed limitation.  The loop reads code comments and turns "this is deferred" into work; the contract is now: deferred-by-design goes in `docs/ideas.md` with a reconsider signal, known-issues-pending-fix go in `CHANGELOG.md`'s known-issues block, in-code TODOs are noise that the next round will turn into a finding.
+
+Tagged as `v0.2.3`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.3 — `aaos_0.2.3-1_amd64.deb`.
+
 ---
 
 ## Active milestones
