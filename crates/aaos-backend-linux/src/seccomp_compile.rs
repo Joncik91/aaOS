@@ -106,6 +106,7 @@ mod linux_impl {
             libc::SYS_pread64,
             libc::SYS_pwrite64,
             libc::SYS_openat,
+            libc::SYS_openat2,
             libc::SYS_statx,
             libc::SYS_newfstatat,
             libc::SYS_fstat,

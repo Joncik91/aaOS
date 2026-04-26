@@ -35,7 +35,7 @@
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
 
-use nix::fcntl::{open, OFlag};
+use nix::fcntl::{open, openat2, OFlag, OpenHow, ResolveFlag};
 use nix::sys::stat::Mode;
 
 use aaos_core::{CoreError, Result};
@@ -107,15 +107,62 @@ pub fn safe_open_for_capability(path: &str, mode: AccessMode) -> Result<(OwnedFd
     // 0o600 — only meaningful when O_CREAT is set; ignored on read.
     let create_mode = Mode::S_IRUSR | Mode::S_IWUSR;
 
-    let raw_fd = open(Path::new(path), flags, create_mode).map_err(|errno| match errno {
-        nix::errno::Errno::ELOOP => CoreError::Ipc(format!(
-            "refusing to open symlink at {path}: O_NOFOLLOW (capability TOCTOU guard)"
-        )),
-        nix::errno::Errno::ENOENT => CoreError::Ipc(format!("file not found: {path}")),
-        nix::errno::Errno::EACCES => CoreError::Ipc(format!("permission denied: {path}")),
-        e => CoreError::Ipc(format!("open({path}) failed: {e}")),
-    })?;
-    // SAFETY: `nix::fcntl::open` returned `Ok` so `raw_fd` is a valid,
+    // Bug 32 (v0.2.3): try `openat2(RESOLVE_NO_SYMLINKS)` first.  This
+    // rejects symlinks at *every* path component, not just the leaf —
+    // closing the intermediate-component swap window that O_NOFOLLOW
+    // alone leaves open.  Available since Linux 5.6.  On older kernels
+    // (or syscalls denied by an LSM), fall back to plain `open()` with
+    // O_NOFOLLOW so the build still works on hosts that don't support
+    // openat2; the leaf-only protection is the same as v0.2.2.
+    //
+    // Strip O_NOFOLLOW from the flags when calling openat2 — the kernel
+    // returns EINVAL if O_NOFOLLOW is set together with
+    // RESOLVE_NO_SYMLINKS (the latter strictly subsumes the former).
+    let openat2_flags = flags & !OFlag::O_NOFOLLOW;
+    // open_how::mode MUST be 0 unless O_CREAT or O_TMPFILE is set; the
+    // kernel returns EINVAL otherwise.
+    let how = if openat2_flags.contains(OFlag::O_CREAT) {
+        OpenHow::new()
+            .flags(openat2_flags)
+            .mode(create_mode)
+            .resolve(ResolveFlag::RESOLVE_NO_SYMLINKS)
+    } else {
+        OpenHow::new()
+            .flags(openat2_flags)
+            .resolve(ResolveFlag::RESOLVE_NO_SYMLINKS)
+    };
+    let raw_fd = match openat2(libc::AT_FDCWD, Path::new(path), how) {
+        Ok(fd) => fd,
+        Err(nix::errno::Errno::ENOSYS) | Err(nix::errno::Errno::EPERM) => {
+            // openat2 unavailable — fall back to plain open + O_NOFOLLOW.
+            // EPERM here typically means seccomp denied the syscall (the
+            // worker's allowlist may not include SYS_openat2 yet).
+            open(Path::new(path), flags, create_mode).map_err(|errno| match errno {
+                nix::errno::Errno::ELOOP => CoreError::Ipc(format!(
+                    "refusing to open symlink at {path}: O_NOFOLLOW (capability TOCTOU guard)"
+                )),
+                nix::errno::Errno::ENOENT => CoreError::Ipc(format!("file not found: {path}")),
+                nix::errno::Errno::EACCES => CoreError::Ipc(format!("permission denied: {path}")),
+                e => CoreError::Ipc(format!("open({path}) failed: {e}")),
+            })?
+        }
+        Err(nix::errno::Errno::ELOOP) => {
+            return Err(CoreError::Ipc(format!(
+                "refusing to open path containing symlink: {path} \
+                 (RESOLVE_NO_SYMLINKS — capability TOCTOU guard)"
+            )));
+        }
+        Err(nix::errno::Errno::ENOENT) => {
+            return Err(CoreError::Ipc(format!("file not found: {path}")));
+        }
+        Err(nix::errno::Errno::EACCES) => {
+            return Err(CoreError::Ipc(format!("permission denied: {path}")));
+        }
+        Err(e) => {
+            return Err(CoreError::Ipc(format!("openat2({path}) failed: {e}")));
+        }
+    };
+    // SAFETY: openat2/open returned `Ok` so `raw_fd` is a valid,
     // exclusive-ownership file descriptor we are responsible for closing.
     // Wrap it in `OwnedFd` so RAII handles cleanup.
     let fd: OwnedFd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
@@ -183,6 +230,37 @@ mod tests {
         assert!(result.is_err(), "O_NOFOLLOW should reject symlink");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("symlink") || err.contains("ELOOP") || err.contains("loop"));
+    }
+
+    #[test]
+    fn intermediate_component_symlink_rejected() {
+        // Bug 32 (v0.2.3): O_NOFOLLOW alone only rejects symlinks at the
+        // *leaf* component.  RESOLVE_NO_SYMLINKS via openat2 rejects them
+        // at every component.  Plant a symlink as the parent dir and
+        // assert the open is refused, even though the leaf itself is a
+        // regular filename.
+        let dir = tempfile::tempdir().unwrap();
+        let real_subdir = dir.path().join("real");
+        std::fs::create_dir(&real_subdir).unwrap();
+        std::fs::write(real_subdir.join("file.txt"), b"safe").unwrap();
+        // /<dir>/link -> /<dir>/real
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real_subdir, &link).unwrap();
+
+        // Try to open via the symlink intermediate. O_NOFOLLOW alone
+        // would accept this (the leaf "file.txt" is not a symlink).
+        // openat2 with RESOLVE_NO_SYMLINKS rejects it.
+        let result =
+            safe_open_for_capability(link.join("file.txt").to_str().unwrap(), AccessMode::Read);
+        assert!(
+            result.is_err(),
+            "RESOLVE_NO_SYMLINKS must reject symlink in any path component"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("symlink") || err.contains("RESOLVE_NO_SYMLINKS") || err.contains("ELOOP"),
+            "expected symlink-rejection error, got: {err}"
+        );
     }
 
     #[test]
