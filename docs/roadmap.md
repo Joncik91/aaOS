@@ -417,6 +417,24 @@ If round 9 on v0.2.4 source produces 0 real fixable findings, the v0.2.x patch s
 
 Tagged as `v0.2.4`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.4 — `aaos_0.2.4-1_amd64.deb`.
 
+### 33. v0.2.5 release — concurrency stress probe finds Bug 35
+*complete 2026-04-26*
+
+After round 9 (0 source-reading findings) and the fuzz pass (0 panics across 137M inputs) both depleted on v0.2.4, the next probe of different kind was concurrency stress.  A bash + socat + jq harness on the droplet opens 32 concurrent connections to the daemon and hammers `agent.spawn` + `agent.stop` cycles (16k per pass, no LLM round-trip — exercises the registry / capability / session-map shard locks, not the executor).
+
+First serious run found **Bug 35**: `InMemoryAuditLog::new()` is unbounded by design (its own doc-comment says so for test harnesses), and both Server constructors called the unbounded `::new()` directly.  Each spawn-stop cycle emits ~10 audit events × ~120 bytes = +1.2 KB/cycle.  Three consecutive 16k passes on the same daemon: RSS +20MB → +18MB → +20MB.  Linear leak.  Fixed by switching to `InMemoryAuditLog::with_cap(50_000)` (override via `AAOS_AUDIT_LOG_CAP`).  Verified bounded on v0.2.5.
+
+Pattern lifted: a primitive's `::new()` default that is *unsafe for production* (unbounded, blocking-on-default-timeout, no-rate-limit) becomes a production bug if callers use it directly.  The bug-shape that source-reading misses: a code comment honestly documenting "this is unbounded" reads like documentation, not a warning, when callers `use ::new()`.  Future v0.2.x convention: such constructors should be `#[cfg(test)]`-gated, OR the doc-comment must explicitly direct production callers to the bounded variant.  Queued as v0.2.6+ work to tighten `::new()` itself.
+
+The v0.2.x line has now closed bugs across three independent probes:
+- Source-reading reflection (rounds 6–8): Bugs 27–34
+- Fuzzing randomized inputs (137M): 0 findings, surface confirmed robust
+- Concurrency stress: Bug 35
+
+Each probe finds bugs the others can't.
+
+Tagged as `v0.2.5`.  Release: https://github.com/Joncik91/aaOS/releases/tag/v0.2.5 — `aaos_0.2.5-1_amd64.deb`.
+
 ---
 
 ## Active milestones

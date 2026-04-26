@@ -413,6 +413,20 @@ impl Server {
         Arc::new(crate::approval::ApprovalQueue::with_store(store))
     }
 
+    /// In-memory audit-log capacity (Bug 35 fix, v0.2.5).  Read from
+    /// `AAOS_AUDIT_LOG_CAP` if set, else 50_000.  Caps memory use of
+    /// the in-process audit log under spawn/stop churn.  The
+    /// `BroadcastAuditLog` fan-out is unaffected — subscribers see
+    /// every event in real time; only the on-demand `events()`
+    /// snapshot is bounded.
+    fn audit_log_cap() -> usize {
+        std::env::var("AAOS_AUDIT_LOG_CAP")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&n| n >= 1)
+            .unwrap_or(50_000)
+    }
+
     /// Default workspace base used by PlanExecutor for per-run scratch
     /// dirs. Read from `AAOS_WORKSPACE_BASE` if set, else
     /// `/var/lib/aaos/workspace`.
@@ -920,7 +934,15 @@ impl Server {
     /// Create a new server with default configuration.
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        // Bug 35 (v0.2.5): cap the in-memory audit log so a long-running
+        // daemon under spawn/stop churn doesn't grow unbounded.  Each
+        // spawn-stop cycle emits ~10 events; at ~120 bytes/event
+        // unbounded growth is ~1.2KB/cycle (16k cycles → +20MB RSS in
+        // the round-9 stress probe).  Default cap holds 50k events
+        // (~6 MB) which is several thousand spawn-stop cycles of
+        // recent history.  Override via AAOS_AUDIT_LOG_CAP.
+        let cap = Self::audit_log_cap();
+        let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::with_cap(cap));
         let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
         let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
         let approval_queue = Self::build_approval_queue();
@@ -1289,7 +1311,15 @@ impl Server {
         memory_store: Arc<dyn aaos_memory::MemoryStore>,
         embedding_source: Arc<dyn aaos_memory::EmbeddingSource>,
     ) -> Arc<Self> {
-        let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::new());
+        // Bug 35 (v0.2.5): cap the in-memory audit log so a long-running
+        // daemon under spawn/stop churn doesn't grow unbounded.  Each
+        // spawn-stop cycle emits ~10 events; at ~120 bytes/event
+        // unbounded growth is ~1.2KB/cycle (16k cycles → +20MB RSS in
+        // the round-9 stress probe).  Default cap holds 50k events
+        // (~6 MB) which is several thousand spawn-stop cycles of
+        // recent history.  Override via AAOS_AUDIT_LOG_CAP.
+        let cap = Self::audit_log_cap();
+        let inner_audit: Arc<dyn AuditLog> = Arc::new(InMemoryAuditLog::with_cap(cap));
         let broadcast_audit = Arc::new(BroadcastAuditLog::new(inner_audit, 256));
         let audit_log: Arc<dyn AuditLog> = broadcast_audit.clone();
         let approval_queue = Self::build_approval_queue();

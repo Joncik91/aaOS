@@ -10,18 +10,28 @@ Pre-v0.0.1 work (build-history #1–#13) predates the tagged-release cadence; it
 
 ## [Unreleased]
 
-Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.4 `.deb` preinstalled).
+Active milestone: **M1 — Debian-derivative reference image** (Packer pipeline producing a bootable ISO + cloud snapshots with the v0.2.5 `.deb` preinstalled).
 
-### Round 9 self-reflection on v0.2.4 (2026-04-26)
+---
 
-Run produced 3 findings; **all three rejected on triage**.  The v0.2.x patch surface — what self-reflection can find by source-reading — is depleted.  Trend was visible in round 8 (1 real + 2 deferred); decisive in round 9 (0 real).  No code change ships from round 9.  Reflection log: [`docs/reflection/2026-04-26-v0.2.4-round-9.md`](docs/reflection/2026-04-26-v0.2.4-round-9.md).
+## [0.2.5] — 2026-04-26
 
-The next runtime-improvement probe should be different in kind, not another iteration of the same loop:
-- Fuzzer on `path_safe::safe_open_for_capability`, `glob_matches_canonical`, `broker_protocol::Request` deserialization.
-- Load test with sustained spawn + revoke-storm to surface concurrency bugs the source-reading loop cannot.
-- External audit (second LLM or human) on v0.2.4 source.
+The concurrency probe paid off on its first run.  After round 9 (0 source-reading findings) and the fuzz pass (0 panics across 137M inputs) both depleted, the natural next probe was a multi-threaded stress harness.  First serious run found Bug 35 — a real memory leak under spawn/stop churn that neither prior probe could see.  Reflection log: [`docs/reflection/2026-04-26-v0.2.4-stress-pass.md`](docs/reflection/2026-04-26-v0.2.4-stress-pass.md).
 
-Bug-hunt rounds against v0.2.x source are paused until external evidence (a fuzzer hit, a load-test failure, etc.) surfaces something this loop missed.  M1 is the right active milestone.
+Release: <https://github.com/Joncik91/aaOS/releases/tag/v0.2.5> — `aaos_0.2.5-1_amd64.deb`.
+
+### Fixed
+
+- **Bug 35 (medium — `InMemoryAuditLog::new()` is unbounded under churn).**  `Server::new()` and `Server::with_llm_and_audit()` constructed the inner audit log via `InMemoryAuditLog::new()` — explicitly unbounded per its own doc-comment ("Unbounded by default; opt-in cap via `with_cap()` for long-running test harnesses where unbounded growth would OOM").  Each spawn-stop cycle emits ~10 audit events at ~120 bytes each, so a daemon under churn grew RSS at ~1.2 KB/cycle.  Stress probe measured this directly: 16k spawn-stop cycles × 3 passes on the same daemon grew RSS linearly +20MB → +18MB → +20MB (60MB total, no plateau).  **Fix**: switch both constructors to `InMemoryAuditLog::with_cap(50_000)` (~6MB cap, ~5000 spawn-stop cycles of recent history).  Override via `AAOS_AUDIT_LOG_CAP`.  Verification: same 3-pass stress on v0.2.5 grows +15.6MB on pass 1 (cap fills) then +0.1MB and +0.012MB on passes 2/3 — bounded.  Commit `<TBD>`.
+
+### Pattern reinforced
+
+The v0.2.x release line has now closed bugs across three independent probes:
+- **Source-reading reflection** (rounds 6–8): Bugs 27–34
+- **Fuzzing** randomized inputs (5 min × 3 targets, 137M total): 0 findings (input-handling robust)
+- **Concurrency stress** (32 threads × 500 cycles × 3 passes): Bug 35
+
+Each probe finds bugs the others can't.  v0.2.5 marks the first time we have evidence of bug-finding via concurrency stress that source-reading and fuzzing both missed (the audit log's unbounded `new()` was *literally documented* in its own doc-comment but the loop didn't flag it because it's not exploitable from input — it's only visible under sustained load).
 
 ---
 
@@ -487,7 +497,8 @@ No `.deb` was attached to a `v0.0.0` tag — this release was the untagged devel
 
 ---
 
-[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/Joncik91/aaOS/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/Joncik91/aaOS/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/Joncik91/aaOS/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/Joncik91/aaOS/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/Joncik91/aaOS/compare/v0.2.1...v0.2.2

@@ -1,3 +1,18 @@
+aaos (0.2.5-1) trixie; urgency=medium
+
+  * Fix Bug 35 (medium): InMemoryAuditLog used unbounded new() in
+    both Server constructors, leaking ~1.2KB per spawn-stop cycle
+    (~20MB per 16k cycles).  Switched to with_cap(50_000); override
+    via AAOS_AUDIT_LOG_CAP.
+  * Found by a 32-thread stress harness on the droplet — the
+    concurrency probe explicitly named in v0.2.4's CHANGELOG as the
+    next-probe-of-different-kind after source-reading and fuzzing
+    both depleted.  RSS growth verified bounded across 3 passes
+    of 16k spawn-stop cycles each (pass 1 +15.6MB cap-fill, passes
+    2-3 +0.1MB and +0.012MB).
+
+ -- Jounes <jounes.ds@gmail.com>  Sun, 26 Apr 2026 16:00:00 +0000
+
 aaos (0.2.4-1) trixie; urgency=medium
 
   * Round-8 self-reflection on v0.2.3.
