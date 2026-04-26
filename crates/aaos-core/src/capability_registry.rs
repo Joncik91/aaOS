@@ -6,9 +6,10 @@ use dashmap::DashMap;
 use uuid::Uuid;
 
 use crate::agent_id::AgentId;
+#[cfg(any(test, debug_assertions))]
+use crate::capability::CapabilitySnapshot;
 use crate::capability::{
-    Capability, CapabilityDenied, CapabilityHandle, CapabilitySnapshot, CapabilityToken,
-    Constraints, FileAccess,
+    Capability, CapabilityDenied, CapabilityHandle, CapabilityToken, Constraints, FileAccess,
 };
 
 /// Hook called by [`CapabilityRegistry::revoke`] when a token is revoked.
