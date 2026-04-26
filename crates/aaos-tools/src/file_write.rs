@@ -181,12 +181,29 @@ mod tests {
 
     #[tokio::test]
     async fn write_file_path_denied() {
-        let ctx = ctx_with_write("/allowed/*");
+        // Use two writable tempdirs so the test runs as non-root (CI):
+        // grant covers `allowed/*`, request lands in `denied/`.
+        // Pre-Bug-32 the test used absolute paths (/allowed, /denied)
+        // which only worked under root because `create_dir_all` could
+        // create top-level dirs.  CI runs as non-root and the test
+        // started failing as create_dir_all returned EACCES before the
+        // capability check could run.
+        let dir = tempfile::tempdir().unwrap();
+        let allowed_glob = format!("{}/allowed/*", dir.path().display());
+        let denied_path = dir.path().join("denied").join("file.txt");
+        let ctx = ctx_with_write(&allowed_glob);
         let result = FileWriteTool
-            .invoke(json!({"path": "/denied/file.txt", "content": "bad"}), &ctx)
+            .invoke(
+                json!({"path": denied_path.to_str().unwrap(), "content": "bad"}),
+                &ctx,
+            )
             .await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not permitted"));
+        assert!(result.is_err(), "expected denial");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not permitted"),
+            "expected 'not permitted' in error, got: {err}"
+        );
     }
 
     #[tokio::test]
