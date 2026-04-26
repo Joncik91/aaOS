@@ -10,6 +10,7 @@ members = [
     "crates/aaos-mcp",
     "crates/agentd",
 ]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.dependencies]

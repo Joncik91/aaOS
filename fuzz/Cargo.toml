@@ -1,0 +1,37 @@
+[package]
+name = "aaos-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+
+aaos-core = { path = "../crates/aaos-core" }
+aaos-tools = { path = "../crates/aaos-tools" }
+aaos-backend-linux = { path = "../crates/aaos-backend-linux" }
+
+[[bin]]
+name = "glob_matches_canonical"
+path = "fuzz_targets/glob_matches_canonical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safe_open_for_capability"
+path = "fuzz_targets/safe_open_for_capability.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "broker_request_deserialize"
+path = "fuzz_targets/broker_request_deserialize.rs"
+test = false
+doc = false
+bench = false

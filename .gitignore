@@ -38,3 +38,11 @@ docs/security-gaps.md
 __pycache__/
 packaging/debian/changelog.Debian.gz
 packaging/agentd.1.gz
+
+# cargo-fuzz outputs.  fuzz/Cargo.toml + fuzz/fuzz_targets/ are
+# tracked (the targets ARE the test); the per-run corpus, target/
+# build dir, and crash artifacts are not.
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
