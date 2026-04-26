@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::path::Path;
 
 use crate::context::InvocationContext;
 use crate::tool::Tool;
@@ -35,26 +34,161 @@ impl Tool for FileListTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| CoreError::InvalidManifest("missing 'path' parameter".into()))?;
 
-        // TOCTOU-safe capability check: open with O_PATH|O_NOFOLLOW so
-        // a leaf-component symlink swap can't redirect us, then resolve
-        // the inode-pinned canonical via /proc/self/fd/<fd>. The fd is
-        // dropped before tokio::fs::read_dir; subsequent path-string
-        // operations operate on a stable directory because read_dir
-        // resolves the path again, but a symlink swap on the leaf
-        // component now would still point at SOMETHING our capability
-        // was authorized for (since the canonical we matched against
-        // was the inode our fd opened). For full immunity we'd need
-        // fdopendir on the same fd; this incremental fix is the
-        // capability-bypass blocker, not an IO correctness blocker.
+        // TOCTOU-safe end-to-end: open ONCE with O_NOFOLLOW for read,
+        // resolve the canonical via /proc/self/fd/<fd>, run the
+        // capability check on that canonical, then perform metadata +
+        // listing through the SAME fd (fstat + Dir::from_fd).  The
+        // inode is pinned by the fd from open until close — a
+        // symlink-swap or directory rename on the requested path
+        // between the check and the listing has no effect.  Earlier
+        // versions (Bug 29 in v0.2.1) re-opened by canonical-string
+        // for the listing, which left the residual TOCTOU window.
+        //
+        // Discriminate file vs dir by trying the directory-open
+        // first: if it succeeds the path is a directory and we can
+        // use Dir::from_fd; if ENOTDIR it's a regular file and we
+        // fall through to the Read mode for fstat.
+        //
+        // Capability snapshot to move into spawn_blocking — DashMap is
+        // Send/Sync so cloning the Arc<CapabilityRegistry> is cheap.
         let path_owned = path_str.to_string();
-        let canonical = tokio::task::spawn_blocking(move || -> Result<String> {
+        let tokens = ctx.tokens.clone();
+        let agent_id = ctx.agent_id;
+        let registry = ctx.capability_registry.clone();
+
+        tokio::task::spawn_blocking(move || -> Result<Value> {
             #[cfg(target_os = "linux")]
             {
-                let (_fd, c) = crate::path_safe::safe_open_for_capability(
+                use std::os::fd::IntoRawFd;
+
+                // Try directory-open first.
+                let dir_attempt = crate::path_safe::safe_open_for_capability(
                     &path_owned,
-                    crate::path_safe::AccessMode::PathOnly,
-                )?;
-                Ok(c)
+                    crate::path_safe::AccessMode::ReadDir,
+                );
+
+                let (fd, canonical, is_dir) = match dir_attempt {
+                    Ok((fd, c)) => (fd, c, true),
+                    Err(e) => {
+                        // Anything other than "not a directory" is a hard
+                        // failure — propagate. ENOTDIR (file_list called
+                        // on a regular file) falls through to Read mode.
+                        if !e.to_string().contains("ENOTDIR")
+                            && !e.to_string().contains("Not a directory")
+                        {
+                            // Try Read mode anyway — open errors that look
+                            // path-related (NotFound, symlink) get the same
+                            // diagnostic by re-running through Read mode.
+                            let (fd, c) = crate::path_safe::safe_open_for_capability(
+                                &path_owned,
+                                crate::path_safe::AccessMode::Read,
+                            )?;
+                            (fd, c, false)
+                        } else {
+                            let (fd, c) = crate::path_safe::safe_open_for_capability(
+                                &path_owned,
+                                crate::path_safe::AccessMode::Read,
+                            )?;
+                            (fd, c, false)
+                        }
+                    }
+                };
+
+                // Capability check on the kernel-pinned canonical.
+                let requested = Capability::FileRead {
+                    path_glob: canonical.clone(),
+                };
+                let allowed = tokens.iter().any(|h| {
+                    registry.permits_canonical_file(*h, agent_id, FileAccess::Read, &canonical)
+                });
+                if !allowed {
+                    return Err(CoreError::CapabilityDenied {
+                        agent_id,
+                        capability: requested,
+                        reason: format!("file_list not permitted for path: {canonical}"),
+                    });
+                }
+
+                // Single-file path: fstat through the fd, return one entry.
+                if !is_dir {
+                    let std_file = std::fs::File::from(fd);
+                    let metadata = std_file
+                        .metadata()
+                        .map_err(|e| CoreError::Ipc(format!("metadata: {e}")))?;
+                    let name = std::path::Path::new(&canonical)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let kind = if metadata.is_file() {
+                        "file"
+                    } else {
+                        return Err(CoreError::Ipc(format!(
+                            "{canonical} is neither a regular file nor a directory"
+                        )));
+                    };
+                    return Ok(json!({
+                        "path": canonical,
+                        "kind": kind,
+                        "entries": [{
+                            "name": name,
+                            "kind": kind,
+                            "size_bytes": metadata.len(),
+                        }]
+                    }));
+                }
+
+                // Directory path: Dir::from_fd consumes the fd's inode
+                // ownership.  Iterate entries through the pinned inode;
+                // a leaf-component symlink swap after the
+                // safe_open_for_capability call cannot redirect us.
+                let raw_fd = fd.into_raw_fd();
+                let mut dir = nix::dir::Dir::from_fd(raw_fd).map_err(|e| {
+                    CoreError::Ipc(format!("fdopendir failed for {canonical}: {e}"))
+                })?;
+
+                let mut entries = Vec::new();
+                let mut truncated = false;
+                for entry in dir.iter() {
+                    if entries.len() >= MAX_ENTRIES {
+                        truncated = true;
+                        break;
+                    }
+                    let entry =
+                        entry.map_err(|e| CoreError::Ipc(format!("dir iter failed: {e}")))?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name == "." || name == ".." {
+                        continue;
+                    }
+                    let kind = match entry.file_type() {
+                        Some(nix::dir::Type::File) => "file",
+                        Some(nix::dir::Type::Directory) => "dir",
+                        Some(nix::dir::Type::Symlink) => "symlink",
+                        _ => "other",
+                    };
+                    // size_bytes via name-based fstatat would defeat the
+                    // TOCTOU goal; we report 0 for entries that aren't
+                    // worth a syscall round-trip.  Operators looking
+                    // for sizes can file_read(path) the entry of interest.
+                    entries.push(json!({
+                        "name": name,
+                        "kind": kind,
+                        "size_bytes": 0,
+                    }));
+                }
+                entries.sort_by(|a, b| {
+                    a["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .cmp(b["name"].as_str().unwrap_or(""))
+                });
+
+                Ok(json!({
+                    "path": canonical,
+                    "kind": "dir",
+                    "entries": entries,
+                    "truncated": truncated,
+                }))
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -64,92 +198,7 @@ impl Tool for FileListTool {
             }
         })
         .await
-        .map_err(|e| CoreError::Ipc(format!("safe_open join: {e}")))??;
-
-        let requested = Capability::FileRead {
-            path_glob: canonical.clone(),
-        };
-        let allowed = ctx.tokens.iter().any(|h| {
-            ctx.capability_registry.permits_canonical_file(
-                *h,
-                ctx.agent_id,
-                FileAccess::Read,
-                &canonical,
-            )
-        });
-        if !allowed {
-            return Err(CoreError::CapabilityDenied {
-                agent_id: ctx.agent_id,
-                capability: requested,
-                reason: format!("file_list not permitted for path: {canonical}"),
-            });
-        }
-
-        let path = Path::new(&canonical);
-        let metadata = tokio::fs::metadata(path)
-            .await
-            .map_err(|e| CoreError::Ipc(format!("path not found: {e}")))?;
-
-        if metadata.is_file() {
-            return Ok(json!({
-                "path": canonical,
-                "kind": "file",
-                "entries": [{
-                    "name": path.file_name().and_then(|s| s.to_str()).unwrap_or(""),
-                    "kind": "file",
-                    "size_bytes": metadata.len(),
-                }]
-            }));
-        }
-
-        if !metadata.is_dir() {
-            return Err(CoreError::Ipc(format!(
-                "{canonical} is neither a file nor a directory"
-            )));
-        }
-
-        let mut entries = Vec::new();
-        let mut rd = tokio::fs::read_dir(path)
-            .await
-            .map_err(|e| CoreError::Ipc(format!("failed to read dir: {e}")))?;
-        let mut truncated = false;
-        while let Some(entry) = rd
-            .next_entry()
-            .await
-            .map_err(|e| CoreError::Ipc(format!("dir iter failed: {e}")))?
-        {
-            if entries.len() >= MAX_ENTRIES {
-                truncated = true;
-                break;
-            }
-            let name = entry.file_name().to_string_lossy().to_string();
-            let ft = entry.file_type().await.ok();
-            let kind = match ft {
-                Some(t) if t.is_file() => "file",
-                Some(t) if t.is_dir() => "dir",
-                Some(t) if t.is_symlink() => "symlink",
-                _ => "other",
-            };
-            let size = entry.metadata().await.map(|m| m.len()).unwrap_or(0);
-            entries.push(json!({
-                "name": name,
-                "kind": kind,
-                "size_bytes": size,
-            }));
-        }
-        entries.sort_by(|a, b| {
-            a["name"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(b["name"].as_str().unwrap_or(""))
-        });
-
-        Ok(json!({
-            "path": canonical,
-            "kind": "dir",
-            "entries": entries,
-            "truncated": truncated,
-        }))
+        .map_err(|e| CoreError::Ipc(format!("file_list join: {e}")))?
     }
 }
 

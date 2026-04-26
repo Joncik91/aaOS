@@ -60,11 +60,17 @@ pub enum AccessMode {
     ReadWriteCreate,
     /// `O_PATH | O_NOFOLLOW` — fd suitable only for path
     /// resolution (`/proc/self/fd/<fd>` readlink) and metadata.
-    /// Cannot be used for I/O. Used by tools that need a
-    /// TOCTOU-safe canonical for capability checking but then
-    /// perform their I/O via a different syscall (e.g.
-    /// `tokio::fs::read_dir`, `ripgrep`).
+    /// Cannot be used for I/O. Used by tools that hand off to
+    /// an external syscall (e.g. ripgrep) and don't need to read
+    /// directly through the fd.
     PathOnly,
+    /// `O_RDONLY | O_DIRECTORY | O_NOFOLLOW` — opens a directory
+    /// for reading. Used by tools that want a TOCTOU-safe
+    /// `Dir::from_fd` listing path: the same fd that powered the
+    /// capability check is the one passed to `fdopendir`. ENOTDIR
+    /// is returned by the kernel if the path resolves to a non-
+    /// directory.
+    ReadDir,
 }
 
 /// Open a path safely for a capability-checked tool.
@@ -94,6 +100,9 @@ pub fn safe_open_for_capability(path: &str, mode: AccessMode) -> Result<(OwnedFd
             OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
         }
         AccessMode::PathOnly => OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+        AccessMode::ReadDir => {
+            OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
+        }
     };
     // 0o600 — only meaningful when O_CREAT is set; ignored on read.
     let create_mode = Mode::S_IRUSR | Mode::S_IWUSR;
